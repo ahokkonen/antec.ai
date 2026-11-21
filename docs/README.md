@@ -9,6 +9,7 @@
 5. [architecture/risks.md](architecture/risks.md): риски и меры
 6. [adr/README.md](adr/README.md): принятые и планируемые решения
 7. [security/licensing.md](security/licensing.md): лицензии компонентов и сценарии распространения
+8. [../deploy/compose/README.md](../deploy/compose/README.md): локальный стенд, запуск, бэкап и проверка восстановления
 
 ## Соглашения
 

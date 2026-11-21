@@ -71,3 +71,27 @@ jobs:
           pincheck --policy policy/allowed-versions.yaml
           --exclude tools/pincheck/tests/fixtures
           .
+      - name: pincheck --require-digest (развёртываемые compose-файлы)
+        run: >-
+          uv run --project tools/pincheck --locked
+          pincheck --policy policy/allowed-versions.yaml --require-digest
+          deploy/compose
+
+  compose:
+    name: "deploy/compose: конфигурация, скрипты, сборка образов"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Синтаксис shell-скриптов
+        run: |
+          bash -n deploy/compose/scripts/*.sh deploy/compose/postgres/init/*.sh
+          sh -n deploy/compose/openbao/render.sh
+      - name: docker compose config
+        run: docker compose -f deploy/compose/compose.yaml --profile bootstrap config --quiet
+      - name: Сборка localhost/antec/postgres
+        run: docker build --tag localhost/antec/postgres:ci deploy/compose/images/postgres
