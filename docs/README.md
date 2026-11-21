@@ -19,4 +19,7 @@
 - **Архитектура** (`architecture/`): живые документы, отражают текущее состояние и ссылаются на ADR.
 - **Версии**: только в [../policy/allowed-versions.yaml](../policy/allowed-versions.yaml);
   в документах версии упоминаются для справки, источник истины реестр.
+  Соответствие реестру проверяет [pincheck](../tools/pincheck/README.md) в CI на каждый PR
+  (ADR-0016). Локально из корня репозитория:
+  `uv run --project tools/pincheck --locked pincheck --policy policy/allowed-versions.yaml --exclude tools/pincheck/tests/fixtures .`
 - Формат: обычный Markdown и Mermaid, без расширений конкретных инструментов.
