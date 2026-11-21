@@ -156,6 +156,9 @@ services:
       DISABLE_ADMIN_UI: "True"
       NO_DOCS: "True"
       STORE_MODEL_IN_DB: "False"
+      # Хэш litellm/config.yaml и обёртки (scripts/lib.sh): при их изменении up.sh пересоздаёт
+      # контейнер, хотя файлы смонтированы bind-mount.
+      ANTEC_CONFIG_SHA: ${ANTEC_LITELLM_CONFIG_SHA:-}
     read_only: true
     tmpfs:
       - /tmp:size=256m,uid=65534,gid=65534
@@ -192,6 +195,8 @@ services:
     command: ["bash", "start.sh"]
     environment:
       HOME: /tmp
+      # Хэш обёртки common/env-from-files.sh (scripts/lib.sh): изменение пересоздаёт контейнер.
+      ANTEC_CONFIG_SHA: ${ANTEC_OPEN_WEBUI_CONFIG_SHA:-}
       WEBUI_URL: http://localhost:3000
       CORS_ALLOW_ORIGIN: http://localhost:3000
       WEBUI_NAME: antec.ai
