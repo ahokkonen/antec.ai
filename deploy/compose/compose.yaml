@@ -1,0 +1,100 @@
+# Базовый слой antec.ai: OpenBao + PostgreSQL (ADR-0003, ADR-0017).
+# Образы только по digest из policy/allowed-versions.yaml (ADR-0004).
+# Запуск только через scripts/up.sh: он распечатывает OpenBao, выгружает секреты
+# (secrets-render) и только потом запускает PostgreSQL.
+name: antec
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+  logging:
+    driver: local
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  openbao:
+    <<: *hardening
+    image: ghcr.io/openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f
+    command: ["server"]
+    # entrypoint образа делает chown каталогов и сбрасывает root через su-exec
+    cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]
+    environment:
+      BAO_ADDR: http://127.0.0.1:8200
+      SKIP_SETCAP: "true"
+    volumes:
+      - ./openbao/config.hcl:/openbao/config/config.hcl:ro
+      - openbao-data:/openbao/file
+    networks: [secrets]
+    mem_limit: 256m
+    healthcheck:
+      # bao status: 0 = распечатан, 2 = запечатан. Healthy только после unseal.
+      test: ["CMD", "bao", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Одноразовая выгрузка секретов; запускается только из scripts/up.sh
+  # (`compose run`), токен передаётся через stdin.
+  secrets-render:
+    profiles: [bootstrap]
+    image: ghcr.io/openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f
+    entrypoint: ["/bin/sh", "/render/render.sh"]
+    user: "0:0"   # нужен chown файлов на uid postgres
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    read_only: true
+    environment:
+      BAO_ADDR: http://openbao:8200
+    volumes:
+      - ./openbao/render.sh:/render/render.sh:ro
+      - postgres-secrets:/out
+    networks: [secrets]
+    depends_on:
+      openbao:
+        condition: service_healthy
+
+  postgres:
+    <<: *hardening
+    build:
+      context: ./images/postgres
+    image: localhost/antec/postgres:18.7-pgvector0.8.7
+    pull_policy: build
+    command: ["postgres", "-c", "max_connections=250", "-c", "password_encryption=scram-sha-256"]
+    # entrypoint образа делает chown PGDATA и сбрасывает root через gosu
+    cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/antec-secrets/superuser
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=peer"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - postgres-secrets:/run/antec-secrets:ro
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks: [data]
+    shm_size: 256m
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres -q"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+networks:
+  # Без выхода наружу и без публикации портов на хост.
+  secrets:
+    internal: true
+  data:
+    internal: true
+
+volumes:
+  openbao-data:
+  postgres-data:
+  postgres-secrets:
