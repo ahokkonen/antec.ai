@@ -157,3 +157,40 @@ def test_dockerfile_parsing_regressions(
     assert result.exit_code == 1
     assert result.errors == expected, result.output
     assert f"{case}/Dockerfile:{line}:" in result.output
+
+
+def test_local_build_images(pincheck: Runner) -> None:
+    result = pincheck(COMPOSE / "local_build_ok" / "compose.yaml")
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize(
+    ("line", "code", "fragment"),
+    [
+        pytest.param(4, "PIN022", "не в пространстве", id="foreign-image-with-build"),
+        pytest.param(8, "PIN022", "плавающий тег 'main'", id="floating-local-tag"),
+        pytest.param(12, "PIN022", "содержит digest", id="digest-on-local-image"),
+        pytest.param(15, "PIN013", "не найден в реестре", id="local-name-without-build"),
+        pytest.param(18, "PIN022", "пре-релиз", id="prerelease-local-tag"),
+        pytest.param(22, "PIN022", "pull_policy: build", id="missing-pull-policy"),
+        pytest.param(31, "PIN022", "удалённый контекст", id="remote-build-context"),
+    ],
+)
+def test_local_build_images_invalid(pincheck: Runner, line: int, code: str, fragment: str) -> None:
+    result = pincheck(COMPOSE / "local_build_bad" / "compose.yaml")
+    assert result.exit_code == 1
+    lines = result.output.splitlines()
+    hit = [ln for ln in lines if f"compose.yaml:{line}: error {code}:" in ln and fragment in ln]
+    assert hit, result.output
+
+
+def test_build_dockerfile_checked_when_only_compose_given(pincheck: Runner) -> None:
+    """FROM Dockerfile сборки проверяется, даже если сам Dockerfile не передан и не найден."""
+    result = pincheck(COMPOSE / "local_build_bad" / "compose.yaml")
+    assert "bad/Dockerfile.custom:1: error PIN011" in result.output
+
+
+def test_build_dockerfile_findings_not_duplicated(pincheck: Runner) -> None:
+    result = pincheck(COMPOSE / "local_build_bad")
+    lines = [ln for ln in result.output.splitlines() if "Dockerfile.custom:1: error PIN011" in ln]
+    assert len(lines) == 1, result.output

@@ -168,19 +168,26 @@ components:
   postgresql:
     role: datastore
     license: PostgreSQL License
-    image: null
-    note: "Собственная сборка от docker.io/library/postgres:18.7 + pgvector; image заполнить, когда появится сборка"
+    image: docker.io/library/postgres   # база собственной сборки deploy/compose/images/postgres
+    note: "Используется только как FROM в localhost/antec/postgres (postgres + pgvector из PGDG)"
     allowed: ["18.7"]              # от 2026-11-12
     min_version: "18.7"            # 18.7 закрывает пакет security-исправлений
-    digest: null
+    # Индекс тега 18.7 от 2026-11-20 (пересборка docker-library: PG_VERSION 18.7-1.pgdg13+5).
+    # Пересборка уже разрешённой версии допущена без 7-дневного карантина (ADR-0017).
+    digest: "sha256:eb63372c1e05c755f55fa30cbd07aecc443676fc6c0fa90b9002d01537841e1a"
+    signature:
+      method: "cosign-подписи нет; проверен BuildKit provenance (неподписанный)"
+      note: "provenance: docker-library/postgres@31f4af9d429410ba4ad1f6e394daecd9ae7edfa7:18/trixie, совпадает с library/postgres в docker-library/official-images для тега 18.7; проверено 2026-11-21"
     sources:
       - https://www.postgresql.org/docs/18/release-18-7.html
+      - https://github.com/docker-library/official-images/blob/master/library/postgres
 
   pgvector:
     role: vector-extension
     license: PostgreSQL License
     allowed: ["0.8.7"]             # от 2026-10-05
     min_version: "0.8.7"           # CVE-2026-103484 (IVFFlat, выполнение кода)
+    note: "Ставится пакетом PGDG postgresql-18-pgvector=0.8.7-1.pgdg13+2 (подпись apt PGDG) в deploy/compose/images/postgres/Dockerfile; тег v0.8.7 = коммит f37c13f68b57d2c3472b2214fbcff699d6d34876"
     sources:
       - https://www.postgresql.org/message-id/179116294741.1252.17308312335154774817%40wrigleys.postgresql.org
 
@@ -197,11 +204,13 @@ components:
   openbao:
     role: secrets
     license: MPL-2.0
-    image: null
-    note: "Официальный образ уточнить в PoC"
+    image: ghcr.io/openbao/openbao  # тот же индекс на quay.io/openbao и docker.io/openbao
     allowed: ["2.7.2"]             # от 2026-10-26
     min_version: "2.7.2"
-    digest: null
+    digest: "sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f"
+    signature:
+      method: "cosign keyless (Sigstore), identity https://github.com/openbao/openbao/.github/workflows/release-images.yml@refs/tags/v2.7.2, issuer https://token.actions.githubusercontent.com"
+      note: "Проверено 2026-11-21 cosign 3.1.4; тег v2.7.2 = коммит 9e0a0d3c3504a0a00b45e61355afac5e35c78379"
     sources:
       - https://openbao.org/community/release-notes/2-7-0/
       - https://github.com/openbao/openbao/releases/tag/v2.7.2

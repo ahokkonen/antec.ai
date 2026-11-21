@@ -168,8 +168,14 @@ def run(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
                 )
             )
             continue
-        findings.extend(_CHECKS[target.kind](target.display, text, ctx))
+        if target.kind is FileKind.COMPOSE:
+            findings.extend(check_compose(target.display, text, ctx, source=target.path))
+        else:
+            findings.extend(_CHECKS[target.kind](target.display, text, ctx))
 
+    findings = list(
+        dict.fromkeys(findings)
+    )  # Dockerfile может проверяться дважды: сам и через build
     _write(findings, args.format, stream)
     errors = sum(1 for f in findings if f.severity is Severity.ERROR)
     warnings = len(findings) - errors
