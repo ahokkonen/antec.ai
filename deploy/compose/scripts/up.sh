@@ -54,7 +54,7 @@ if ! bao_exec secrets list -format=json | python3 -c 'import json,sys; sys.exit(
   bao_exec secrets enable -path=antec -version=2 kv >/dev/null
 fi
 
-for policy in render-postgres render-keycloak render-litellm; do
+for policy in render-postgres render-keycloak render-litellm render-open-webui; do
   compose exec -T -e BAO_TOKEN openbao bao policy write "$policy" - \
     < "$COMPOSE_DIR/openbao/policies/$policy.hcl" >/dev/null
 done
@@ -78,28 +78,61 @@ copy_db_password keycloak keycloak
 # учётные данные в БД LiteLLM и не должен меняться после первого запуска.
 ensure_generated_secrets litellm master_key:sk- salt_key
 copy_db_password litellm litellm
+# Open WebUI (ADR-0002, ADR-0018): секрет сессий, виртуальный ключ LiteLLM; секрет клиента
+# open-webui берётся из antec/keycloak, где его задаёт realm как код.
+ensure_generated_secrets open-webui webui_secret_key litellm_key:sk-
+copy_db_password openwebui open-webui
+copy_secret_field keycloak open_webui_client_secret open-webui oauth_client_secret
+
+# Сервисы, работавшие до этого запуска: их нужно перезапустить, если изменились их секреты
+# (обёртки и Keycloak читают файлы секретов только при старте процесса).
+running_before="$(compose ps --status running --services 2>/dev/null || true)"
+secrets_changed=""
 
 # Короткоживущие токены только для secrets-render, передаются через stdin.
 render() { # цель
   log "выгрузка секретов $1 (secrets-render)"
-  bao_exec token create -policy="render-$1" -ttl=5m -use-limit=10 \
+  local out
+  out="$(bao_exec token create -policy="render-$1" -ttl=5m -use-limit=10 \
       -orphan -no-default-policy -field=token \
-    | compose --profile bootstrap run --rm -T secrets-render "$1"
+    | compose --profile bootstrap run --rm -T secrets-render "$1")"
+  if grep -qx changed <<<"$out"; then secrets_changed+=" $1"; fi
+}
+
+# Запускает сервис и перезапускает его, если он уже работал, а его секреты изменились.
+start_service() { # сервис [аргументы compose up]
+  local svc="$1"; shift
+  compose up -d "$@" --wait "$svc"
+  if [[ " $secrets_changed " == *" $svc "* ]] && grep -qx "$svc" <<<"$running_before"; then
+    log "секреты $svc изменились: перезапуск"
+    compose restart "$svc" >/dev/null
+    compose up -d --wait "$svc"
+  fi
 }
 render postgres
 render keycloak
 render litellm
+render open-webui
 
 log "сборка и запуск PostgreSQL"
 compose up -d --build --wait postgres
 log "сборка и запуск Keycloak (первый запуск около минуты)"
-compose up -d --build --wait keycloak
+start_service keycloak --build
 
 log "настройка Keycloak: master, realm antec, брокер Entra"
 keycloak_inputs | python3 "$COMPOSE_DIR/scripts/keycloak.py" apply $recreate_realm
 
 log "запуск LiteLLM (миграции БД при первом запуске, около минуты)"
-compose up -d --wait litellm
+start_service litellm
+log "подготовка LiteLLM: бюджет пользователей и ключ Open WebUI"
+litellm_provision_inputs \
+  | compose exec -T litellm /app/.venv/bin/python -c "$(cat "$COMPOSE_DIR/scripts/litellm_provision.py")"
+
+log "запуск Open WebUI (миграции БД при первом запуске)"
+start_service open-webui
+log "сверка аккаунтов Open WebUI с Keycloak"
+sync_open_webui_identities
 unset BAO_TOKEN
 log "стенд запущен: $(compose ps --format '{{.Service}}={{.State}}' | tr '\n' ' ')"
 log "Keycloak: http://localhost:8080/realms/antec/account (администрирование: http://localhost:8080/admin)"
+log "Open WebUI: http://localhost:3000 (вход через Keycloak)"

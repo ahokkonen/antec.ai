@@ -3,15 +3,15 @@
 Локальный стенд antec.ai на Docker (Mac): базовый слой OpenBao 2.7.2 и PostgreSQL 18.7 с
 pgvector 0.8.7 ([ADR-0017](../../docs/adr/0017-base-layer-openbao-postgres.md)) и Keycloak 26.8.2
 с брокером Entra ID ([ADR-0007](../../docs/adr/0007-idp-and-agent-delegation.md)), LLM-шлюз LiteLLM
-1.108.8 ([ADR-0018](../../docs/adr/0018-litellm-on-base-layer.md)). Образы только по
+1.108.8 и веб-чат Open WebUI 0.13.3 ([ADR-0018](../../docs/adr/0018-litellm-on-base-layer.md)). Образы только по
 digest из [`policy/allowed-versions.yaml`](../../policy/allowed-versions.yaml) (ADR-0004).
 
 ## Требования
 
 - macOS с Docker Desktop (Compose v2 или новее); скрипты используют Связку ключей (`security`) и `python3`.
-- Около 4,5 GB свободной памяти в VM Docker (OpenBao 256 MB, PostgreSQL 1 GB, Keycloak 1,5 GB,
-  LiteLLM 1,5 GB).
-- Свободный порт `127.0.0.1:8080` (Keycloak).
+- Около 6 GB свободной памяти в VM Docker (лимиты: OpenBao 256 MB, PostgreSQL 1 GB, Keycloak,
+  LiteLLM и Open WebUI по 1,5 GB; фактически около 2,5 GB).
+- Свободные порты `127.0.0.1:8080` (Keycloak) и `127.0.0.1:3000` (Open WebUI).
 
 ## Команды
 
@@ -99,10 +99,26 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 | `postgres` | `localhost/antec/postgres:18.7-pgvector0.8.7`, БД `keycloak`, `litellm`, `openwebui`, `platform`, `dbos` | `data` (internal) | 1 GB |
 | `keycloak` | `localhost/antec/keycloak:26.8.2`, realm `antec`, брокер `entra`; `http://localhost:8080` | `data`, `egress` | 1,5 GB |
 | `litellm` | `litellm-non_root:v1.108.8`, модели `chat-default` (Claude Opus 5.5), `chat-fast` (Claude Haiku 5.5); порт 4000 только внутри | `data`, `llm` (internal), `llm-egress` | 1,5 GB |
+| `open-webui` | `open-webui:v0.13.3`, вход через Keycloak; `http://localhost:3000` | `data`, `llm`, `ui` | 1,5 GB |
 
-Наружу опубликован только порт Keycloak `127.0.0.1:8080`. Выход в интернет есть только у Keycloak
-(сеть `egress`, вход через Entra) и LiteLLM (сеть `llm-egress`, API провайдеров). Секретов нет в репозитории, на диске хоста, в окружении и argv
+Наружу опубликованы только порты Keycloak `127.0.0.1:8080` и Open WebUI `127.0.0.1:3000` (сеть
+`ui`). Выход в интернет нужен Keycloak (вход через Entra) и LiteLLM (API провайдеров); у Open WebUI
+он есть только потому, что Docker публикует порт из не-internal сети (`OFFLINE_MODE` включён). Секретов нет в репозитории, на диске хоста, в окружении и argv
 контейнеров.
+
+## Open WebUI
+
+http://localhost:3000, вход только через Keycloak (Entra или `breakglass`). Роль в Open WebUI
+задаёт Keycloak при каждом входе: роль `user` клиента `open-webui` есть у всех, `admin` назначается
+в админ-консоли Keycloak (Clients → open-webui → Roles, сейчас только у `breakglass`).
+Администратор Open WebUI не видит чаты пользователей; сессия 8 часов. `up.sh` сверяет аккаунты
+Open WebUI с Keycloak: создаёт `breakglass` в пустом Open WebUI (иначе первый вошедший стал бы
+администратором), снимает роль admin с аккаунтов без роли `admin` в Keycloak и переносит аккаунты,
+созданные по `sub`, на `antec_uid`. Локальным пользователям Keycloak `antec_uid` = логин
+(заполняется `up.sh`). Чат идёт в LiteLLM виртуальным ключом
+`open-webui` (временно, до Platform API: ADR-0018); каждый пользователь получает бюджет
+`open-webui-user` (5 USD на 30 дней). Настройки задаются только окружением в `compose.yaml`:
+изменения в админке Open WebUI не переживают перезапуск.
 
 ## Keycloak
 
@@ -132,6 +148,9 @@ client secret со сроком не больше 180 дней, «Assignment req
 ## Ограничения локального стенда
 
 - TLS OpenBao выключен, одна доля ключа распечатывания. На сервере так нельзя (ADR-0017).
+- `up.sh` перезапускает работающий сервис, если изменились его секреты или смонтированные файлы
+  конфигурации (`litellm/config.yaml`, `common/env-from-files.sh`). Запуск `docker compose` в обход
+  скриптов не знает их хэшей и пересоздаст LiteLLM и Open WebUI; используйте `up.sh`.
 - LiteLLM: секреты в окружении процесса (Vault в LiteLLM платный), выход в интернет не ограничен
   доменами провайдеров, админка выключена (ADR-0018).
 - Keycloak по HTTP на localhost; Admin API на том же адресе, что и вход. На сервере TLS через

@@ -5,6 +5,7 @@
 Секреты приходят JSON-объектом через stdin, не через argv и не через окружение.
 
     keycloak.py apply [--recreate-realm]   идемпотентная настройка master и realm antec
+    keycloak.py open-webui-identities      администраторы и antec_uid для сверки Open WebUI
     keycloak.py smoke                      вход через браузер и обмен токенов (RFC 8693)
 
 Realm как код: deploy/compose/keycloak/realm-antec.json создаётся, если realm нет.
@@ -43,7 +44,14 @@ ADMIN_API_SCOPE = "kc-admin-api"
 OTP_BROWSER_FLOW = "antec browser"
 DEFAULT_SA_SCOPES = ("service_account", "web-origins", "acr", "profile", "roles", "basic", "email")
 # Атрибуты, которые брокер Entra пишет в профиль пользователя (oid, tid).
-PROFILE_ATTRIBUTES = ("entra_oid", "entra_tid")
+# antec_uid: стабильный идентификатор пользователя, не меняется при пересоздании realm
+# (Entra: oid, локальные пользователи: логин). По нему Open WebUI находит аккаунт (OAUTH_SUB_CLAIM).
+PROFILE_ATTRIBUTES = ("entra_oid", "entra_tid", "antec_uid")
+UID_ATTRIBUTE = "antec_uid"
+OPEN_WEBUI_CLIENT = "open-webui"
+# Роли клиента open-webui: user (доступ, есть у всех через роли по умолчанию), admin (администратор
+# Open WebUI, назначается явно). Open WebUI берёт их из claim roles (ENABLE_OAUTH_ROLE_MANAGEMENT).
+OPEN_WEBUI_ROLES = ("user", "admin")
 PROFILE_PERMISSIONS: dict[str, list[str]] = {"view": ["admin"], "edit": ["admin"]}
 SMOKE_REDIRECT_PORT = 8765
 
@@ -343,6 +351,7 @@ def ensure_realm(admin: Admin, secrets_in: Json) -> None:
     ensure_user_profile(admin)
     ensure_client_secrets(admin, secrets_in)
     ensure_otp_browser_flow(admin, REALM)
+    ensure_open_webui_access(admin)
     if admin.find_user(REALM, BREAKGLASS_USER) is None:
         log(f"создание аварийного пользователя {BREAKGLASS_USER} (TOTP обязателен)")
         admin.call(
@@ -355,6 +364,7 @@ def ensure_realm(admin: Admin, secrets_in: Json) -> None:
                 "emailVerified": True,
                 "firstName": "Аварийный",
                 "lastName": "вход",
+                "attributes": {UID_ATTRIBUTE: [BREAKGLASS_USER]},
                 "requiredActions": ["CONFIGURE_TOTP"],
                 "credentials": [
                     {
@@ -365,6 +375,128 @@ def ensure_realm(admin: Admin, secrets_in: Json) -> None:
                 ],
             },
         )
+    breakglass = admin.find_user(REALM, BREAKGLASS_USER)
+    if breakglass is None:
+        raise KeycloakError(f"пользователь {BREAKGLASS_USER} не найден после создания")
+    attrs = cast(Json, breakglass.get("attributes") or {})
+    if attrs.get(UID_ATTRIBUTE) != [BREAKGLASS_USER]:
+        breakglass["attributes"] = {**attrs, UID_ATTRIBUTE: [BREAKGLASS_USER]}
+        admin.call("PUT", f"/{REALM}/users/{breakglass['id']}", breakglass)
+    # Аварийный пользователь администрирует и Open WebUI.
+    ensure_client_role_mapping(admin, breakglass["id"], OPEN_WEBUI_CLIENT, "admin")
+    ensure_local_uids(admin)
+
+
+def realm_users(admin: Admin) -> list[Json]:
+    users: list[Json] = []
+    first = 0
+    while True:
+        page = cast(
+            list[Json],
+            admin.call("GET", f"/{REALM}/users?first={first}&max=200&briefRepresentation=false"),
+        )
+        users.extend(page)
+        if len(page) < 200:
+            return users
+        first += 200
+
+
+def ensure_local_uids(admin: Admin) -> None:
+    """antec_uid = логин для локальных пользователей без атрибута.
+
+    Без antec_uid вход в Open WebUI невозможен (OAUTH_SUB_CLAIM). Пользователям брокеров атрибут
+    пишет маппер брокера (Entra: oid) при каждом входе, их не трогаем.
+    """
+    for user in realm_users(admin):
+        attrs = cast(Json, user.get("attributes") or {})
+        if attrs.get(UID_ATTRIBUTE):
+            continue
+        if admin.call("GET", f"/{REALM}/users/{user['id']}/federated-identity"):
+            continue
+        log(f"{UID_ATTRIBUTE} для локального пользователя {user['username']}")
+        user["attributes"] = {**attrs, UID_ATTRIBUTE: [user["username"]]}
+        admin.call("PUT", f"/{REALM}/users/{user['id']}", user)
+
+
+def ensure_client_role_mapping(admin: Admin, user_id: str, client_id: str, role: str) -> None:
+    client = admin.find_client(REALM, client_id)
+    if client is None:
+        raise KeycloakError(f"в realm {REALM} нет клиента {client_id}")
+    base = f"/{REALM}/users/{user_id}/role-mappings/clients/{client['id']}"
+    if not any(r["name"] == role for r in admin.call("GET", base)):
+        rep_ = admin.call("GET", f"/{REALM}/clients/{client['id']}/roles/{role}")
+        admin.call("POST", base, [rep_])
+
+
+def ensure_open_webui_access(admin: Admin) -> None:
+    """Роли и claims клиента open-webui (ADR-0018).
+
+    - роли клиента user и admin; user входит в роли realm по умолчанию: доступ к Open WebUI есть
+      у каждого, кто вошёл в realm (доступ к realm ограничивает Entra, «Assignment required»);
+    - claim roles (роли клиента open-webui) и antec_uid в токенах и userinfo клиента open-webui.
+    Администратор Open WebUI определяется ролью admin при каждом входе, а не порядком входа.
+    """
+    client = admin.find_client(REALM, OPEN_WEBUI_CLIENT)
+    if client is None:
+        raise KeycloakError(f"в realm {REALM} нет клиента {OPEN_WEBUI_CLIENT}")
+    cid = client["id"]
+    have_roles = {r["name"] for r in admin.call("GET", f"/{REALM}/clients/{cid}/roles")}
+    for role in OPEN_WEBUI_ROLES:
+        if role not in have_roles:
+            admin.call(
+                "POST",
+                f"/{REALM}/clients/{cid}/roles",
+                {"name": role, "description": f"Open WebUI: {role}"},
+            )
+    default_roles = f"/{REALM}/roles/default-roles-{REALM}/composites"
+    composites = admin.call("GET", f"{default_roles}/clients/{cid}")
+    if not any(r["name"] == "user" for r in composites):
+        user_role = admin.call("GET", f"/{REALM}/clients/{cid}/roles/user")
+        admin.call("POST", default_roles, [user_role])
+    wanted = {
+        "roles": {
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-usermodel-client-role-mapper",
+            "config": {
+                "usermodel.clientRoleMapping.clientId": OPEN_WEBUI_CLIENT,
+                "claim.name": "roles",
+                "multivalued": "true",
+                "jsonType.label": "String",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "introspection.token.claim": "true",
+            },
+        },
+        UID_ATTRIBUTE: {
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-usermodel-attribute-mapper",
+            "config": {
+                "user.attribute": UID_ATTRIBUTE,
+                "claim.name": UID_ATTRIBUTE,
+                "jsonType.label": "String",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "introspection.token.claim": "true",
+            },
+        },
+    }
+    mappers = {
+        m["name"]: m for m in admin.call("GET", f"/{REALM}/clients/{cid}/protocol-mappers/models")
+    }
+    for name, spec in wanted.items():
+        current = mappers.get(name)
+        if current is None:
+            admin.call(
+                "POST", f"/{REALM}/clients/{cid}/protocol-mappers/models", {"name": name, **spec}
+            )
+        elif current.get("config") != spec["config"]:
+            admin.call(
+                "PUT",
+                f"/{REALM}/clients/{cid}/protocol-mappers/models/{current['id']}",
+                {**current, **spec},
+            )
 
 
 def client_secret_map(secrets_in: Json) -> dict[str, str]:
@@ -458,10 +590,38 @@ def ensure_idp(admin: Admin, entra: Json | None) -> None:
             admin.call("POST", base, mapper)
 
 
+def cmd_open_webui_identities(secrets_in: Json) -> None:
+    """Данные для сверки аккаунтов Open WebUI (scripts/up.sh), JSON на stdout.
+
+    admins: antec_uid пользователей с ролью admin клиента open-webui (напрямую);
+    uid_by_id: id пользователя Keycloak -> antec_uid (перенос аккаунтов, созданных по sub).
+    """
+    admin = connect(secrets_in)
+    client = admin.find_client(REALM, OPEN_WEBUI_CLIENT)
+    if client is None:
+        raise KeycloakError(f"в realm {REALM} нет клиента {OPEN_WEBUI_CLIENT}")
+    holders = cast(
+        list[Json],
+        admin.call("GET", f"/{REALM}/clients/{client['id']}/roles/admin/users?max=1000"),
+    )
+    uid_by_id: dict[str, str] = {}
+    for user in realm_users(admin):
+        uid = (cast(Json, user.get("attributes") or {}).get(UID_ATTRIBUTE) or [None])[0]
+        if uid:
+            uid_by_id[cast(str, user["id"])] = cast(str, uid)
+    admins = sorted(uid_by_id[h["id"]] for h in holders if h["id"] in uid_by_id)
+    print(json.dumps({"admins": admins, "uid_by_id": uid_by_id}))
+
+
 def cmd_apply(secrets_in: Json, recreate: bool) -> None:
     admin = ensure_master(connect(secrets_in), secrets_in)
     if recreate and admin.realm_exists(REALM):
         log(f"удаление realm {REALM} (--recreate-realm)")
+        log(
+            "пользователи realm будут созданы заново с новыми sub; Open WebUI находит их по "
+            f"{UID_ATTRIBUTE} (Entra: oid, локальные: логин), но приложения, привязанные к sub, "
+            "увидят новых пользователей"
+        )
         admin.call("DELETE", f"/{REALM}")
     ensure_realm(admin, secrets_in)
     ensure_idp(admin, cast(Json | None, secrets_in.get("entra")))
@@ -610,6 +770,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     apply_p = sub.add_parser("apply", help="настроить master и realm antec")
     apply_p.add_argument("--recreate-realm", action="store_true")
+    sub.add_parser("open-webui-identities", help="администраторы и antec_uid для Open WebUI")
     smoke_p = sub.add_parser("smoke", help="проверить вход и обмен токенов")
     smoke_p.add_argument(
         "--no-open", action="store_true", help="не открывать браузер, только напечатать URL"
@@ -621,6 +782,8 @@ def main() -> int:
             raise KeycloakError("на stdin ожидается JSON-объект с секретами")
         if args.cmd == "apply":
             cmd_apply(secrets_in, args.recreate_realm)
+        elif args.cmd == "open-webui-identities":
+            cmd_open_webui_identities(secrets_in)
         else:
             cmd_smoke(secrets_in, not args.no_open)
     except (KeycloakError, ValueError, OSError) as exc:

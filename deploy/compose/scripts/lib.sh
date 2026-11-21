@@ -12,6 +12,16 @@ KC_LEGACY_ROOT="antec-local-openbao-root-token"
 kc_unseal_name() { echo "antec-local-openbao-unseal-key-$1"; }
 kc_root_name() { echo "antec-local-openbao-root-token-$1"; }
 
+# Хэши смонтированных файлов конфигурации. Compose не замечает изменения содержимого
+# bind-mount, поэтому хэш передаётся в окружение сервиса (compose.yaml): изменился файл,
+# изменилось окружение, compose up пересоздаёт контейнер.
+config_sha() { # файлы...
+  cat "$@" | shasum -a 256 | cut -c1-16
+}
+export ANTEC_LITELLM_CONFIG_SHA ANTEC_OPEN_WEBUI_CONFIG_SHA
+ANTEC_LITELLM_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/litellm/config.yaml" "$COMPOSE_DIR/common/env-from-files.sh")"
+ANTEC_OPEN_WEBUI_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/common/env-from-files.sh")"
+
 compose() {
   docker compose --project-directory "$COMPOSE_DIR" -f "$COMPOSE_DIR/compose.yaml" "$@"
 }
@@ -158,10 +168,15 @@ print(json.dumps(data))' $missing \
     | compose exec -T -e BAO_TOKEN openbao bao kv put -mount=antec "$path" - >/dev/null
 }
 
-# Копирует пароль роли PostgreSQL из antec/postgres в antec/<путь>:db_password (через stdin).
+# Копирует поле одной записи KV в другую (значение идёт только через stdin).
+copy_secret_field() { # путь-источник поле-источник путь-приёмник поле-приёмник
+  bao_exec kv get -mount=antec -field="$2" "$1" \
+    | compose exec -T -e BAO_TOKEN openbao bao kv patch -mount=antec "$3" "$4=-" >/dev/null
+}
+
+# Копирует пароль роли PostgreSQL из antec/postgres в antec/<путь>:db_password.
 copy_db_password() { # роль путь
-  bao_exec kv get -mount=antec -field="$1" postgres \
-    | compose exec -T -e BAO_TOKEN openbao bao kv patch -mount=antec "$2" db_password=- >/dev/null
+  copy_secret_field postgres "$1" "$2" db_password
 }
 
 # Входные данные scripts/keycloak.py (JSON на stdout): секреты antec/keycloak и, если задан,
@@ -186,4 +201,43 @@ kc = docs[0]["data"]["data"]
 entra = docs[1]["data"]["data"] if docs[1] else None
 kc["entra"] = {k: entra[k] for k in ("tenant_id", "client_id")} if entra else None
 print(json.dumps(kc))'
+}
+
+# Входные данные scripts/litellm_provision.py (JSON на stdout): мастер-ключ LiteLLM и
+# виртуальный ключ Open WebUI. Оба документа идут через stdin одного python3. Нужен BAO_TOKEN.
+litellm_provision_inputs() {
+  { bao_kv_json litellm && bao_kv_json open-webui; } | python3 -c '
+import json, sys
+text, dec, docs, pos = sys.stdin.read(), json.JSONDecoder(), [], 0
+if not text.strip():
+    sys.exit(1)  # чтение из OpenBao не удалось, причина уже напечатана bao_kv_json
+while len(docs) < 2:
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    doc, pos = dec.raw_decode(text, pos)
+    docs.append(doc)
+if not docs[0] or not docs[1]:
+    sys.exit("в OpenBao нет antec/litellm или antec/open-webui; запустите scripts/up.sh")
+print(json.dumps({"master_key": docs[0]["data"]["data"]["master_key"],
+                  "open_webui_key": docs[1]["data"]["data"]["litellm_key"]}))'
+}
+
+# Сверка аккаунтов Open WebUI с Keycloak (open-webui/sync-identities.sql, ADR-0018): перенос
+# аккаунтов на antec_uid, аккаунт breakglass в пустом Open WebUI, снятие роли admin у тех, у кого
+# её нет в Keycloak. Значения в psql -v несекретные: antec_uid, id и bcrypt одноразового пароля.
+json_part() { # поле: JSON-значение поля объекта со stdin
+  python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)[sys.argv[1]]))' "$1"
+}
+
+sync_open_webui_identities() {
+  local ids seed_id seed_hash
+  ids="$(keycloak_inputs | python3 "$COMPOSE_DIR/scripts/keycloak.py" open-webui-identities)"
+  seed_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  seed_hash="$(compose exec -T open-webui python -c \
+    'import bcrypt, secrets; print(bcrypt.hashpw(secrets.token_bytes(32), bcrypt.gensalt()).decode())')"
+  compose exec -T -u postgres postgres psql -X -q -At -d openwebui \
+      -v admins="$(json_part admins <<<"$ids")" -v uid_map="$(json_part uid_by_id <<<"$ids")" \
+      -v seed_id="$seed_id" -v seed_hash="$seed_hash" -v now="$(date +%s)" \
+    < "$COMPOSE_DIR/open-webui/sync-identities.sql" \
+    | sed 's/^/  open-webui: /' >&2
 }

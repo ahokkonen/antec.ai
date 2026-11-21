@@ -30,9 +30,6 @@ print(json.dumps({"tenant_id": tenant, "client_id": client, "client_secret": sec
 unset client_secret BAO_TOKEN
 log "параметры Entra ID сохранены в OpenBao (antec/entra)"
 
+# up.sh выгрузит новый секрет и перезапустит Keycloak, если секрет изменился.
 "$(dirname "$0")/up.sh"
-# keycloak.conf и vault-файлы читаются при старте: перезапуск применяет новый секрет.
-log "перезапуск Keycloak с новым секретом Entra"
-compose restart keycloak >/dev/null
-compose up -d --wait keycloak
 log "готово: вход через Entra на http://localhost:8080/realms/antec/account"

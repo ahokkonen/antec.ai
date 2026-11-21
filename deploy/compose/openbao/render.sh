@@ -3,6 +3,7 @@
 #   render.sh postgres   пароли ролей PostgreSQL в /out/postgres (uid 999)
 #   render.sh keycloak   keycloak.conf и vault-файлы realm в /out/keycloak (uid 1000)
 #   render.sh litellm    файлы-переменные окружения LiteLLM в /out/litellm (uid 65534)
+#   render.sh open-webui файлы-переменные окружения Open WebUI в /out/open-webui (uid 65534)
 # Токен приходит через stdin (`compose run -T`), живёт 5 минут и умеет читать только
 # пути своей цели. Значения не печатаются и не попадают в argv и окружение контейнера.
 set -eu
@@ -26,6 +27,18 @@ fetch() { # путь поле файл
   fi
 }
 
+# Замена итогового файла с учётом изменений: up.sh перезапускает работающий сервис, только
+# если его секреты изменились (на stdout печатается «changed», остальной вывод в stderr).
+changed=0
+replace() { # новый итоговый
+  if [ ! -f "$2" ] || ! cmp -s "$1" "$2"; then changed=1; fi
+  mv -f "$1" "$2"
+}
+remove() { # итоговый
+  if [ -e "$1" ]; then changed=1; fi
+  rm -f "$1"
+}
+
 case "$target" in
   postgres)
     out=/out/postgres
@@ -35,7 +48,7 @@ case "$target" in
       fetch postgres "$key" "$out/.$key.new"
     done
     for key in $keys; do
-      mv -f "$out/.$key.new" "$out/$key"
+      replace "$out/.$key.new" "$out/$key"
     done
     # Владелец: пользователь postgres в официальном образе (uid/gid 999).
     owner=999:999
@@ -67,19 +80,19 @@ case "$target" in
       printf 'bootstrap-admin-client-id=antec-bootstrap\n'
       printf 'bootstrap-admin-client-secret=%s\n' "$(cat "$out/.bootstrap")"
     } > "$out/keycloak.conf.tmp"
-    mv -f "$out/keycloak.conf.tmp" "$out/keycloak.conf"
+    replace "$out/keycloak.conf.tmp" "$out/keycloak.conf"
     # Файловый vault Keycloak: <realm>_<ключ>.
     if [ "$entra" = present ]; then
-      mv -f "$tmp" "$out/vault/antec_entra-client-secret"
+      replace "$tmp" "$out/vault/antec_entra-client-secret"
     else
-      rm -f "$out/vault/antec_entra-client-secret"
+      remove "$out/vault/antec_entra-client-secret"
       echo "render: секрет Entra не задан (antec/entra), вход через Entra будет недоступен" >&2
     fi
     # Пользователь keycloak в официальном образе: uid 1000, группа root (gid 0).
     owner=1000:0
     ;;
   litellm)
-    # Имя файла = имя переменной окружения; litellm/entrypoint.sh переносит их в окружение
+    # Имя файла = имя переменной окружения; common/env-from-files.sh переносит их в окружение
     # процесса LiteLLM (ADR-0018). Сначала все чтения, потом замена итоговых файлов.
     out=/out/litellm
     trap 'rm -f "$out"/.*.new "$out"/.*.err' EXIT
@@ -106,20 +119,35 @@ case "$target" in
       fi
     done
     for var in LITELLM_MASTER_KEY LITELLM_SALT_KEY DATABASE_URL; do
-      mv -f "$out/.$var.new" "$out/$var"
+      replace "$out/.$var.new" "$out/$var"
     done
     for var in ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY; do
       case " $providers " in
-        *" $var "*) mv -f "$out/.$var.new" "$out/$var" ;;
-        *) rm -f "$out/$var" ;;
+        *" $var "*) replace "$out/.$var.new" "$out/$var" ;;
+        *) remove "$out/$var" ;;
       esac
     done
     [ -n "$providers" ] || echo "render: ключи провайдеров не заданы (scripts/set-llm-key.sh): модели недоступны" >&2
     # Пользователь образа litellm-non_root: nobody (uid/gid 65534).
     owner=65534:65534
     ;;
+  open-webui)
+    # Файлы-переменные окружения Open WebUI (common/env-from-files.sh, ADR-0018).
+    # Несекретные параметры подключения к БД заданы в compose.yaml; здесь только пароль.
+    out=/out/open-webui
+    trap 'rm -f "$out"/.*.new' EXIT
+    fetch open-webui webui_secret_key "$out/.WEBUI_SECRET_KEY.new"
+    fetch open-webui db_password "$out/.DATABASE_PASSWORD.new"
+    fetch open-webui oauth_client_secret "$out/.OAUTH_CLIENT_SECRET.new"
+    # Виртуальный ключ Open WebUI в LiteLLM (не ключ провайдера).
+    fetch open-webui litellm_key "$out/.OPENAI_API_KEYS.new"
+    for var in WEBUI_SECRET_KEY DATABASE_PASSWORD OAUTH_CLIENT_SECRET OPENAI_API_KEYS; do
+      replace "$out/.$var.new" "$out/$var"
+    done
+    owner=65534:65534
+    ;;
   *)
-    echo "render: использование: render.sh postgres|keycloak|litellm" >&2
+    echo "render: использование: render.sh postgres|keycloak|litellm|open-webui" >&2
     exit 2
     ;;
 esac
@@ -127,4 +155,5 @@ esac
 chown -R "$owner" "$out"
 find "$out" -type f -exec chmod 0400 {} +
 find "$out" -type d -exec chmod 0700 {} +
-echo "render: секреты $target выгружены"
+echo "render: секреты $target выгружены" >&2
+if [ "$changed" = 1 ]; then echo changed; fi

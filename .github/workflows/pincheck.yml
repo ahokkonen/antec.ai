@@ -96,7 +96,7 @@ jobs:
             echo "bash -n $f"; bash -n "$f"
           done
           sh -n deploy/compose/openbao/render.sh
-          sh -n deploy/compose/litellm/entrypoint.sh
+          sh -n deploy/compose/common/env-from-files.sh
       - name: Realm как код (JSON)
         run: |
           set -euo pipefail

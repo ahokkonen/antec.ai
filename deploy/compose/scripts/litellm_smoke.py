@@ -23,21 +23,33 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any, cast
 
 BASE = "http://127.0.0.1:4000"
+PROVIDER_KEY_FILE = "/run/antec-secrets/ANTHROPIC_API_KEY"
 type Json = dict[str, Any]
 
 
 def call(
-    method: str, path: str, key: str, body: Json | None = None, *, timeout: float = 120
+    method: str,
+    path: str,
+    key: str,
+    body: Json | None = None,
+    *,
+    timeout: float = 120,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, Any]:
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(  # noqa: S310 - только 127.0.0.1 внутри контейнера
         f"{BASE}{path}",
         data=data,
         method=method,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            **(headers or {}),
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
@@ -95,6 +107,7 @@ def main() -> int:
     suffix = secrets.token_hex(4)
     end_user = f"smoke-user-{suffix}"
     budget_user = f"smoke-budget-{suffix}"
+    header_user = f"smoke-header-{suffix}"
 
     status, ready = call("GET", "/health/readiness", master)
     c.check(
@@ -125,15 +138,20 @@ def main() -> int:
     status, denied = chat(vkey, "chat-default")
     c.check("модель вне списка ключа отклонена", status in (400, 401, 403), (status, denied))
 
-    providers_ready = True
-    status, resp = chat(vkey, "chat-fast", user=end_user)
-    if status in (401, 500) and "api_key" in json.dumps(resp).lower():
-        providers_ready = False
+    # Ключ провайдера задан, если secrets-render выгрузил его файл (common/env-from-files.sh).
+    # Любая ошибка вызова при заданном ключе (в том числе отозванный ключ) считается провалом.
+    providers_ready = Path(PROVIDER_KEY_FILE).is_file()
+    if not providers_ready:
         print(
             "  [skip] ключ провайдера не задан (scripts/set-llm-key.sh): вызовы моделей пропущены"
         )
-    elif c.check("вызов chat-fast по виртуальному ключу", status == 200, (status, resp)):
-        usage = resp.get("usage") or {}
+    elif c.check(
+        "вызов chat-fast по виртуальному ключу",
+        (resp := chat(vkey, "chat-fast", user=end_user))[0] == 200,
+        resp,
+    ):
+        resp_body = cast(Json, resp[1])
+        usage = resp_body.get("usage") or {}
         c.check("ответ содержит usage", int(usage.get("total_tokens") or 0) > 0, usage)
         c.check(
             "расходы ключа учтены",
@@ -142,6 +160,23 @@ def main() -> int:
         c.check(
             "расходы конечного пользователя учтены",
             wait_spend(master, f"/customer/info?end_user_id={end_user}") > 0,
+        )
+        # Конечный пользователь из заголовка Open WebUI (user_header_mappings, ADR-0018).
+        status, hdr = call(
+            "POST",
+            "/v1/chat/completions",
+            vkey,
+            {
+                "model": "chat-fast",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "Ответь одним словом: да."}],
+            },
+            headers={"X-OpenWebUI-User-Id": header_user},
+        )
+        c.check("вызов с пользователем в заголовке X-OpenWebUI-User-Id", status == 200, hdr)
+        c.check(
+            "расходы пользователя из заголовка учтены",
+            wait_spend(master, f"/customer/info?end_user_id={header_user}") > 0,
         )
 
         status, cust = call(
@@ -163,7 +198,7 @@ def main() -> int:
     c.check("ключ отозван", status == 200, deleted)
     status, after = call("GET", "/v1/models", vkey)
     c.check("отозванный ключ не принимается", status in (400, 401, 403), (status, after))
-    call("POST", "/customer/delete", master, {"user_ids": [end_user, budget_user]})
+    call("POST", "/customer/delete", master, {"user_ids": [end_user, budget_user, header_user]})
 
     if c.failed:
         return 1
