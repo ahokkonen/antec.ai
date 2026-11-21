@@ -157,3 +157,14 @@ def test_dockerfile_parsing_regressions(
     assert result.exit_code == 1
     assert result.errors == expected, result.output
     assert f"{case}/Dockerfile:{line}:" in result.output
+
+
+def test_local_build_images(pincheck: Runner) -> None:
+    assert pincheck(COMPOSE / "local_build_ok").exit_code == 0
+
+
+def test_local_build_images_invalid(pincheck: Runner) -> None:
+    result = pincheck(COMPOSE / "local_build_bad")
+    assert result.exit_code == 1
+    # a: чужой образ с build; b: latest; c: digest; d: без build -> не из реестра
+    assert result.errors == ["PIN022", "PIN022", "PIN022", "PIN010", "PIN013"], result.output

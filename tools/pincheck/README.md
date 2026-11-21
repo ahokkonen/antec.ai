@@ -9,7 +9,8 @@ CI-проверка закрепления версий: не даёт разв�
 
 1. Сам реестр: схема (неизвестные поля запрещены), даты, дубли ключей и значений,
    allowed не ниже `min_version` и не в denied, кандидат не попал в allowed раньше `not_before`.
-2. docker-compose (`compose*.y*ml`, `docker-compose*.y*ml`): `services.*.image`.
+2. docker-compose (`compose*.y*ml`, `docker-compose*.y*ml`): `services.*.image`. У сервиса с
+   `build:` image должен быть `localhost/antec/<имя>:<версия>`; его база проверяется через `FROM`.
 3. Dockerfile (`Dockerfile`, `Dockerfile.*`, `*.Dockerfile`, `Containerfile`): все `FROM`,
    кроме `scratch` и ссылок на предыдущие стадии.
 4. `uv.lock`: `python_forbidden`, `python_denylist`, `python_min_versions`.
@@ -74,6 +75,7 @@ uv run --locked pytest
 | PIN019 | Компонент с пустым allowed |
 | PIN020 | Ссылку на образ нельзя проверить (переменная, некорректный формат) |
 | PIN021 | Образ без тега |
+| PIN022 | Сервис с `build:`: image вне `localhost/antec/`, с digest или без тега версии |
 | PIN030 | Python-пакет запрещён в любой версии |
 | PIN031 | Версия Python-пакета в denylist |
 | PIN032 | Версия Python-пакета ниже минимальной |
