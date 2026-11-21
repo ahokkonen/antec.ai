@@ -197,9 +197,15 @@ components:
     image: quay.io/keycloak/keycloak
     allowed: ["26.8.2"]            # от 2026-11-05
     min_version: "26.8.2"          # в 26.8.1/26.8.2 закрыто более 10 CVE
-    digest: null
+    note: "Используется только как FROM в localhost/antec/keycloak (оптимизированная сборка, ADR-0007)"
+    # Индекс тега 26.8.2 от 2026-11-19 (пересборка того же коммита тега, правило 7 ADR-0017).
+    digest: "sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3"
+    signature:
+      method: "cosign-подписи нет (cosign tree: артефактов нет); проверен BuildKit provenance (неподписанный)"
+      note: "provenance: vcs:source https://github.com/keycloak/keycloak, vcs:revision e514445f9dcdabc5bdcf67cab56c1e49655de067 = тег 26.8.2 («Set version to 26.8.2», 2026-11-05); сборка 2026-11-19T07:38-07:41Z; OSV по org.keycloak:keycloak-services@26.8.2 пусто; проверено 2026-11-21"
     sources:
       - https://www.keycloak.org/2026/11/keycloak-2682-released
+      - https://www.keycloak.org/docs/26.8.2/upgrading/
 
   openbao:
     role: secrets
