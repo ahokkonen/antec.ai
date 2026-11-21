@@ -145,12 +145,14 @@ components:
     allowed: ["0.13.3"]            # от 2026-11-08
     image_tag_prefix: "v"          # тег образа v0.13.3
     candidate:
-      version: "0.13.4"            # от 2026-11-19: проверить release notes и GHSA
-      not_before: 2026-11-26
-    min_version: "0.11.0"          # CVE-2026-70487 исправлена в v0.11.0; серия IDOR/доступа в 2026
-    digest: null
+      version: "0.13.4"            # от 2026-11-17: security-фиксов в release notes нет
+      not_before: 2026-11-24
+    min_version: "0.11.4"          # GHSA 2026-09 (кража сессии, вход отозванных через token exchange) закрыты в 0.11.4
+    # Индекс тега v0.13.3 (linux/amd64, linux/arm64).
+    digest: "sha256:46b59158e6558eeb980bc828e0f1b30238ad24d82ed84d5e5eda1dab2a082f14"
     signature:
-      method: "не установлено; проверить, подписывает ли проект образы"
+      method: "cosign-подписи нет (cosign tree: артефактов нет); проверен BuildKit provenance (неподписанный)"
+      note: "provenance: vcs:source https://github.com/open-webui/open-webui, vcs:revision b0e6098e940942281d9c83f3529ea117287a3a22 = тег v0.13.3 (WEBUI_BUILD_HASH в образе тот же); OSV по open-webui 0.13.3 пусто; открытых GHSA выше 0.12.2 нет; проверено 2026-11-21"
     denied:
       image_tags: []
       image_digests: []
