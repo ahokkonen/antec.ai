@@ -1,0 +1,3 @@
+services:
+  svc:
+    image: ghcr.io/berriai/litellm-database:v1.108.7@sha256:24581ddc30767f16ecb69d2b0517556f2cd7dea56971adb42a3d1beb97d69523

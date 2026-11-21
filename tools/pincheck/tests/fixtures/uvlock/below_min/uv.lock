@@ -1,0 +1,12 @@
+version = 1
+requires-python = ">=3.12"
+
+[[package]]
+name = "PyYAML"
+version = "6.0.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "pyyaml-include"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }

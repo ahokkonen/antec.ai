@@ -1,0 +1,63 @@
+# Тестовый реестр. Digest вида sha256:aaaa... и sha256:bbbb... вымышленные и
+# используются только в тестах; настоящие значения IOC взяты из policy/allowed-versions.yaml.
+schema_version: 1
+reviewed_at: 2026-11-21
+quarantine_days: 7
+defaults:
+  floating_tags_forbidden: [latest, main, main-latest, main-stable, dev, nightly, edge]
+  prerelease_forbidden: true
+
+components:
+  litellm:
+    role: llm-gateway
+    license: MIT
+    image: ghcr.io/berriai/litellm
+    allowed: ["1.108.7"]
+    image_tag_prefix: "v"
+    candidate:
+      version: "1.110.0"
+      not_before: 2026-11-25
+    min_version: "1.106.3"
+    digest: null
+    denied:
+      pypi: ["1.82.7", "1.82.8", "1.107.0"]
+      image_tags: ["v1.107.0"]
+      image_digests:
+        - "sha256:1bbcb1443bc962e45f5aad53fe3d2c30600e0379715fb6c664cdd3ac126c339e"
+        - "sha256:24581ddc30767f16ecb69d2b0517556f2cd7dea56971adb42a3d1beb97d69523"
+
+  keycloak:
+    role: oidc-provider
+    license: Apache-2.0
+    image: quay.io/keycloak/keycloak
+    allowed: ["26.8.2", "26.8.1"]
+    min_version: "26.8.1"
+    digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+  postgresql:
+    role: datastore
+    license: PostgreSQL License
+    image: docker.io/library/postgres
+    allowed: ["18.7"]
+    min_version: "18.7"
+    digest: null
+
+  cerbos:
+    role: policy-decision-point
+    license: Apache-2.0
+    image: ghcr.io/cerbos/cerbos
+    allowed: []
+    digest: null
+
+  openbao:
+    role: secrets
+    license: MPL-2.0
+    image: null
+    note: "Образ уточнить в PoC"
+    allowed: ["2.7.2"]
+
+python_forbidden: [litellm]
+python_denylist:
+  litellm: ["1.82.7", "1.82.8", "1.107.0"]
+python_min_versions:
+  pyyaml: "6.0.1"
