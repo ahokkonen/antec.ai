@@ -9,7 +9,14 @@ from conftest import FIXTURES, Runner
 
 from pincheck.discover import FileKind, classify, discover
 from pincheck.imageref import ImageRefError, parse_image_ref
-from pincheck.versions import PyVersion, TagKind, Version, VersionError, classify_tag_version
+from pincheck.versions import (
+    PyVersion,
+    TagKind,
+    Version,
+    VersionError,
+    canonical_py_version,
+    classify_tag_version,
+)
 from pincheck.yamlload import load_yaml
 
 D = "sha256:" + "c" * 64
@@ -70,13 +77,35 @@ def test_classify_tag(rest: str, kind: TagKind) -> None:
     assert classify_tag_version(rest).kind is kind
 
 
-def test_py_version_minimum() -> None:
-    minimum = PyVersion.parse("6.0.1")
-    assert PyVersion.parse("6.0.0").is_below(minimum)
-    assert PyVersion.parse("6.0.1rc1").is_below(minimum)
-    assert not PyVersion.parse("6.0.1").is_below(minimum)
-    assert not PyVersion.parse("6.0.12.20261113").is_below(minimum)
-    assert not PyVersion.parse("1!0.1").is_below(minimum)
+@pytest.mark.parametrize(
+    ("version", "minimum", "below"),
+    [
+        ("6.0.0", "6.0.1", True),
+        ("6.0.1rc1", "6.0.1", True),
+        ("6.0.1", "6.0.1", False),
+        ("6.0.12.20261113", "6.0.1", False),
+        ("1!0.1", "6.0.1", False),
+        ("6.0.1", "6.0.1.post1", True),
+        ("6.0.1.post1", "6.0.1.post2", True),
+        ("6.0.1rc1", "6.0.1rc2", True),
+        ("6.0.1.dev1", "6.0.1a1", True),
+        ("6.0.1+local", "6.0.1", False),
+    ],
+)
+def test_py_version_minimum(version: str, minimum: str, below: bool) -> None:
+    assert PyVersion.parse(version).is_below(PyVersion.parse(minimum)) is below
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [("1.0", "1.0.0"), ("1.107.0", "1.107"), ("1.0RC1", "1.0rc1"), ("1!2.0", "1!2.0.0")],
+)
+def test_canonical_py_version_equal(a: str, b: str) -> None:
+    assert canonical_py_version(a) == canonical_py_version(b)
+
+
+def test_canonical_py_version_keeps_epoch() -> None:
+    assert canonical_py_version("1!2.0") != canonical_py_version("2.0")
 
 
 @pytest.mark.parametrize(
@@ -128,3 +157,11 @@ def test_exclude_option(pincheck: Runner) -> None:
 def test_yaml_merge_keys_are_not_duplicates() -> None:
     doc = load_yaml("base: &b\n  a: 1\nsvc:\n  <<: *b\n  a: 2\n")
     assert doc.data["svc"] == {"a": 2}
+
+
+def test_exclude_applies_to_explicit_files(pincheck: Runner) -> None:
+    lock = FIXTURES / "uvlock" / "litellm_denied" / "uv.lock"
+    assert pincheck(lock).exit_code == 1
+    result = pincheck(lock, extra=("--exclude", "*"))
+    assert result.exit_code == 0, result.output
+    assert "Проверять нечего" in result.output

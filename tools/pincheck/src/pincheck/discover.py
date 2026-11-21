@@ -124,6 +124,8 @@ def discover(paths: list[str], excludes: list[str], cwd: Path | None = None) -> 
         if p.is_file():
             kind = classify(p.name)
             display = _display(p, base)
+            if _excluded(display, excludes):
+                continue  # --exclude действует и на явно переданные файлы
             if kind is None:
                 unsupported.append(display)
             else:

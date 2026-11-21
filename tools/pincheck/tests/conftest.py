@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import io
 import re
 from collections.abc import Callable
@@ -13,7 +14,14 @@ from pincheck.cli import run
 FIXTURES = Path(__file__).parent / "fixtures"
 VALID_POLICY = FIXTURES / "policy" / "valid.yaml"
 REPO_ROOT = Path(__file__).resolve().parents[3]
+# Фиксированная дата только для тестовых фикстур. Тесты боевого реестра используют
+# текущую дату (real_today), иначе обновление reviewed_at ломало бы их.
 TODAY = "2026-11-21"
+
+
+def real_today() -> str:
+    return dt.datetime.now(dt.UTC).date().isoformat()
+
 
 _CODE_RE = re.compile(r"^\S+: (error|warning) (PIN\d{3}):", re.MULTILINE)
 

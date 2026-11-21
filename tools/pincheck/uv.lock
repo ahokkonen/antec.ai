@@ -287,6 +287,7 @@ name = "pincheck"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "packaging" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
@@ -301,6 +302,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "packaging", specifier = ">=26.3,<27" },
     { name = "pydantic", specifier = ">=2.14.3,<3" },
     { name = "pyyaml", specifier = ">=6.0.3,<7" },
 ]

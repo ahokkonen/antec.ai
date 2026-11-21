@@ -35,7 +35,7 @@ ADR-0004 требует CI-проверку, которая сверяет docke
 
 ## Решение
 
-1. **pincheck** в `tools/pincheck/` как отдельный uv-проект: Python 3.12+, Pydantic, PyYAML,
+1. **pincheck** в `tools/pincheck/` как отдельный uv-проект: Python 3.12+, Pydantic, PyYAML, packaging (PEP 440),
    argparse. CLI: `pincheck --policy policy/allowed-versions.yaml [пути...]`. Код выхода 0 или 1
    (2 только при неверных аргументах CLI). Workflow `.github/workflows/pincheck.yml` запускается
    на каждый PR и push в main.

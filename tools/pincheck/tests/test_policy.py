@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from conftest import FIXTURES, REPO_ROOT, Runner
+from conftest import FIXTURES, REPO_ROOT, Runner, real_today
 
 Variant = Callable[[str, str], Path]
 EMPTY = FIXTURES / "empty"
@@ -14,7 +14,11 @@ EMPTY = FIXTURES / "empty"
 
 def test_real_registry_is_valid(pincheck: Runner) -> None:
     """Боевой реестр репозитория проходит проверку."""
-    result = pincheck(EMPTY, policy=REPO_ROOT / "policy" / "allowed-versions.yaml")
+    result = pincheck(
+        EMPTY,
+        policy=REPO_ROOT / "policy" / "allowed-versions.yaml",
+        extra=("--today", real_today()),
+    )
     assert result.exit_code == 0, result.output
 
 

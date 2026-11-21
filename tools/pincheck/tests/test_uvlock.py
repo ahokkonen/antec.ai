@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import FIXTURES, REPO_ROOT, Runner
+from conftest import FIXTURES, REPO_ROOT, Runner, real_today
 
 UVLOCK = FIXTURES / "uvlock"
 
@@ -45,5 +45,6 @@ def test_own_lockfile_is_clean(pincheck: Runner) -> None:
     result = pincheck(
         REPO_ROOT / "tools" / "pincheck" / "uv.lock",
         policy=REPO_ROOT / "policy" / "allowed-versions.yaml",
+        extra=("--today", real_today()),
     )
     assert result.exit_code == 0, result.output

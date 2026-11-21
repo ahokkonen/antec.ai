@@ -7,6 +7,9 @@ import functools
 import re
 from dataclasses import dataclass
 
+from packaging.version import InvalidVersion
+from packaging.version import Version as PepVersion
+
 _STRICT_RE = re.compile(r"^(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){0,3}$")
 _NUMERIC_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)*")
 _PRERELEASE_SUFFIX_RE = re.compile(
@@ -14,11 +17,6 @@ _PRERELEASE_SUFFIX_RE = re.compile(
     r"(?:[-._]?\d+)?(?:[-._+].*)?$",
     re.IGNORECASE,
 )
-# PEP 440: release-сегмент и признак пре-/dev-релиза.
-_PEP440_RE = re.compile(
-    r"^v?(?:(?P<epoch>\d+)!)?(?P<release>\d+(?:\.\d+)*)(?P<rest>.*)$", re.IGNORECASE
-)
-_PEP440_PRE_RE = re.compile(r"^[-._]?(?:a|b|c|rc|alpha|beta|pre|preview|dev)", re.IGNORECASE)
 
 
 class VersionError(ValueError):
@@ -91,47 +89,31 @@ def classify_tag_version(rest: str) -> TagInfo:
 
 @dataclass(frozen=True, slots=True)
 class PyVersion:
-    """Минимальное представление версии PEP 440 для сравнения с минимальной версией."""
+    """Версия Python-пакета с полным порядком PEP 440 (epoch, pre, post, dev, local)."""
 
-    epoch: int
-    release: tuple[int, ...]
-    is_pre: bool
-    suffix: str
+    value: PepVersion
     text: str
 
     @classmethod
     def parse(cls, text: str) -> PyVersion:
-        m = _PEP440_RE.fullmatch(text.strip())
-        if m is None:
-            raise VersionError(f"не удалось разобрать версию Python-пакета {text!r}")
-        rest = m.group("rest")
-        return cls(
-            epoch=int(m.group("epoch") or 0),
-            release=tuple(int(p) for p in m.group("release").split(".")),
-            is_pre=bool(rest) and _PEP440_PRE_RE.match(rest) is not None,
-            suffix=rest.lower(),
-            text=text,
-        )
-
-    def release_key(self) -> tuple[int, ...]:
-        r = self.release
-        while len(r) > 1 and r[-1] == 0:
-            r = r[:-1]
-        return r
+        try:
+            return cls(PepVersion(text.strip()), text)
+        except InvalidVersion as exc:
+            raise VersionError(f"не удалось разобрать версию Python-пакета {text!r}") from exc
 
     def is_below(self, minimum: PyVersion) -> bool:
-        """True, если версия ниже минимальной. Пре-релиз той же версии считается ниже."""
-        width = max(len(self.release), len(minimum.release))
-        mine = (self.epoch, *self.release, *(0,) * (width - len(self.release)))
-        theirs = (minimum.epoch, *minimum.release, *(0,) * (width - len(minimum.release)))
-        if mine != theirs:
-            return mine < theirs
-        return self.is_pre and not minimum.is_pre
+        return self.value < minimum.value
 
 
 def canonical_py_version(text: str) -> str:
-    """Нормализация для точного сравнения с denylist: регистр, префикс v, хвостовые нули."""
-    v = PyVersion.parse(text)
-    release = ".".join(str(p) for p in v.release_key())
+    """Нормализованная форма PEP 440 для точного сравнения: регистр, разделители, хвостовые нули
+    (1.0 и 1.0.0 совпадают, как в PEP 440)."""
+    v = PyVersion.parse(text).value
+    normalized = str(v)
     epoch = f"{v.epoch}!" if v.epoch else ""
-    return f"{epoch}{release}{v.suffix}"
+    base = ".".join(str(p) for p in v.release)
+    suffix = normalized[len(epoch) + len(base) :]
+    release = v.release
+    while len(release) > 1 and release[-1] == 0:
+        release = release[:-1]
+    return f"{epoch}{'.'.join(str(p) for p in release)}{suffix}"

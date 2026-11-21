@@ -5,6 +5,7 @@ description = "CI-проверка закрепления версий обра�
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "packaging>=26.3,<27",
     "pydantic>=2.14.3,<3",
     "pyyaml>=6.0.3,<7",
 ]

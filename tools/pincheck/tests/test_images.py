@@ -125,3 +125,35 @@ def test_prefix_match_is_reported_as_prefix(pincheck: Runner) -> None:
     result = pincheck(COMPOSE / "malicious_digest_prefix")
     assert "совпадает по префиксу sha256:c00f9d92c427" in result.output
     assert "single-source" in result.output
+
+
+def test_compose_merge_explicit_image_overrides_inherited(pincheck: Runner) -> None:
+    result = pincheck(COMPOSE / "merge_override")
+    assert result.exit_code == 0, result.output
+
+
+def test_compose_merge_inherited_services_do_not_hide_explicit(pincheck: Runner) -> None:
+    result = pincheck(COMPOSE / "merge_services")
+    assert result.exit_code == 1
+    assert result.errors == ["PIN010", "PIN011"]
+    assert "merge_services/compose.yaml:7:" in result.output
+
+
+@pytest.mark.parametrize(
+    ("case", "line", "expected"),
+    [
+        pytest.param("escape_backtick", 5, ["PIN010", "PIN021"], id="escape-after-syntax"),
+        pytest.param(
+            "blank_in_continuation", 1, ["PIN010", "PIN011"], id="blank-line-in-continuation"
+        ),
+        pytest.param("heredoc_stage", 9, ["PIN010", "PIN021"], id="heredoc-fake-stage"),
+        pytest.param("heredoc_unterminated", 3, ["PIN040"], id="heredoc-unterminated"),
+    ],
+)
+def test_dockerfile_parsing_regressions(
+    pincheck: Runner, case: str, line: int, expected: list[str]
+) -> None:
+    result = pincheck(FIXTURES / "dockerfile" / case)
+    assert result.exit_code == 1
+    assert result.errors == expected, result.output
+    assert f"{case}/Dockerfile:{line}:" in result.output

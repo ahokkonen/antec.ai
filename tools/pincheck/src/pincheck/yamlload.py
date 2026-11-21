@@ -50,6 +50,28 @@ class _StrictLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
+def effective_items(node: MappingNode) -> dict[str, tuple[ScalarNode, Node]]:
+    """Действующие пары словаря с учётом merge-ключей: явный ключ сильнее унаследованного.
+
+    После конструирования PyYAML разворачивает `<<` прямо в node.value (унаследованные пары
+    идут первыми), поэтому побеждает последнее вхождение ключа. Неразвёрнутые `<<`
+    обрабатываются здесь же: из нескольких источников побеждает более ранний.
+    """
+    merged: dict[str, tuple[ScalarNode, Node]] = {}
+    explicit: dict[str, tuple[ScalarNode, Node]] = {}
+    for key_node, value_node in node.value:
+        if key_node.tag == _MERGE_TAG:
+            sources: list[Node] = (
+                [value_node] if isinstance(value_node, MappingNode) else list(value_node.value)
+            )
+            for src in reversed(sources):
+                if isinstance(src, MappingNode):
+                    merged.update(effective_items(src))
+        elif isinstance(key_node, ScalarNode):
+            explicit[key_node.value] = (key_node, value_node)
+    return {**merged, **explicit}
+
+
 @dataclass(frozen=True, slots=True)
 class LoadedYaml:
     data: Any
@@ -64,11 +86,10 @@ class LoadedYaml:
                 break
             nxt: Node | None = None
             if isinstance(node, MappingNode):
-                for key_node, value_node in node.value:
-                    if isinstance(key_node, ScalarNode) and key_node.value == str(part):
-                        nxt = value_node
-                        best = key_node.start_mark.line + 1
-                        break
+                pair = effective_items(node).get(str(part))
+                if pair is not None:
+                    nxt = pair[1]
+                    best = pair[0].start_mark.line + 1
             elif (
                 isinstance(node, SequenceNode)
                 and isinstance(part, int)
