@@ -44,6 +44,7 @@ OTP_BROWSER_FLOW = "antec browser"
 DEFAULT_SA_SCOPES = ("service_account", "web-origins", "acr", "profile", "roles", "basic", "email")
 # Атрибуты, которые брокер Entra пишет в профиль пользователя (oid, tid).
 PROFILE_ATTRIBUTES = ("entra_oid", "entra_tid")
+PROFILE_PERMISSIONS: dict[str, list[str]] = {"view": ["admin"], "edit": ["admin"]}
 SMOKE_REDIRECT_PORT = 8765
 
 type Json = dict[str, Any]
@@ -386,22 +387,33 @@ def ensure_client_secrets(admin: Admin, secrets_in: Json) -> None:
 
 
 def ensure_user_profile(admin: Admin) -> None:
-    """Атрибуты Entra видны и меняются только администратором и брокером."""
+    """Атрибуты Entra видны и меняются только администратором и брокером.
+
+    Права приводятся к заданным при каждом запуске, а не только при создании атрибута:
+    значения попадают в claims токена, и право пользователя их менять недопустимо.
+    """
     profile = cast(Json, admin.call("GET", f"/{REALM}/users/profile"))
-    names = {a["name"] for a in profile.get("attributes", [])}
-    added = False
+    attributes = cast(list[Json], profile.setdefault("attributes", []))
+    by_name = {a["name"]: a for a in attributes}
+    changed = False
     for name in PROFILE_ATTRIBUTES:
-        if name not in names:
-            profile.setdefault("attributes", []).append(
+        attr = by_name.get(name)
+        if attr is None:
+            attributes.append(
                 {
                     "name": name,
                     "displayName": name,
-                    "permissions": {"view": ["admin"], "edit": ["admin"]},
+                    "permissions": dict(PROFILE_PERMISSIONS),
                     "multivalued": False,
                 }
             )
-            added = True
-    if added:
+            changed = True
+        elif attr.get("permissions") != PROFILE_PERMISSIONS or attr.get("multivalued"):
+            log(f"realm {REALM}: права атрибута {name} приведены к admin-only")
+            attr["permissions"] = dict(PROFILE_PERMISSIONS)
+            attr["multivalued"] = False
+            changed = True
+    if changed:
         admin.call("PUT", f"/{REALM}/users/profile", profile)
 
 
