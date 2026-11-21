@@ -96,7 +96,31 @@ jobs:
             echo "bash -n $f"; bash -n "$f"
           done
           sh -n deploy/compose/openbao/render.sh
+      - name: Realm как код (JSON)
+        run: |
+          set -euo pipefail
+          for f in deploy/compose/keycloak/*.json; do
+            echo "json $f"; python3 -m json.tool "$f" >/dev/null
+          done
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          checksum: ${{ env.UV_CHECKSUM }}
+          enable-cache: false
+      # Скрипт стенда без зависимостей (только stdlib); ruff и mypy берутся из закреплённого
+      # окружения pincheck с его правилами, чтобы не заводить второй lock-файл.
+      - name: "scripts/keycloak.py: ruff, mypy"
+        run: |
+          set -euo pipefail
+          uv run --project tools/pincheck --locked ruff format --check \
+            --config tools/pincheck/pyproject.toml deploy/compose/scripts/keycloak.py
+          uv run --project tools/pincheck --locked ruff check --output-format=github \
+            --config tools/pincheck/pyproject.toml deploy/compose/scripts/keycloak.py
+          uv run --project tools/pincheck --locked mypy --strict --python-version 3.12 \
+            deploy/compose/scripts/keycloak.py
       - name: docker compose config
         run: docker compose -f deploy/compose/compose.yaml --profile bootstrap config --quiet
       - name: Сборка localhost/antec/postgres
         run: docker build --tag localhost/antec/postgres:ci deploy/compose/images/postgres
+      - name: Сборка localhost/antec/keycloak
+        run: docker build --tag localhost/antec/keycloak:ci deploy/compose/images/keycloak
