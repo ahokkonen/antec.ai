@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+
+# uv / виртуальные окружения
+.venv/
+.python-version.local
+
+# Инструменты качества
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Секреты никогда не коммитятся (AGENTS.md, правило 5)
+.env
+.env.*
+!.env.example
+
+# Локальные настройки редакторов и агентов
+.idea/
+.vscode/
+.DS_Store
+.claude/settings.local.json

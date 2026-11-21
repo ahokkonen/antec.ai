@@ -1,0 +1,157 @@
+# Архитектура v1
+
+Статус: черновик для MVP. Обновлено: 2026-11-21.
+Решения: [ADR-0001](../adr/0001-llm-gateway-litellm.md), [ADR-0002](../adr/0002-chat-ui-open-webui.md),
+[ADR-0003](../adr/0003-postgresql-single-datastore.md), [ADR-0004](../adr/0004-dependency-pinning-and-supply-chain.md),
+[ADR-0005](../adr/0005-core-and-instance-repositories.md).
+
+## Главная идея
+
+Внешние компоненты (UI, LLM-шлюз, IdP) не хранят ничего, что нельзя потерять при их замене.
+Всё ценное (история, аудит, права, бюджеты, конфигурация агентов) принадлежит **Platform API**
+и лежит в нашем PostgreSQL. Open WebUI и LiteLLM подключены через OpenAI-совместимый API
+и заменяются сменой адреса и адаптера, без миграции данных.
+
+Документ описывает ядро и стандартный профиль инсталляции. Конкретная инсталляция (Mtech, клиент)
+выбирает компоненты в своём репозитории (ADR-0005): например, адаптер Teams вместо Open WebUI.
+
+## Компоненты v1
+
+| Часть | Компонент | Роль | Граница (как заменить) |
+| --- | --- | --- | --- |
+| Вход | Reverse proxy (Caddy или Traefik, выбрать в PoC) | TLS, единая точка входа | HTTP |
+| Безопасность | Keycloak | OIDC-провайдер, федерация с Entra ID, token exchange | OIDC/OAuth2 |
+| Безопасность | Cerbos | Политики: кто может вызывать какой агент, инструмент, модель | `PolicyClient` |
+| Безопасность | OpenBao | Ключи провайдеров, секреты коннекторов | `SecretProvider`, Vault API |
+| Каналы | Open WebUI | Веб-чат, тонкий клиент | OpenAI-совместимый API к Platform API |
+| Каналы | OpenCode и др. coding-агенты | Работа разработчиков | OpenAI-совместимый API к LiteLLM, личный виртуальный ключ |
+| Ядро | Platform API (свой, FastAPI) | OpenAI-совместимый фасад (модели и агенты), история чатов, агентный рантайм, RAG, MCP-клиент, гардрейлы, аудит, управление ключами и бюджетами | Наш код |
+| Ядро | Pydantic AI + DBOS | Агенты и durable execution (ожидание подтверждений) | `AgentSpec`, `WorkflowEngine` |
+| Ядро | Docling + pgvector | Парсинг и векторный поиск для RAG | `DocumentParser`, `Retriever` |
+| Модели | LiteLLM | LLM-шлюз: маршрутизация, виртуальные ключи, бюджеты, учёт расходов | OpenAI-совместимый API + `GatewayAdmin` |
+| Модели | OpenRouter, OpenAI, Anthropic | Облачные модели | Через LiteLLM, логические имена моделей |
+| Инструменты | MCP-серверы M365 (почта, календарь, OneDrive) и Git | Плагины-инструменты | MCP |
+| Данные | PostgreSQL 18 + pgvector | Все прикладные данные, отдельная БД и роль на сервис | SQL |
+| Наблюдаемость | OTel Collector + VictoriaMetrics/Logs + Grafana | Метрики, логи, трейсы, алерты | OTLP |
+
+В v1 **нет**: отдельного MCP-шлюза (его роль выполняет MCP-клиент Platform API), локальных моделей
+(v2), MongoDB, Redis, Langfuse, Telegram и Slack (пилот).
+
+## Схема
+
+```mermaid
+flowchart LR
+  subgraph CH["Каналы"]
+    UI["Open WebUI"]
+    APIC["Клиенты API"]
+    CODE["Coding-агенты (OpenCode)"]
+  end
+
+  subgraph SEC["Безопасность"]
+    KC["Keycloak (OIDC)"]
+    ENTRA["Entra ID (внешний)"]
+    CERBOS["Cerbos (политики)"]
+    BAO["OpenBao (секреты)"]
+  end
+
+  subgraph CORE["Platform API (FastAPI)"]
+    FACADE["OpenAI-совместимый фасад: модели и агенты"]
+    GR["Гардрейлы: PII, injection"]
+    RT["Агентный рантайм: Pydantic AI + DBOS"]
+    RAG["RAG: Docling + pgvector"]
+    MCPC["MCP-клиент: права, подтверждения"]
+    AUD["Аудит и история"]
+  end
+
+  GW["LiteLLM (LLM-шлюз)"]
+
+  subgraph PROV["Облачные модели"]
+    OR["OpenRouter"]
+    OAI["OpenAI"]
+    ANT["Anthropic"]
+  end
+
+  subgraph MCPS["MCP-серверы (плагины)"]
+    M365["M365: почта, календарь, OneDrive"]
+    GIT["Git"]
+  end
+
+  GRAPH["Microsoft Graph"]
+  PG[("PostgreSQL 18 + pgvector")]
+  OBS["OTel: VictoriaMetrics, Logs, Grafana"]
+
+  UI -->|"вход OIDC"| KC
+  KC -.-|"федерация"| ENTRA
+  UI -->|"служебный ключ + id пользователя"| FACADE
+  APIC -->|"JWT"| FACADE
+  FACADE -->|"проверка прав"| CERBOS
+  FACADE --> GR --> RT
+  RT --> RAG
+  RT --> MCPC
+  MCPC -->|"проверка прав"| CERBOS
+  RT -->|"служебный ключ + id пользователя"| GW
+  CODE -->|"личный виртуальный ключ"| GW
+  GW --> OR
+  GW --> OAI
+  GW --> ANT
+  MCPC --> M365
+  MCPC --> GIT
+  M365 -->|"делегированный токен"| GRAPH
+  BAO -.->|"секреты"| GW
+  BAO -.->|"секреты"| MCPC
+  AUD --> PG
+  GW -->|"своя БД"| PG
+  UI -->|"своя БД"| PG
+  CORE -.->|"OTLP"| OBS
+  GW -.->|"OTLP"| OBS
+```
+
+## Путь запроса из веб-чата
+
+1. Пользователь входит в Open WebUI через Keycloak (федерация с Entra ID).
+2. Open WebUI отправляет запрос в OpenAI-совместимый фасад Platform API. Аутентификация клиента:
+   служебный ключ Open WebUI плюс заголовки с идентификатором пользователя, которые Platform API
+   принимает только от этого клиента и только из внутренней сети. Допущение: если выбранная версия
+   Open WebUI умеет пробрасывать OAuth-токен пользователя, используем токен вместо заголовков
+   (проверить в PoC). Прямые подключения из Open WebUI к провайдерам и к LiteLLM отключены.
+3. Platform API сопоставляет пользователя с учётной записью Keycloak и спрашивает Cerbos,
+   доступна ли ему выбранная модель или агент.
+4. Входные гардрейлы: маскирование PII, проверка на prompt injection.
+5. Обычный чат: запрос уходит в LiteLLM служебным ключом Platform API с идентификатором
+   пользователя для учёта расходов и бюджета. Агент: рантайм выполняет шаги, ищет в RAG,
+   вызывает инструменты.
+6. Вызов инструмента: проверка прав в Cerbos, затем MCP-сервер с правами пользователя.
+   Отправка письма, создание события, запись в Git ждут подтверждения человеком (DBOS хранит состояние).
+7. Выходные гардрейлы, ответ в UI. История, аудит и расходы записываются в PostgreSQL Platform API.
+
+Coding-агенты ходят в LiteLLM напрямую с личным виртуальным ключом, который выпускает Platform API
+(бюджет, разрешённые модели, отзыв при увольнении).
+
+## Границы замены
+
+| Граница | Контракт | v1 | Замена |
+| --- | --- | --- | --- |
+| UI ↔ платформа | OpenAI-совместимый API Platform API + OIDC | Open WebUI | LibreChat, свой UI |
+| Платформа ↔ LLM-шлюз | OpenAI-совместимый API; логические имена моделей (`chat-default`, `code-strong`) | LiteLLM | Bifrost, agentgateway |
+| Управление ключами и бюджетами | Адаптер `GatewayAdmin`: create_key, revoke_key, set_budget, get_spend | LiteLLM management API | Адаптер под новый шлюз |
+| Учёт расходов | Колбэк шлюза → таблица расходов Platform API | LiteLLM callback / OTel | Любой шлюз с OTel |
+| Аутентификация | OIDC/OAuth2, token exchange | Keycloak | Authentik, другой IdP |
+| Политики | `PolicyClient.check(subject, action, resource)` | Cerbos | OPA, OpenFGA |
+| Инструменты | MCP | Свои MCP-серверы | Любой MCP-сервер |
+| Агенты | `AgentSpec`, `run(ctx, input) -> stream` | Pydantic AI | LangGraph |
+| Процессы | `WorkflowEngine` | DBOS | Temporal |
+| Секреты | `SecretProvider` | OpenBao | Infisical, Vault |
+| Данные | SQL, отдельная БД на сервис | PostgreSQL 18 | Managed PostgreSQL |
+| Телеметрия | OTLP, семантика GenAI | VictoriaStack + Grafana | Любой OTLP-бэкенд |
+
+Правило: наш код не импортирует SDK LiteLLM, Open WebUI или других вендоров вне `adapters/`.
+Проверяется в CI.
+
+## Изменения относительно первого предложения (21.11.2026)
+
+- Чат-UI: Open WebUI вместо LibreChat (решение CTO; MongoDB больше не нужна).
+- LLM-шлюз: LiteLLM вместо agentgateway, с жёстким закреплением версий (ADR-0001, ADR-0004).
+- MCP-шлюз в v1 не выделяется: MCP-клиент в Platform API.
+- Локальные модели и Ollama перенесены в v2.
+- Расчётный размер организации: 500 пользователей.
+- Исходный обзор кандидатов: [research/2026-11-21-component-scan.md](../research/2026-11-21-component-scan.md).

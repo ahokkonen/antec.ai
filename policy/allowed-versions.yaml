@@ -1,0 +1,174 @@
+# Реестр разрешённых версий (allowlist) и запрещённых артефактов (denylist).
+#
+# Источник истины для docker-compose, Dockerfile и lock-файлов.
+# Правила работы с реестром: docs/adr/0004-dependency-pinning-and-supply-chain.md
+#
+# Поля:
+#   allowed       версии, разрешённые к развёртыванию (первая = текущая)
+#   candidate     следующая версия: проходит карантин и ревью, пока НЕ разрешена
+#   min_version   ниже этой версии запрещено (CVE, смена ключа подписи и т.п.)
+#   digest        sha256 индекса образа; заполняется при первом pull после
+#                 проверки подписи и denylist. null = ещё не зафиксирован,
+#                 развёртывание в prod запрещено, пока не заполнено
+#   denied        известные вредоносные или отозванные версии, теги, дайджесты
+#   floating_tags_forbidden  теги, которые нельзя использовать никогда
+#
+# Даты в ISO 8601. Каждое изменение файла только через PR с ревью.
+
+schema_version: 1
+reviewed_at: 2026-11-21
+quarantine_days: 7            # не-security релизы не ставим раньше, чем через 7 дней
+defaults:
+  floating_tags_forbidden: [latest, main, main-latest, main-stable, dev, nightly, edge]
+  prerelease_forbidden_in_prod: true   # rc, beta, alpha, dev
+
+components:
+
+  litellm:
+    role: llm-gateway
+    license: "MIT, кроме каталога enterprise/ (коммерческая лицензия)"
+    image: ghcr.io/berriai/litellm   # вариант образа (litellm / litellm-database / litellm-non_root) уточнить в PoC
+    allowed: ["1.108.7"]             # линия LTS 1.108; проверить release notes перед первым pull
+    image_tag: "v1.108.7"            # теги образов LiteLLM с префиксом v
+    candidate:
+      version: "1.110.0"             # stable от 2026-11-18, первая stable с keyless-подписью
+      not_before: 2026-11-25
+    min_version: "1.106.3"           # первая версия после октябрьского инцидента, подписана новым ключом
+    digest: null
+    signature:
+      method: "cosign: keyless (Sigstore) с 1.110.0; новый ключ для 1.103.8+, 1.104.6+, 1.105.4+, 1.106.3+"
+      note: "Валидная подпись НЕ доказывает чистоту: 1.107.0 подписан старым ключом. Всегда сверять digest с denylist."
+      howto: https://docs.litellm.ai/docs/proxy/docker_image_security
+    denied:
+      pypi: ["1.82.7", "1.82.8", "1.107.0"]
+      image_tags: ["v1.107.0"]
+      image_digests:
+        - "sha256:1bbcb1443bc962e45f5aad53fe3d2c30600e0379715fb6c664cdd3ac126c339e"  # индекс litellm v1.107.0
+      note: "21.10.2026 теги latest, main-latest, main-stable указывали на вредоносные образы litellm, litellm-database, litellm-non_root"
+    python_package_policy: "Пакет litellm не импортируется в наш код. Только HTTP к контейнеру."
+    advisories:
+      - id: GHSA-92x9-889m-jgmw / MAL-2026-2144
+        summary: "Компрометация релиза 1.107.0 (21.10.2026)"
+      - id: "март 2026"
+        summary: "Компрометация 1.82.7 и 1.82.8 через заражённый Trivy GitHub Action"
+      - id: GHSA-w4c7-34wj-hqm8
+        summary: "Чтение файлов без аутентификации, только для прокси с enterprise-лицензией; мы enterprise не используем"
+      - id: CVE-2026-114612
+        summary: "Эскалация прав администратора прокси; исправлено в 1.100.4, 1.101.3, 1.102.2, 1.103.1 и новее"
+    sources:
+      - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+      - https://www.mend.io/blog/litellm-1-107-0-compromised/
+      - https://snyk.io/articles/poisoned-security-scanner-backdooring-litellm
+      - https://privacysafe.app/docs/security-patches/litellm/
+
+  open-webui:
+    role: chat-ui
+    license: "Open WebUI License: BSD-3 + запрет менять брендинг при >50 пользователях за 30 дней (не OSI)"
+    image: ghcr.io/open-webui/open-webui   # без суффиксов :cuda / :ollama
+    allowed: ["v0.13.3"]           # от 2026-11-08
+    candidate:
+      version: "v0.13.4"           # от 2026-11-19: проверить release notes и GHSA
+      not_before: 2026-11-26
+    min_version: "v0.11.0"         # CVE-2026-70487 исправлена в v0.11.0; серия IDOR/доступа в 2026
+    digest: null
+    signature:
+      method: "не установлено; проверить, подписывает ли проект образы"
+    denied:
+      image_tags: []
+      image_digests: []
+    advisories:
+      - id: CVE-2026-70487
+        summary: "Раскрытие файлов других пользователей; исправлено в v0.11.0"
+      - id: CVE-2026-54012
+        summary: "Чтение и удаление файлов других пользователей через meta.knowledge; исправлено до v0.9.6"
+      - id: "CSA research note, 2026-07-10"
+        summary: "Не менее шести уязвимостей broken access control с ноября 2025 по июнь 2026"
+    sources:
+      - https://docs.openwebui.com/license/
+      - https://github.com/open-webui/open-webui/releases
+      - https://advisories.gitlab.com/pypi/open-webui/CVE-2026-70487/
+
+  postgresql:
+    role: datastore
+    license: PostgreSQL License
+    image: "собственная сборка от docker.io/library/postgres:18.7 + pgvector"
+    allowed: ["18.7"]              # от 2026-11-12
+    min_version: "18.7"            # 18.7 закрывает пакет security-исправлений
+    digest: null
+    sources:
+      - https://www.postgresql.org/docs/18/release-18-7.html
+
+  pgvector:
+    role: vector-extension
+    license: PostgreSQL License
+    allowed: ["0.8.7"]             # от 2026-10-05
+    min_version: "0.8.7"           # CVE-2026-103484 (IVFFlat, выполнение кода)
+    sources:
+      - https://www.postgresql.org/message-id/179116294741.1252.17308312335154774817%40wrigleys.postgresql.org
+
+  keycloak:
+    role: oidc-provider
+    license: Apache-2.0
+    image: quay.io/keycloak/keycloak
+    allowed: ["26.8.2"]            # от 2026-11-05
+    min_version: "26.8.2"          # в 26.8.1/26.8.2 закрыто более 10 CVE
+    digest: null
+    sources:
+      - https://www.keycloak.org/2026/11/keycloak-2682-released
+
+  openbao:
+    role: secrets
+    license: MPL-2.0
+    image: "уточнить официальный образ в PoC"
+    allowed: ["2.7.2"]
+    min_version: "2.7.2"
+    digest: null
+    sources:
+      - https://openbao.org/community/release-notes/2-6-0/
+
+  cerbos:
+    role: policy-decision-point
+    license: Apache-2.0
+    image: ghcr.io/cerbos/cerbos
+    allowed: []                    # зафиксировать в PoC: линия 0.56.x
+    digest: null
+    sources:
+      - https://www.cerbos.dev/blog
+
+  otel-collector:
+    role: telemetry-pipeline
+    license: Apache-2.0
+    allowed: []                    # зафиксировать в PoC
+    digest: null
+
+  victoria-metrics:
+    role: metrics
+    license: Apache-2.0
+    allowed: []                    # зафиксировать в PoC
+    digest: null
+
+  victoria-logs:
+    role: logs
+    license: Apache-2.0
+    allowed: []                    # зафиксировать в PoC
+    digest: null
+
+  grafana:
+    role: dashboards
+    license: "AGPL-3.0: только отдельный немодифицированный сервис (docs/security/licensing.md)"
+    allowed: []                    # зафиксировать в PoC
+    digest: null
+
+  reverse-proxy:
+    role: ingress
+    license: "выбрать Caddy или Traefik в PoC, проверить лицензию"
+    allowed: []
+    digest: null
+
+# Компонент с пустым allowed не может быть развёрнут.
+
+# Python-зависимости собственных сервисов фиксируются в uv.lock (с хэшами)
+# и устанавливаются только через `uv sync --locked`. Этот реестр задаёт для них
+# denylist и минимальные версии, uv.lock не дублирует.
+python_denylist:
+  litellm: ["1.82.7", "1.82.8", "1.107.0"]
