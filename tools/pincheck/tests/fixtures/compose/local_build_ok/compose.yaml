@@ -1,7 +1,13 @@
 services:
   db:
-    build: ./images/postgres
+    build: ./img
     image: localhost/antec/postgres:18.7-pgvector0.8.7
     pull_policy: build
+  worker:
+    build:
+      context: ./img
+      dockerfile: worker.Containerfile.txt
+    image: localhost/antec/worker:1.0.0
+    pull_policy: build
   plain:
-    build: .
+    build: ./img

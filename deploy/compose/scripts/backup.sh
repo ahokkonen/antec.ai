@@ -33,21 +33,26 @@ for db in "${DATABASES[@]}"; do
 done
 counts="${counts%,}}"
 
-BAO_TOKEN="$(kc_get "$KC_ROOT")"; export BAO_TOKEN
-[[ -n "$BAO_TOKEN" ]] || die "нет root token в Связке ключей"
+installation="$(current_installation)"
+[[ -n "$installation" ]] || die "не найдена текущая установка OpenBao в Связке ключей"
+BAO_TOKEN="$(kc_get "$(kc_root_name "$installation")")"; export BAO_TOKEN
+[[ -n "$BAO_TOKEN" ]] || die "нет root token установки $installation в Связке ключей"
+# Код ошибки save/cat сохраняется и возвращается после удаления временного файла.
 compose exec -T -e BAO_TOKEN openbao sh -c \
-  'umask 077; f="$(mktemp)"; bao operator raft snapshot save "$f" >/dev/null && cat "$f"; rm -f "$f"' \
-  > "$dir/openbao.snap"
+  'umask 077; f="$(mktemp)"; rc=0; { bao operator raft snapshot save "$f" >/dev/null && cat "$f"; } || rc=$?; rm -f "$f"; exit "$rc"' \
+  > "$dir/openbao.snap" || die "не удалось сохранить снапшот OpenBao; бэкап неполный: $dir"
 unset BAO_TOKEN
+[[ -s "$dir/openbao.snap" ]] || die "снапшот OpenBao пуст; бэкап неполный: $dir"
 log "  openbao: $(du -h "$dir/openbao.snap" | cut -f1)"
 
 pg_version="$(pg_exec psql -At -c 'show server_version')"
-python3 - "$dir" "$ts" "$canary" "$pg_version" "$counts" <<'PY'
+python3 - "$dir" "$ts" "$canary" "$pg_version" "$counts" "$installation" <<'PY'
 import hashlib, json, pathlib, sys
-d, ts, canary, pg_version, counts = sys.argv[1:]
+d, ts, canary, pg_version, counts, installation = sys.argv[1:]
 files = sorted(p for p in pathlib.Path(d).iterdir() if p.name != "manifest.json")
 manifest = {
     "created_at": ts,
+    "openbao_installation": installation,
     "postgres_version": pg_version,
     "canary": canary,
     "row_counts": json.loads(counts),

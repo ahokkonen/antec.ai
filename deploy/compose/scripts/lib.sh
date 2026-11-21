@@ -4,8 +4,13 @@ set -euo pipefail
 
 COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KEYCHAIN_ACCOUNT="antec-local"
-KC_UNSEAL="antec-local-openbao-unseal-key"
-KC_ROOT="antec-local-openbao-root-token"
+# Ключи OpenBao хранятся по идентификатору установки: после `down.sh --purge` и новой
+# установки ключи старой остаются в Связке ключей, и её бэкапы по-прежнему восстанавливаются.
+KC_INSTALLATION="antec-local-installation"     # идентификатор текущей установки
+KC_LEGACY_UNSEAL="antec-local-openbao-unseal-key"
+KC_LEGACY_ROOT="antec-local-openbao-root-token"
+kc_unseal_name() { echo "antec-local-openbao-unseal-key-$1"; }
+kc_root_name() { echo "antec-local-openbao-root-token-$1"; }
 
 compose() {
   docker compose --project-directory "$COMPOSE_DIR" -f "$COMPOSE_DIR/compose.yaml" "$@"
@@ -33,6 +38,22 @@ kc_set() {
 
 kc_delete() {
   security delete-generic-password -a "$KEYCHAIN_ACCOUNT" -s "$1" >/dev/null 2>&1 || true
+}
+
+# Идентификатор текущей установки. Записи прежнего формата (без идентификатора)
+# переносятся под новый идентификатор один раз.
+current_installation() {
+  local id; id="$(kc_get "$KC_INSTALLATION")"
+  if [[ -z "$id" && -n "$(kc_get "$KC_LEGACY_UNSEAL")" ]]; then
+    id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+    kc_set "$(kc_unseal_name "$id")" "$(kc_get "$KC_LEGACY_UNSEAL")"
+    kc_set "$(kc_root_name "$id")" "$(kc_get "$KC_LEGACY_ROOT")"
+    kc_set "$KC_INSTALLATION" "$id"
+    kc_delete "$KC_LEGACY_UNSEAL"
+    kc_delete "$KC_LEGACY_ROOT"
+    log "ключи OpenBao перенесены в формат с идентификатором установки ($id)"
+  fi
+  echo "$id"
 }
 
 # Команда bao внутри контейнера openbao. Токен (если нужен) передаётся через окружение

@@ -1,12 +1,32 @@
 services:
   a:
-    build: .
+    build: ./img
     image: ghcr.io/berriai/litellm:v1.108.7
+    pull_policy: build
   b:
-    build: .
-    image: localhost/antec/x:latest
+    build: ./img
+    image: localhost/antec/x:main
+    pull_policy: build
   c:
-    build: .
+    build: ./img
     image: localhost/antec/x:1.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    pull_policy: build
   d:
     image: localhost/antec/x:1.0
+  e:
+    build: ./img
+    image: localhost/antec/x:1.0-rc1
+    pull_policy: build
+  f:
+    build: ./img
+    image: localhost/antec/x:1.0
+  g:
+    build:
+      context: ./bad
+      dockerfile: Dockerfile.custom
+    image: localhost/antec/x:1.0
+    pull_policy: build
+  h:
+    build: https://github.com/example/repo.git
+    image: localhost/antec/x:1.0
+    pull_policy: build

@@ -2,7 +2,8 @@
 # Проверка восстановления: разворачивает бэкап в одноразовых изолированных контейнерах
 # (--network none) и сверяет с манифестом: контрольные суммы файлов, состав и число строк
 # таблиц, канарейку, расширение vector; Raft-снапшот OpenBao восстанавливается и
-# распечатывается исходным ключом, секреты antec/postgres читаются. Рабочий стенд не затрагивается.
+# распечатывается ключом установки из манифеста; ролям назначаются пароли из восстановленного
+# OpenBao, и каждая роль входит в свою БД по SCRAM. Рабочий стенд не затрагивается.
 # Использование: restore-verify.sh [каталог бэкапа]  (по умолчанию последний)
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -29,11 +30,17 @@ name="antec-restore-verify-$$"
 bao_name="antec-restore-verify-bao-$$"
 cleanup() { docker rm -f "$name" "$bao_name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
-# Изолированный одноразовый кластер: без сети, вход только через локальный сокет.
+# Изолированный одноразовый кластер: без сети. Те же правила аутентификации, что на стенде:
+# SCRAM для TCP, peer для сокета. Пароль суперпользователя случайный и нигде не хранится;
+# передаётся через окружение docker CLI, не через argv.
+POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export POSTGRES_PASSWORD
 docker run -d --name "$name" --network none \
-  -e POSTGRES_HOST_AUTH_METHOD=trust \
+  -e POSTGRES_PASSWORD \
+  -e POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256 --auth-local=peer" \
   --security-opt no-new-privileges:true \
   "$POSTGRES_IMAGE" >/dev/null
+unset POSTGRES_PASSWORD
 rx() { docker exec -i -u postgres "$name" "$@"; }
 
 for _ in $(seq 1 60); do
@@ -84,6 +91,13 @@ log "  таблицы и число строк: ок; канарейка: ок; 
 
 # --- OpenBao: восстановление Raft-снапшота в одноразовый узел ---
 require_macos_keychain
+# Ключи той установки, которая сделала бэкап (manifest.json), а не текущей.
+installation="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("openbao_installation", ""))' "$dir/manifest.json")"
+[[ -n "$installation" ]] || installation="$(current_installation)"
+unseal_key_name="$(kc_unseal_name "$installation")"
+root_token_name="$(kc_root_name "$installation")"
+[[ -n "$(kc_get "$unseal_key_name")" ]] \
+  || die "в Связке ключей нет ключа установки $installation: снапшот OpenBao этого бэкапа не восстановить"
 bao_image="$(compose config --images | grep openbao | head -1)"
 docker run -d --name "$bao_name" --network none \
   --security-opt no-new-privileges:true \
@@ -113,13 +127,33 @@ for _ in $(seq 1 30); do
   [[ "$rc" == "2" ]] && break
   sleep 1
 done
-kc_get "$KC_UNSEAL" | tr -d '\n' | bx bao write sys/unseal key=- >/dev/null \
+kc_get "$unseal_key_name" | tr -d '\n' | bx bao write sys/unseal key=- >/dev/null \
   || die "снапшот OpenBao не распечатывается исходным ключом"
-BAO_TOKEN="$(kc_get "$KC_ROOT")"; export BAO_TOKEN
-keys="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN "$bao_name" \
-  bao kv get -mount=antec -format=json postgres \
-  | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["data"]))')"
+BAO_TOKEN="$(kc_get "$root_token_name")"; export BAO_TOKEN
+secrets_json="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN "$bao_name" \
+  bao kv get -mount=antec -format=json postgres)"
 unset BAO_TOKEN
+keys="$(printf '%s' "$secrets_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["data"]))')"
 [[ "$keys" == "6" ]] || die "в восстановленном OpenBao неполные секреты antec/postgres ($keys из 6)"
-log "  OpenBao: снапшот восстановлен, распечатан исходным ключом, antec/postgres: $keys ключей"
+log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей"
+
+# --- Роли: пароли из восстановленного OpenBao и вход каждой роли в свою БД по SCRAM ---
+# Бэкап ролей снят без паролей; источник истины паролей OpenBao. SQL с паролями идёт через stdin.
+printf '%s' "$secrets_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)["data"]["data"]
+for role in sys.argv[1:]:
+    pw = data[role].replace("\x27", "\x27\x27")
+    print(f"ALTER ROLE \"{role}\" PASSWORD \x27{pw}\x27;")
+' "${DATABASES[@]}" | rx psql -q -v ON_ERROR_STOP=1 -d postgres >/dev/null
+for db in "${DATABASES[@]}"; do
+  PGPASSWORD="$(printf '%s' "$secrets_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["data"][sys.argv[1]])' "$db")"
+  export PGPASSWORD
+  who="$(docker exec -i -e PGPASSWORD "$name" psql -h 127.0.0.1 -U "$db" -d "$db" -At -c 'select system_user' 2>&1)" \
+    || die "роль $db не входит в восстановленную БД $db: $who"
+  unset PGPASSWORD
+  [[ "$who" == "scram-sha-256:$db" ]] || die "роль $db вошла не по SCRAM: $who"
+done
+unset secrets_json
+log "  роли: пароли из OpenBao назначены, вход по SCRAM в свою БД: ок (${DATABASES[*]})"
 log "восстановление проверено: $dir"
