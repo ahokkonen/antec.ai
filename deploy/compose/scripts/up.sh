@@ -130,6 +130,8 @@ litellm_provision_inputs \
 
 log "запуск Open WebUI (миграции БД при первом запуске)"
 start_service open-webui
+log "сверка аккаунтов Open WebUI с Keycloak"
+sync_open_webui_identities
 unset BAO_TOKEN
 log "стенд запущен: $(compose ps --format '{{.Service}}={{.State}}' | tr '\n' ' ')"
 log "Keycloak: http://localhost:8080/realms/antec/account (администрирование: http://localhost:8080/admin)"
