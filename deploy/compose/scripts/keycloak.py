@@ -442,9 +442,9 @@ def _browser_login(open_browser: bool) -> str:
     print(f"Откройте для входа: {url}", file=sys.stderr, flush=True)
     if open_browser:
         webbrowser.open(url)
-    if not done.wait(timeout=300):
+    if not done.wait(timeout=900):
         server.shutdown()
-        raise KeycloakError("вход не завершён за 5 минут")
+        raise KeycloakError("вход не завершён за 15 минут")
     server.shutdown()
     if "code" not in result:
         raise KeycloakError(f"вход не удался: {result.get('error')}")
