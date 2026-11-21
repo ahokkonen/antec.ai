@@ -4,6 +4,7 @@
 - Дата: 2026-11-21
 - Ответственный: CTO
 - Связанные: ADR-0004, [architecture/overview.md](../architecture/overview.md)
+- Уточнено в [ADR-0018](0018-litellm-on-base-layer.md) (версия 1.108.8, секреты без Vault, итоги PoC)
 
 ## Контекст
 

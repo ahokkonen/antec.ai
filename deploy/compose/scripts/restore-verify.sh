@@ -132,30 +132,42 @@ kc_get "$unseal_key_name" | tr -d '\n' | bx bao write sys/unseal key=- >/dev/nul
 BAO_TOKEN="$(kc_get "$root_token_name")"; export BAO_TOKEN
 secrets_json="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN "$bao_name" \
   bao kv get -mount=antec -format=json postgres)"
-# Секреты Keycloak (ADR-0007); в бэкапах до появления Keycloak их нет.
-kc_keys="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN "$bao_name" \
-  bao kv get -mount=antec -format=json keycloak 2>/dev/null \
-  | python3 -c '
+# Секреты сервисов в восстановленном OpenBao. В бэкапах до появления сервиса их нет; это
+# допустимо только при пустой БД сервиса в бэкапе: иначе восстановленные данные недоступны
+# (Keycloak: bootstrap-клиент удалён; LiteLLM: без salt key не расшифровать учётные данные в БД).
+# Печатает «ok», «нет» или «неполные: ...».
+service_secrets() { # путь ключ...
+  local path="$1"; shift
+  docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN "$bao_name" \
+    bao kv get -mount=antec -format=json "$path" 2>/dev/null \
+    | python3 -c '
 import json, sys
-need = {"db_password", "bootstrap_client_secret", "automation_client_secret", "admin_password",
-        "breakglass_password", "platform_api_client_secret", "open_webui_client_secret"}
+need = set(sys.argv[1:])
 have = {k for k, v in json.load(sys.stdin)["data"]["data"].items() if v}
-print("ok" if need <= have else "неполные: нет " + ", ".join(sorted(need - have)))' 2>/dev/null \
-  || echo "нет")"
+print("ok" if need <= have else "неполные: нет " + ", ".join(sorted(need - have)))' "$@" 2>/dev/null \
+    || echo "нет"
+}
+kc_keys="$(service_secrets keycloak db_password bootstrap_client_secret automation_client_secret \
+  admin_password breakglass_password platform_api_client_secret open_webui_client_secret)"
+llm_keys="$(service_secrets litellm db_password master_key salt_key)"
 unset BAO_TOKEN
 keys="$(printf '%s' "$secrets_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["data"]))')"
 [[ "$keys" == "6" ]] || die "в восстановленном OpenBao неполные секреты antec/postgres ($keys из 6)"
-# Без antec/keycloak допустим только бэкап с пустой БД keycloak (сделан до Keycloak): иначе
-# восстановленный realm master недоступен автоматизации (bootstrap-клиент уже удалён).
-kc_db_rows="$(python3 -c '
+db_rows() { # БД
+  python3 -c '
 import json, sys
-counts = json.load(open(sys.argv[1]))["row_counts"].get("keycloak") or {}
-print(sum(counts.values()))' "$dir/manifest.json")"
-if [[ "$kc_keys" == "нет" && "$kc_db_rows" != "0" ]]; then
-  die "в бэкапе БД keycloak не пуста ($kc_db_rows строк), а в OpenBao нет antec/keycloak"
-fi
-[[ "$kc_keys" == "ok" || "$kc_keys" == "нет" ]] || die "в восстановленном OpenBao antec/keycloak $kc_keys"
-log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей, antec/keycloak: $kc_keys"
+counts = json.load(open(sys.argv[1]))["row_counts"].get(sys.argv[2]) or {}
+print(sum(counts.values()))' "$dir/manifest.json" "$1"
+}
+for pair in "keycloak:$kc_keys" "litellm:$llm_keys"; do
+  svc="${pair%%:*}"; state="${pair#*:}"
+  rows="$(db_rows "$svc")"
+  if [[ "$state" == "нет" && "$rows" != "0" ]]; then
+    die "в бэкапе БД $svc не пуста ($rows строк), а в OpenBao нет antec/$svc"
+  fi
+  [[ "$state" == "ok" || "$state" == "нет" ]] || die "в восстановленном OpenBao antec/$svc $state"
+done
+log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей, antec/keycloak: $kc_keys, antec/litellm: $llm_keys"
 
 # --- Роли: пароли из восстановленного OpenBao и вход каждой роли в свою БД по SCRAM ---
 # Бэкап ролей снят без паролей; источник истины паролей OpenBao. SQL с паролями идёт через stdin.

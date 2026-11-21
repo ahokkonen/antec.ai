@@ -79,6 +79,20 @@ wait_for_openbao_process() {
   die "OpenBao не отвечает; смотрите: docker compose logs openbao"
 }
 
+# После распечатывания узел Raft становится активным не мгновенно: до этого чтения KV могут
+# падать. Ждём, пока узел сам станет лидером (sys/leader, без токена).
+wait_for_openbao_active() {
+  local i
+  for i in $(seq 1 30); do
+    if compose exec -T openbao bao read -format=json sys/leader 2>/dev/null \
+        | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["data"].get("is_self") else 1)' 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  die "OpenBao распечатан, но не стал активным узлом за 30 с; смотрите: docker compose logs openbao"
+}
+
 json_field() {
   python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
 }
@@ -117,6 +131,37 @@ bao_kv_json() {
     die "не удалось прочитать antec/$1 из OpenBao (код $rc)"
   fi
   rm -f "$err"
+}
+
+# Дополняет запись antec/<путь> недостающими случайными ключами; существующие не меняет.
+# Аргументы: путь и ключи; ключ вида имя:префикс получает значение с этим префиксом.
+# Значения создаются в python3 на хосте и идут в OpenBao только через stdin. Нужен BAO_TOKEN.
+ensure_generated_secrets() {
+  local path="$1"; shift
+  local existing missing
+  existing="$(bao_kv_json "$path")"
+  missing="$(printf '%s' "$existing" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin) or {}
+have = ((doc.get("data") or {}).get("data") or {})
+print(" ".join(spec for spec in sys.argv[1:] if not have.get(spec.split(":", 1)[0])))' "$@")"
+  [[ -n "$missing" ]] || return 0
+  log "генерация секретов в OpenBao (antec/$path): $(printf '%s' "$missing" | sed 's/:[^ ]*//g')"
+  printf '%s' "$existing" | python3 -c '
+import json, secrets, sys
+doc = json.load(sys.stdin) or {}
+data = dict(((doc.get("data") or {}).get("data") or {}))
+for spec in sys.argv[1:]:
+    name, _, prefix = spec.partition(":")
+    data[name] = prefix + secrets.token_urlsafe(32)
+print(json.dumps(data))' $missing \
+    | compose exec -T -e BAO_TOKEN openbao bao kv put -mount=antec "$path" - >/dev/null
+}
+
+# Копирует пароль роли PostgreSQL из antec/postgres в antec/<путь>:db_password (через stdin).
+copy_db_password() { # роль путь
+  bao_exec kv get -mount=antec -field="$1" postgres \
+    | compose exec -T -e BAO_TOKEN openbao bao kv patch -mount=antec "$2" db_password=- >/dev/null
 }
 
 # Входные данные scripts/keycloak.py (JSON на stdout): секреты antec/keycloak и, если задан,

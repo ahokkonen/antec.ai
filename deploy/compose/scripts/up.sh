@@ -43,6 +43,7 @@ if [[ "$(bao_status_code)" == "2" ]]; then
     | compose exec -T openbao bao write sys/unseal key=- >/dev/null
 fi
 [[ "$(bao_status_code)" == "0" ]] || die "OpenBao остался запечатан"
+wait_for_openbao_active
 
 BAO_TOKEN="$(kc_get "$(kc_root_name "$installation")")"
 [[ -n "$BAO_TOKEN" ]] || die "нет root token в Связке ключей"
@@ -53,7 +54,7 @@ if ! bao_exec secrets list -format=json | python3 -c 'import json,sys; sys.exit(
   bao_exec secrets enable -path=antec -version=2 kv >/dev/null
 fi
 
-for policy in render-postgres render-keycloak; do
+for policy in render-postgres render-keycloak render-litellm; do
   compose exec -T -e BAO_TOKEN openbao bao policy write "$policy" - \
     < "$COMPOSE_DIR/openbao/policies/$policy.hcl" >/dev/null
 done
@@ -67,31 +68,16 @@ print(json.dumps({k: secrets.token_urlsafe(32) for k in keys}))
 PY
 fi
 
-# Секреты Keycloak (ADR-0007). Недостающие ключи дополняются, существующие не меняются.
-# Генерация только при подтверждённом отсутствии ключей; ошибка чтения прерывает запуск.
-existing="$(bao_kv_json keycloak)"
-if ! printf '%s' "$existing" | python3 -c '
-import json, sys
-need = {"bootstrap_client_secret", "automation_client_secret", "admin_password",
-        "breakglass_password", "platform_api_client_secret", "open_webui_client_secret"}
-doc = json.load(sys.stdin) or {}
-have = set(((doc.get("data") or {}).get("data") or {}).keys())
-sys.exit(0 if need <= have else 1)'; then
-  log "генерация секретов Keycloak в OpenBao (antec/keycloak)"
-  printf '%s' "$existing" | python3 -c '
-import json, secrets, sys
-doc = json.load(sys.stdin) or {}
-data = dict(((doc.get("data") or {}).get("data") or {}))
-for k in ("bootstrap_client_secret", "automation_client_secret", "admin_password",
-          "breakglass_password", "platform_api_client_secret", "open_webui_client_secret"):
-    data.setdefault(k, secrets.token_urlsafe(32))
-print(json.dumps(data))' | compose exec -T -e BAO_TOKEN openbao bao kv put -mount=antec keycloak - >/dev/null
-fi
-unset existing
-# Пароль роли keycloak копируется из antec/postgres, чтобы токен выгрузки Keycloak
-# не имел доступа к паролям других ролей.
-bao_exec kv get -mount=antec -field=keycloak postgres \
-  | compose exec -T -e BAO_TOKEN openbao bao kv patch -mount=antec keycloak db_password=- >/dev/null
+# Секреты сервисов в OpenBao. Недостающие ключи дополняются, существующие не меняются;
+# ошибка чтения прерывает запуск (bao_kv_json). Пароль роли БД копируется из antec/postgres,
+# чтобы токен выгрузки сервиса не имел доступа к паролям других ролей.
+ensure_generated_secrets keycloak bootstrap_client_secret automation_client_secret \
+  admin_password breakglass_password platform_api_client_secret open_webui_client_secret
+copy_db_password keycloak keycloak
+# LiteLLM (ADR-0018): мастер-ключ с префиксом sk- (формат ключей LiteLLM); salt key шифрует
+# учётные данные в БД LiteLLM и не должен меняться после первого запуска.
+ensure_generated_secrets litellm master_key:sk- salt_key
+copy_db_password litellm litellm
 
 # Короткоживущие токены только для secrets-render, передаются через stdin.
 render() { # цель
@@ -102,6 +88,7 @@ render() { # цель
 }
 render postgres
 render keycloak
+render litellm
 
 log "сборка и запуск PostgreSQL"
 compose up -d --build --wait postgres
@@ -110,6 +97,9 @@ compose up -d --build --wait keycloak
 
 log "настройка Keycloak: master, realm antec, брокер Entra"
 keycloak_inputs | python3 "$COMPOSE_DIR/scripts/keycloak.py" apply $recreate_realm
+
+log "запуск LiteLLM (миграции БД при первом запуске, около минуты)"
+compose up -d --wait litellm
 unset BAO_TOKEN
 log "стенд запущен: $(compose ps --format '{{.Service}}={{.State}}' | tr '\n' ' ')"
 log "Keycloak: http://localhost:8080/realms/antec/account (администрирование: http://localhost:8080/admin)"

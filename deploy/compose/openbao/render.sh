@@ -2,6 +2,7 @@
 # Одноразовая выгрузка секретов из OpenBao в том сервиса (ADR-0017, ADR-0007).
 #   render.sh postgres   пароли ролей PostgreSQL в /out/postgres (uid 999)
 #   render.sh keycloak   keycloak.conf и vault-файлы realm в /out/keycloak (uid 1000)
+#   render.sh litellm    файлы-переменные окружения LiteLLM в /out/litellm (uid 65534)
 # Токен приходит через stdin (`compose run -T`), живёт 5 минут и умеет читать только
 # пути своей цели. Значения не печатаются и не попадают в argv и окружение контейнера.
 set -eu
@@ -77,8 +78,48 @@ case "$target" in
     # Пользователь keycloak в официальном образе: uid 1000, группа root (gid 0).
     owner=1000:0
     ;;
+  litellm)
+    # Имя файла = имя переменной окружения; litellm/entrypoint.sh переносит их в окружение
+    # процесса LiteLLM (ADR-0018). Сначала все чтения, потом замена итоговых файлов.
+    out=/out/litellm
+    trap 'rm -f "$out"/.*.new "$out"/.*.err' EXIT
+    fetch litellm master_key "$out/.LITELLM_MASTER_KEY.new"
+    fetch litellm salt_key "$out/.LITELLM_SALT_KEY.new"
+    fetch litellm db_password "$out/.db.new"
+    # Пароль сгенерирован как token_urlsafe: в URL экранирование не нужно.
+    printf 'postgresql://litellm:%s@postgres:5432/litellm' "$(cat "$out/.db.new")" > "$out/.DATABASE_URL.new"
+    rm -f "$out/.db.new"
+    # Ключи провайдеров необязательны (scripts/set-llm-key.sh): отсутствие записи или поля
+    # означает «провайдер не настроен», любая другая ошибка чтения прерывает выгрузку.
+    providers=""
+    for pair in anthropic_api_key:ANTHROPIC_API_KEY openai_api_key:OPENAI_API_KEY openrouter_api_key:OPENROUTER_API_KEY; do
+      field="${pair%%:*}"; var="${pair##*:}"
+      if bao kv get -mount=antec -field="$field" llm-providers > "$out/.$var.new" 2> "$out/.$var.err" \
+          && [ -s "$out/.$var.new" ]; then
+        providers="$providers $var"
+      elif grep -q -e "^No value found at " -e "not present in" "$out/.$var.err"; then
+        rm -f "$out/.$var.new"
+      else
+        cat "$out/.$var.err" >&2
+        echo "render: не удалось прочитать antec/llm-providers:$field; прежние секреты LiteLLM сохранены" >&2
+        exit 1
+      fi
+    done
+    for var in LITELLM_MASTER_KEY LITELLM_SALT_KEY DATABASE_URL; do
+      mv -f "$out/.$var.new" "$out/$var"
+    done
+    for var in ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY; do
+      case " $providers " in
+        *" $var "*) mv -f "$out/.$var.new" "$out/$var" ;;
+        *) rm -f "$out/$var" ;;
+      esac
+    done
+    [ -n "$providers" ] || echo "render: ключи провайдеров не заданы (scripts/set-llm-key.sh): модели недоступны" >&2
+    # Пользователь образа litellm-non_root: nobody (uid/gid 65534).
+    owner=65534:65534
+    ;;
   *)
-    echo "render: использование: render.sh postgres|keycloak" >&2
+    echo "render: использование: render.sh postgres|keycloak|litellm" >&2
     exit 2
     ;;
 esac

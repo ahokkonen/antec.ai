@@ -2,13 +2,15 @@
 
 Локальный стенд antec.ai на Docker (Mac): базовый слой OpenBao 2.7.2 и PostgreSQL 18.7 с
 pgvector 0.8.7 ([ADR-0017](../../docs/adr/0017-base-layer-openbao-postgres.md)) и Keycloak 26.8.2
-с брокером Entra ID ([ADR-0007](../../docs/adr/0007-idp-and-agent-delegation.md)). Образы только по
+с брокером Entra ID ([ADR-0007](../../docs/adr/0007-idp-and-agent-delegation.md)), LLM-шлюз LiteLLM
+1.108.8 ([ADR-0018](../../docs/adr/0018-litellm-on-base-layer.md)). Образы только по
 digest из [`policy/allowed-versions.yaml`](../../policy/allowed-versions.yaml) (ADR-0004).
 
 ## Требования
 
 - macOS с Docker Desktop (Compose v2 или новее); скрипты используют Связку ключей (`security`) и `python3`.
-- Около 3 GB свободной памяти в VM Docker (OpenBao 256 MB, PostgreSQL 1 GB, Keycloak 1,5 GB).
+- Около 4,5 GB свободной памяти в VM Docker (OpenBao 256 MB, PostgreSQL 1 GB, Keycloak 1,5 GB,
+  LiteLLM 1,5 GB).
 - Свободный порт `127.0.0.1:8080` (Keycloak).
 
 ## Команды
@@ -66,6 +68,22 @@ deploy/compose/scripts/down.sh
 bash -c 'source deploy/compose/scripts/lib.sh && export BAO_TOKEN="$(kc_get "$(kc_root_name "$(current_installation)")")" && keycloak_inputs | python3 deploy/compose/scripts/keycloak.py smoke'
 ```
 
+```bash
+deploy/compose/scripts/set-llm-key.sh anthropic
+```
+
+Сохраняет ключ API провайдера (`anthropic`, `openai` или `openrouter`) в OpenBao
+(`antec/llm-providers`, ввод без эха) и перезапускает LiteLLM. У провайдера должен стоять лимит
+расходов. Без ключа LiteLLM запускается, но модели не отвечают.
+
+```bash
+deploy/compose/scripts/litellm-smoke.sh
+```
+
+Проверка LiteLLM изнутри контейнера: модели, виртуальный ключ с бюджетом и списком моделей,
+бюджет конечного пользователя, учёт расходов, отзыв ключа. Вызовы `chat-fast` стоят доли цента.
+Код выхода 2: ключ провайдера не задан, вызовы моделей пропущены.
+
 Подключиться к PostgreSQL:
 
 ```bash
@@ -80,9 +98,10 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 | `secrets-render` | Одноразовая выгрузка секретов из OpenBao в тома `postgres-secrets` и `keycloak-secrets` (профиль `bootstrap`) | `secrets` | |
 | `postgres` | `localhost/antec/postgres:18.7-pgvector0.8.7`, БД `keycloak`, `litellm`, `openwebui`, `platform`, `dbos` | `data` (internal) | 1 GB |
 | `keycloak` | `localhost/antec/keycloak:26.8.2`, realm `antec`, брокер `entra`; `http://localhost:8080` | `data`, `egress` | 1,5 GB |
+| `litellm` | `litellm-non_root:v1.108.8`, модели `chat-default` (Claude Opus 5.5), `chat-fast` (Claude Haiku 5.5); порт 4000 только внутри | `data`, `llm` (internal), `llm-egress` | 1,5 GB |
 
 Наружу опубликован только порт Keycloak `127.0.0.1:8080`. Выход в интернет есть только у Keycloak
-(сеть `egress`, вход через Entra). Секретов нет в репозитории, на диске хоста, в окружении и argv
+(сеть `egress`, вход через Entra) и LiteLLM (сеть `llm-egress`, API провайдеров). Секретов нет в репозитории, на диске хоста, в окружении и argv
 контейнеров.
 
 ## Keycloak
@@ -113,6 +132,8 @@ client secret со сроком не больше 180 дней, «Assignment req
 ## Ограничения локального стенда
 
 - TLS OpenBao выключен, одна доля ключа распечатывания. На сервере так нельзя (ADR-0017).
+- LiteLLM: секреты в окружении процесса (Vault в LiteLLM платный), выход в интернет не ограничен
+  доменами провайдеров, админка выключена (ADR-0018).
 - Keycloak по HTTP на localhost; Admin API на том же адресе, что и вход. На сервере TLS через
   reverse proxy и отдельный адрес админ-консоли (ADR-0007).
 - Логический бэкап без PITR.

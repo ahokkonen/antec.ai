@@ -19,6 +19,7 @@
 | [0016](0016-pincheck.md) | pincheck: CI-проверка реестра версий и уточнения ADR-0004 | предложено | 2026-11-21 |
 | [0017](0017-base-layer-openbao-postgres.md) | Базовый слой: OpenBao, PostgreSQL, бутстрап секретов и локальный стенд | предложено | 2026-11-21 |
 | [0007](0007-idp-and-agent-delegation.md) | IdP и делегирование прав агенту: Keycloak с брокером Entra ID, token exchange V2, доступ к Graph | предложено | 2026-11-21 |
+| [0018](0018-litellm-on-base-layer.md) | LiteLLM на стенде: версия, секреты без Vault, сеть, бюджеты (уточнение ADR-0001) | предложено | 2026-11-21 |
 
 ## Очередь
 
