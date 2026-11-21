@@ -4,6 +4,7 @@
 - Дата: 2026-11-21
 - Ответственный: CTO
 - Связанные: ADR-0001, ADR-0002, [policy/allowed-versions.yaml](../../policy/allowed-versions.yaml)
+- Уточнено в [ADR-0016](0016-pincheck.md)
 
 ## Контекст
 

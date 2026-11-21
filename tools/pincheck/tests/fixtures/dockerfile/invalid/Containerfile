@@ -1,0 +1,4 @@
+ARG TAG=26.8.2
+FROM quay.io/keycloak/keycloak:${TAG}
+FROM ghcr.io/berriai/litellm:main-stable
+FROM quay.io/keycloak/keycloak:26.8.2

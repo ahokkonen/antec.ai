@@ -1,0 +1,3 @@
+services:
+  svc:
+    image: ghcr.io/berriai/litellm:latest

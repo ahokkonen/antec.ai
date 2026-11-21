@@ -1,0 +1,7 @@
+# Явный image переопределяет унаследованный: проверяется только действующий.
+x-base: &base
+  image: ghcr.io/berriai/litellm:latest
+services:
+  keycloak:
+    <<: *base
+    image: quay.io/keycloak/keycloak:26.8.2@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

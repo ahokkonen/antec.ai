@@ -1,0 +1,11 @@
+name: test
+x-common: &common
+  restart: unless-stopped
+services:
+  keycloak:
+    <<: *common
+    image: "quay.io/keycloak/keycloak:26.8.2@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  platform-api:
+    build: .
+  litellm:
+    image: ghcr.io/berriai/litellm:latest

@@ -1,0 +1,7 @@
+# Унаследованный пустой services не должен скрыть явный.
+x-root: &root
+  services: {}
+<<: *root
+services:
+  cache:
+    image: redis:latest

@@ -1,0 +1,73 @@
+# Проверка закрепления версий (ADR-0004, ADR-0016).
+# Actions закреплены по полному SHA коммита; версия в комментарии. SHA проверены
+# через GitHub API (`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`) 2026-11-21.
+name: pincheck
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: pincheck-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # uv 0.13.8 от 2026-11-12 (вне карантина 7 дней). checksum: sha256 архива
+  # uv-x86_64-unknown-linux-gnu.tar.gz из релиза https://github.com/astral-sh/uv/releases/tag/0.13.8
+  UV_VERSION: "0.13.8"
+  UV_CHECKSUM: "5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91"
+
+jobs:
+  test:
+    name: "pincheck: ruff, mypy, pytest (Python ${{ matrix.python }})"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: tools/pincheck
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          checksum: ${{ env.UV_CHECKSUM }}
+          python-version: ${{ matrix.python }}
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run --locked ruff format --check .
+      - run: uv run --locked ruff check --output-format=github .
+      - run: uv run --locked mypy
+      - run: uv run --locked pytest
+
+  policy:
+    name: "pincheck: реестр, compose, Dockerfile, uv.lock"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          checksum: ${{ env.UV_CHECKSUM }}
+          enable-cache: false
+      - name: pincheck
+        run: >-
+          uv run --project tools/pincheck --locked
+          pincheck --policy policy/allowed-versions.yaml
+          --exclude tools/pincheck/tests/fixtures
+          .

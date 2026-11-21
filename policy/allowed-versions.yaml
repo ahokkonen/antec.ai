@@ -4,14 +4,27 @@
 # Правила работы с реестром: docs/adr/0004-dependency-pinning-and-supply-chain.md
 #
 # Поля:
-#   allowed       версии, разрешённые к развёртыванию (первая = текущая)
+#   allowed       версии, разрешённые к развёртыванию (первая = текущая), без префикса:
+#                 только числа через точку, например "1.108.7"
+#   image_tag_prefix  префикс тега образа перед версией (например "v": тег v1.108.7)
 #   candidate     следующая версия: проходит карантин и ревью, пока НЕ разрешена
 #   min_version   ниже этой версии запрещено (CVE, смена ключа подписи и т.п.)
-#   digest        sha256 индекса образа; заполняется при первом pull после
-#                 проверки подписи и denylist. null = ещё не зафиксирован,
-#                 развёртывание в prod запрещено, пока не заполнено
-#   denied        известные вредоносные или отозванные версии, теги, дайджесты
+#   image         репозиторий образа без тега и digest; null, если образа нет
+#                 или он ещё не выбран (тогда пояснение в note)
+#   digest        sha256 индекса образа для первой версии из allowed; заполняется
+#                 при первом pull после проверки подписи и denylist. null = ещё не
+#                 зафиксирован: pincheck выдаёт предупреждение, а с --require-digest
+#                 (prod, репозитории инсталляций) ошибку (ADR-0016)
+#   denied        известные вредоносные или отозванные версии, теги, дайджесты.
+#                 Каждая запись image_digests / image_digest_prefixes содержит
+#                 source (https), confidence (multi-source | single-source) и,
+#                 для multi-source, corroborated_by. image_digest_prefixes: усечённые
+#                 digest не короче 12 hex-символов, сверка по префиксу.
 #   floating_tags_forbidden  теги, которые нельзя использовать никогда
+#   prerelease_forbidden     пре-релизы (rc, beta, alpha, dev) запрещены всегда (ADR-0016)
+#   note          свободное пояснение к компоненту
+#
+# Проверка: tools/pincheck (ADR-0016), запускается в CI на каждый PR.
 #
 # Даты в ISO 8601. Каждое изменение файла только через PR с ревью.
 
@@ -20,7 +33,7 @@ reviewed_at: 2026-11-21
 quarantine_days: 7            # не-security релизы не ставим раньше, чем через 7 дней
 defaults:
   floating_tags_forbidden: [latest, main, main-latest, main-stable, dev, nightly, edge]
-  prerelease_forbidden_in_prod: true   # rc, beta, alpha, dev
+  prerelease_forbidden: true   # rc, beta, alpha, dev; всегда, не только в prod (ADR-0016)
 
 components:
 
@@ -29,7 +42,7 @@ components:
     license: "MIT, кроме каталога enterprise/ (коммерческая лицензия)"
     image: ghcr.io/berriai/litellm   # вариант образа (litellm / litellm-database / litellm-non_root) уточнить в PoC
     allowed: ["1.108.7"]             # линия LTS 1.108; проверить release notes перед первым pull
-    image_tag: "v1.108.7"            # теги образов LiteLLM с префиксом v
+    image_tag_prefix: "v"            # теги образов LiteLLM с префиксом v: v1.108.7
     candidate:
       version: "1.110.0"             # stable от 2026-11-18, первая stable с keyless-подписью
       not_before: 2026-11-25
@@ -43,7 +56,68 @@ components:
       pypi: ["1.82.7", "1.82.8", "1.107.0"]
       image_tags: ["v1.107.0"]
       image_digests:
-        - "sha256:1bbcb1443bc962e45f5aad53fe3d2c30600e0379715fb6c664cdd3ac126c339e"  # индекс litellm v1.107.0
+        - digest: "sha256:1bbcb1443bc962e45f5aad53fe3d2c30600e0379715fb6c664cdd3ac126c339e"
+          image: ghcr.io/berriai/litellm
+          source: https://docs.litellm.ai/blog/security-incident-oct-21-2026
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          note: "Индекс v1.107.0; тот же индекс у docker.io/litellm/litellm"
+        - digest: "sha256:bd1aeee419ea36da9aa2b657288da4101887be468f020ac63d22ba6ed84a3ea5"
+          image: ghcr.io/berriai/litellm
+          source: https://github.com/BerriAI/litellm/issues/47826
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          note: "Платформенный манифест v1.107.0, linux/amd64"
+        - digest: "sha256:56b74573eed6e4aafe4b50603dbe7853e0345f188c8e44a09f1098caf1f4bcdf"
+          image: ghcr.io/berriai/litellm
+          source: https://github.com/BerriAI/litellm/issues/47826
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          note: "Платформенный манифест v1.107.0, linux/arm64"
+        - digest: "sha256:24581ddc30767f16ecb69d2b0517556f2cd7dea56971adb42a3d1beb97d69523"
+          image: ghcr.io/berriai/litellm-database
+          source: https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          confidence: single-source
+          note: "Платформенный манифест v1.107.0, linux/amd64"
+        - digest: "sha256:827dd893c74cf621a860a66a3a447a5c732533f087589ce905573e285c0a239c"
+          image: ghcr.io/berriai/litellm-database
+          source: https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          confidence: single-source
+          note: "Платформенный манифест v1.107.0, linux/arm64"
+        - digest: "sha256:645a67d810628252d63df85dcc8824c58bcc77cf8383f4d3e6321f0ccc3ce9e4"
+          image: ghcr.io/berriai/litellm-non_root
+          source: https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          confidence: single-source
+          note: "Платформенный манифест v1.107.0, linux/amd64"
+        - digest: "sha256:f75c8edae59b72b1ebfd617295833f465c85bb2fab9c1d60f21b496db86cb8da"
+          image: ghcr.io/berriai/litellm-non_root
+          source: https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          confidence: single-source
+          note: "Платформенный манифест v1.107.0, linux/arm64"
+      # Индексы v1.107.0, опубликованные только усечёнными. pincheck сверяет по префиксу
+      # (минимум 12 hex-символов, ADR-0016).
+      # TODO: заменить префиксы полными digest в image_digests, когда появится второй
+      # источник с полным значением (на 2026-11-21 везде только усечённые).
+      image_digest_prefixes:
+        - prefix: "sha256:c00f9d92c427"
+          image: ghcr.io/berriai/litellm-database
+          source: https://docs.litellm.ai/blog/security-incident-oct-21-2026
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+            - https://github.com/BerriAI/litellm/issues/47826
+          note: "Индекс v1.107.0, усечённый"
+        - prefix: "sha256:7b00e91cd2fe"
+          image: ghcr.io/berriai/litellm-non_root
+          source: https://docs.litellm.ai/blog/security-incident-oct-21-2026
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+            - https://github.com/BerriAI/litellm/issues/47826
+          note: "Индекс v1.107.0, усечённый"
       note: "21.10.2026 теги latest, main-latest, main-stable указывали на вредоносные образы litellm, litellm-database, litellm-non_root"
     python_package_policy: "Пакет litellm не импортируется в наш код. Только HTTP к контейнеру."
     advisories:
@@ -60,16 +134,19 @@ components:
       - https://www.mend.io/blog/litellm-1-107-0-compromised/
       - https://snyk.io/articles/poisoned-security-scanner-backdooring-litellm
       - https://privacysafe.app/docs/security-patches/litellm/
+      - https://docs.litellm.ai/blog/security-incident-oct-21-2026
+      - https://github.com/BerriAI/litellm/issues/47826
 
   open-webui:
     role: chat-ui
     license: "Open WebUI License: BSD-3 + запрет менять брендинг при >50 пользователях за 30 дней (не OSI)"
     image: ghcr.io/open-webui/open-webui   # без суффиксов :cuda / :ollama
-    allowed: ["v0.13.3"]           # от 2026-11-08
+    allowed: ["0.13.3"]            # от 2026-11-08
+    image_tag_prefix: "v"          # тег образа v0.13.3
     candidate:
-      version: "v0.13.4"           # от 2026-11-19: проверить release notes и GHSA
+      version: "0.13.4"            # от 2026-11-19: проверить release notes и GHSA
       not_before: 2026-11-26
-    min_version: "v0.11.0"         # CVE-2026-70487 исправлена в v0.11.0; серия IDOR/доступа в 2026
+    min_version: "0.11.0"          # CVE-2026-70487 исправлена в v0.11.0; серия IDOR/доступа в 2026
     digest: null
     signature:
       method: "не установлено; проверить, подписывает ли проект образы"
@@ -91,7 +168,8 @@ components:
   postgresql:
     role: datastore
     license: PostgreSQL License
-    image: "собственная сборка от docker.io/library/postgres:18.7 + pgvector"
+    image: null
+    note: "Собственная сборка от docker.io/library/postgres:18.7 + pgvector; image заполнить, когда появится сборка"
     allowed: ["18.7"]              # от 2026-11-12
     min_version: "18.7"            # 18.7 закрывает пакет security-исправлений
     digest: null
@@ -119,12 +197,14 @@ components:
   openbao:
     role: secrets
     license: MPL-2.0
-    image: "уточнить официальный образ в PoC"
-    allowed: ["2.7.2"]
+    image: null
+    note: "Официальный образ уточнить в PoC"
+    allowed: ["2.7.2"]             # от 2026-10-26
     min_version: "2.7.2"
     digest: null
     sources:
-      - https://openbao.org/community/release-notes/2-6-0/
+      - https://openbao.org/community/release-notes/2-7-0/
+      - https://github.com/openbao/openbao/releases/tag/v2.7.2
 
   cerbos:
     role: policy-decision-point
@@ -169,6 +249,12 @@ components:
 
 # Python-зависимости собственных сервисов фиксируются в uv.lock (с хэшами)
 # и устанавливаются только через `uv sync --locked`. Этот реестр задаёт для них
-# denylist и минимальные версии, uv.lock не дублирует.
+# запреты и минимальные версии, uv.lock не дублирует.
+#   python_forbidden     пакеты, которых не должно быть в uv.lock ни в какой версии
+#   python_denylist      конкретные запрещённые версии
+#   python_min_versions  минимальные разрешённые версии
+python_forbidden:
+  - litellm            # ADR-0001: пакет не импортируем, только HTTP к контейнеру
 python_denylist:
   litellm: ["1.82.7", "1.82.8", "1.107.0"]
+python_min_versions: {}

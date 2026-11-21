@@ -1,0 +1,3 @@
+services:
+  svc:
+    image: docker.io/library/redis:8.0.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
