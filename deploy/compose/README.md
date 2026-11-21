@@ -101,7 +101,9 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 bash -c 'source deploy/compose/scripts/lib.sh && export BAO_TOKEN="$(kc_get "$(kc_root_name "$(current_installation)")")" && bao_exec kv get -mount=antec -field=breakglass_password keycloak'
 ```
 
-При первом входе `antec-admin` и `breakglass` настраивают TOTP. Структуру realm меняют в
+Вход по паролю в обоих realm всегда требует OTP (browser flow `antec browser`): при первом
+входе `antec-admin` и `breakglass` настраивают TOTP, а после удаления OTP Keycloak требует
+настроить его заново. Структуру realm меняют в
 `keycloak/realm-antec.json` и применяют `up.sh --recreate-realm`, а не в админ-консоли.
 
 Приложение в Entra ID (single-tenant): redirect URI (Web)

@@ -85,18 +85,25 @@ Realm как код:
    OpenBao. OBO не используется. До решения на шаге MCP M365 функция `identity-brokering-api`
    выключена при сборке образа.
 5. **Аварийный вход:** локальные пользователи без федерации, пароли генерируются в OpenBao
-   (`antec/keycloak`), TOTP обязателен с первого входа: `breakglass` в realm `antec` и
-   `antec-admin` в realm `master`. Временный bootstrap-клиент удаляется после первой настройки,
+   (`antec/keycloak`): `breakglass` в realm `antec` и `antec-admin` в realm `master`. OTP
+   обязателен при каждом входе по паролю в обоих realm: browser flow `antec browser` (копия
+   стандартного, шаг 2FA и OTP Form обязательны). Удаление OTP через account console не даёт
+   входа по одному паролю: Keycloak требует настроить OTP заново. Вход через брокер этот шаг не
+   проходит, MFA обеспечивает внешний IdP. Временный bootstrap-клиент удаляется после первой настройки,
    автоматизация работает через служебный клиент `antec-automation` (без full scope, с
    `kc-admin-api`).
 6. **Realm как код:** `deploy/compose/keycloak/realm-antec.json` и `idp-entra.json`;
-   `scripts/keycloak.py apply` создаёт realm через Admin API, если его нет, и приводит к заданному
-   состоянию секреты клиентов, профиль пользователя и брокер. Изменения структуры realm на стенде
+   `scripts/keycloak.py apply` создаёт через Admin API realm и недостающие объекты (scopes,
+   клиенты, breakglass), не меняя существующие, и приводит к заданному состоянию секреты клиентов,
+   профиль пользователя, flow входа и брокер. Прерванная первичная настройка достраивается
+   повторным запуском. Изменения структуры realm на стенде
    применяются пересозданием (`up.sh --recreate-realm`); сверка с дрейфом на сервере решается до
    первой серверной инсталляции.
 7. **Секреты:** пароль БД и секрет bootstrap-клиента в `keycloak.conf`, секрет клиента Entra в
    файловом vault Keycloak (`${vault.entra-client-secret}`); оба выгружает `secrets-render`
-   токеном `render-keycloak`, который читает только `antec/keycloak` и `antec/entra`. Пароль
+   токеном `render-keycloak`, который читает только `antec/keycloak` и `antec/entra`. Скрипты
+   отличают отсутствие записи в OpenBao от ошибки чтения: при ошибке ничего не генерируется и
+   не перезаписывается, прежние файлы секретов остаются. Пароль
    роли БД копируется в `antec/keycloak` скриптом `up.sh`. В переменных окружения и argv
    секретов нет.
 8. **Образ:** локальная оптимизированная сборка `localhost/antec/keycloak:26.8.2` от образа по
