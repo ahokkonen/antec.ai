@@ -21,7 +21,7 @@ fi
 
 require_macos_keychain
 installation="$(current_installation)"
-echo "Будут удалены ВСЕ данные стенда (тома PostgreSQL, OpenBao и секретов Keycloak), установка: ${installation:-неизвестна}." >&2
+echo "Будут удалены ВСЕ данные стенда (все тома: $(compose config --volumes | tr '\n' ' ')), установка: ${installation:-неизвестна}." >&2
 if [[ "$mode" == "forget" ]]; then
   echo "Также будут удалены ключ распечатывания и root token этой установки." >&2
   echo "ВНИМАНИЕ: снапшоты OpenBao из бэкапов этой установки станут невосстановимыми." >&2

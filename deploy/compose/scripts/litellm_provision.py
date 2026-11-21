@@ -8,7 +8,7 @@
 - виртуальный ключ Open WebUI со значением из OpenBao (antec/open-webui:litellm_key):
   только логические модели, конечные пользователи без своего бюджета получают `open-webui-user`.
 
-Существующие объекты не меняются, кроме приведения списка моделей и бюджета ключа к заданным.
+Существующие объекты приводятся к заданным: сумма и период бюджета, модели и бюджет ключа.
 """
 
 from __future__ import annotations
@@ -65,21 +65,35 @@ def log(msg: str) -> None:
 
 
 def ensure_budget(master: str) -> None:
+    """Создаёт бюджет или приводит сумму и период существующего к заданным.
+
+    /budget/info отвечает 200 и пустым списком, если бюджета нет; любой другой ответ считается
+    ошибкой, а не отсутствием (иначе повторное создание упадёт на дубликате).
+    """
     status, info = call("POST", "/budget/info", master, {"budgets": [END_USER_BUDGET_ID]})
-    if status == 200 and info:
+    if status != 200 or not isinstance(info, list):
+        raise ProvisionError(f"проверка бюджета {END_USER_BUDGET_ID}: HTTP {status}: {info}")
+    wanted: Json = {
+        "budget_id": END_USER_BUDGET_ID,
+        "max_budget": END_USER_BUDGET_USD,
+        "budget_duration": END_USER_BUDGET_DURATION,
+    }
+    if not info:
+        log(f"бюджет {END_USER_BUDGET_ID}: {END_USER_BUDGET_USD} USD на {END_USER_BUDGET_DURATION}")
+        status, payload = call("POST", "/budget/new", master, wanted)
+        ok(status, payload, f"создание бюджета {END_USER_BUDGET_ID}")
         return
-    log(f"бюджет {END_USER_BUDGET_ID}: {END_USER_BUDGET_USD} USD на {END_USER_BUDGET_DURATION}")
-    status, payload = call(
-        "POST",
-        "/budget/new",
-        master,
-        {
-            "budget_id": END_USER_BUDGET_ID,
-            "max_budget": END_USER_BUDGET_USD,
-            "budget_duration": END_USER_BUDGET_DURATION,
-        },
-    )
-    ok(status, payload, f"создание бюджета {END_USER_BUDGET_ID}")
+    current = cast(Json, info[0])
+    if (
+        float(current.get("max_budget") or 0) != END_USER_BUDGET_USD
+        or current.get("budget_duration") != END_USER_BUDGET_DURATION
+    ):
+        log(
+            f"бюджет {END_USER_BUDGET_ID} приведён к {END_USER_BUDGET_USD} USD "
+            f"на {END_USER_BUDGET_DURATION}"
+        )
+        status, payload = call("POST", "/budget/update", master, wanted)
+        ok(status, payload, f"обновление бюджета {END_USER_BUDGET_ID}")
 
 
 def ensure_open_webui_key(master: str, key: str) -> None:

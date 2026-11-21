@@ -37,7 +37,12 @@ general_settings:
   # Мастер-ключ не возвращается в ответах management API.
   disable_master_key_return: true
   # Конечный пользователь для учёта и бюджетов: поле `user` запроса или этот заголовок
-  # (Open WebUI на стенде до Platform API, ADR-0018).
-  user_header_name: X-OpenWebUI-User-Id
+  # (Open WebUI на стенде до Platform API, ADR-0018). LiteLLM принимает и то и другое от
+  # любого ключа: конечного пользователя утверждает вызывающий. Поэтому ключи, выданные
+  # людям (coding-агенты), получают собственный бюджет ключа и не полагаются на бюджеты
+  # конечных пользователей (ADR-0018, решение 6).
+  user_header_mappings:
+    - header_name: X-OpenWebUI-User-Id
+      litellm_user_role: customer
   # Пул соединений с PostgreSQL: лимит роли litellm 50 (ADR-0017).
   database_connection_pool_limit: 20
