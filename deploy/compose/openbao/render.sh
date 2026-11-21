@@ -3,6 +3,7 @@
 #   render.sh postgres   пароли ролей PostgreSQL в /out/postgres (uid 999)
 #   render.sh keycloak   keycloak.conf и vault-файлы realm в /out/keycloak (uid 1000)
 #   render.sh litellm    файлы-переменные окружения LiteLLM в /out/litellm (uid 65534)
+#   render.sh open-webui файлы-переменные окружения Open WebUI в /out/open-webui (uid 65534)
 # Токен приходит через stdin (`compose run -T`), живёт 5 минут и умеет читать только
 # пути своей цели. Значения не печатаются и не попадают в argv и окружение контейнера.
 set -eu
@@ -79,7 +80,7 @@ case "$target" in
     owner=1000:0
     ;;
   litellm)
-    # Имя файла = имя переменной окружения; litellm/entrypoint.sh переносит их в окружение
+    # Имя файла = имя переменной окружения; common/env-from-files.sh переносит их в окружение
     # процесса LiteLLM (ADR-0018). Сначала все чтения, потом замена итоговых файлов.
     out=/out/litellm
     trap 'rm -f "$out"/.*.new "$out"/.*.err' EXIT
@@ -118,8 +119,23 @@ case "$target" in
     # Пользователь образа litellm-non_root: nobody (uid/gid 65534).
     owner=65534:65534
     ;;
+  open-webui)
+    # Файлы-переменные окружения Open WebUI (common/env-from-files.sh, ADR-0018).
+    # Несекретные параметры подключения к БД заданы в compose.yaml; здесь только пароль.
+    out=/out/open-webui
+    trap 'rm -f "$out"/.*.new' EXIT
+    fetch open-webui webui_secret_key "$out/.WEBUI_SECRET_KEY.new"
+    fetch open-webui db_password "$out/.DATABASE_PASSWORD.new"
+    fetch open-webui oauth_client_secret "$out/.OAUTH_CLIENT_SECRET.new"
+    # Виртуальный ключ Open WebUI в LiteLLM (не ключ провайдера).
+    fetch open-webui litellm_key "$out/.OPENAI_API_KEYS.new"
+    for var in WEBUI_SECRET_KEY DATABASE_PASSWORD OAUTH_CLIENT_SECRET OPENAI_API_KEYS; do
+      mv -f "$out/.$var.new" "$out/$var"
+    done
+    owner=65534:65534
+    ;;
   *)
-    echo "render: использование: render.sh postgres|keycloak|litellm" >&2
+    echo "render: использование: render.sh postgres|keycloak|litellm|open-webui" >&2
     exit 2
     ;;
 esac

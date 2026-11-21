@@ -158,10 +158,15 @@ print(json.dumps(data))' $missing \
     | compose exec -T -e BAO_TOKEN openbao bao kv put -mount=antec "$path" - >/dev/null
 }
 
-# Копирует пароль роли PostgreSQL из antec/postgres в antec/<путь>:db_password (через stdin).
+# Копирует поле одной записи KV в другую (значение идёт только через stdin).
+copy_secret_field() { # путь-источник поле-источник путь-приёмник поле-приёмник
+  bao_exec kv get -mount=antec -field="$2" "$1" \
+    | compose exec -T -e BAO_TOKEN openbao bao kv patch -mount=antec "$3" "$4=-" >/dev/null
+}
+
+# Копирует пароль роли PostgreSQL из antec/postgres в antec/<путь>:db_password.
 copy_db_password() { # роль путь
-  bao_exec kv get -mount=antec -field="$1" postgres \
-    | compose exec -T -e BAO_TOKEN openbao bao kv patch -mount=antec "$2" db_password=- >/dev/null
+  copy_secret_field postgres "$1" "$2" db_password
 }
 
 # Входные данные scripts/keycloak.py (JSON на stdout): секреты antec/keycloak и, если задан,
@@ -186,4 +191,23 @@ kc = docs[0]["data"]["data"]
 entra = docs[1]["data"]["data"] if docs[1] else None
 kc["entra"] = {k: entra[k] for k in ("tenant_id", "client_id")} if entra else None
 print(json.dumps(kc))'
+}
+
+# Входные данные scripts/litellm_provision.py (JSON на stdout): мастер-ключ LiteLLM и
+# виртуальный ключ Open WebUI. Оба документа идут через stdin одного python3. Нужен BAO_TOKEN.
+litellm_provision_inputs() {
+  { bao_kv_json litellm && bao_kv_json open-webui; } | python3 -c '
+import json, sys
+text, dec, docs, pos = sys.stdin.read(), json.JSONDecoder(), [], 0
+if not text.strip():
+    sys.exit(1)  # чтение из OpenBao не удалось, причина уже напечатана bao_kv_json
+while len(docs) < 2:
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    doc, pos = dec.raw_decode(text, pos)
+    docs.append(doc)
+if not docs[0] or not docs[1]:
+    sys.exit("в OpenBao нет antec/litellm или antec/open-webui; запустите scripts/up.sh")
+print(json.dumps({"master_key": docs[0]["data"]["data"]["master_key"],
+                  "open_webui_key": docs[1]["data"]["data"]["litellm_key"]}))'
 }

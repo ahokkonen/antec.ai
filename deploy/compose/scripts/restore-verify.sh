@@ -150,6 +150,7 @@ print("ok" if need <= have else "неполные: нет " + ", ".join(sorted(n
 kc_keys="$(service_secrets keycloak db_password bootstrap_client_secret automation_client_secret \
   admin_password breakglass_password platform_api_client_secret open_webui_client_secret)"
 llm_keys="$(service_secrets litellm db_password master_key salt_key)"
+owui_keys="$(service_secrets open-webui db_password webui_secret_key oauth_client_secret litellm_key)"
 unset BAO_TOKEN
 keys="$(printf '%s' "$secrets_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["data"]))')"
 [[ "$keys" == "6" ]] || die "в восстановленном OpenBao неполные секреты antec/postgres ($keys из 6)"
@@ -159,15 +160,15 @@ import json, sys
 counts = json.load(open(sys.argv[1]))["row_counts"].get(sys.argv[2]) or {}
 print(sum(counts.values()))' "$dir/manifest.json" "$1"
 }
-for pair in "keycloak:$kc_keys" "litellm:$llm_keys"; do
-  svc="${pair%%:*}"; state="${pair#*:}"
-  rows="$(db_rows "$svc")"
+for entry in "keycloak:keycloak:$kc_keys" "litellm:litellm:$llm_keys" "open-webui:openwebui:$owui_keys"; do
+  path="${entry%%:*}"; rest="${entry#*:}"; db="${rest%%:*}"; state="${rest#*:}"
+  rows="$(db_rows "$db")"
   if [[ "$state" == "нет" && "$rows" != "0" ]]; then
-    die "в бэкапе БД $svc не пуста ($rows строк), а в OpenBao нет antec/$svc"
+    die "в бэкапе БД $db не пуста ($rows строк), а в OpenBao нет antec/$path"
   fi
-  [[ "$state" == "ok" || "$state" == "нет" ]] || die "в восстановленном OpenBao antec/$svc $state"
+  [[ "$state" == "ok" || "$state" == "нет" ]] || die "в восстановленном OpenBao antec/$path $state"
 done
-log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей, antec/keycloak: $kc_keys, antec/litellm: $llm_keys"
+log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей, antec/keycloak: $kc_keys, antec/litellm: $llm_keys, antec/open-webui: $owui_keys"
 
 # --- Роли: пароли из восстановленного OpenBao и вход каждой роли в свою БД по SCRAM ---
 # Бэкап ролей снят без паролей; источник истины паролей OpenBao. SQL с паролями идёт через stdin.

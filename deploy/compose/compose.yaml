@@ -59,6 +59,7 @@ services:
       - postgres-secrets:/out/postgres
       - keycloak-secrets:/out/keycloak
       - litellm-secrets:/out/litellm
+      - open-webui-secrets:/out/open-webui
     networks: [secrets]
     depends_on:
       openbao:
@@ -121,7 +122,7 @@ services:
       - /opt/keycloak/data:size=64m,uid=1000,gid=0,mode=0700
     volumes:
       - keycloak-secrets:/run/antec-secrets:ro
-    networks: [data, egress]
+    networks: [data, egress, ui]
     ports:
       - "127.0.0.1:8080:8080"
     mem_limit: 1536m
@@ -146,7 +147,7 @@ services:
     <<: *hardening
     image: ghcr.io/berriai/litellm-non_root:v1.108.8@sha256:ea2d1a480818e51db8ec8219c7973abfaeb9a82841f91c1722d4e060ec019d51
     # Обёртка переносит секреты из файлов в окружение процесса LiteLLM (ADR-0018).
-    entrypoint: ["/bin/sh", "/antec/entrypoint.sh"]
+    entrypoint: ["/bin/sh", "/antec/env-from-files.sh", "/app/docker/prod_entrypoint.sh"]
     command: ["--config", "/antec/config.yaml", "--port", "4000", "--num_workers", "1"]
     environment:
       # Карта цен моделей из образа, без загрузки из интернета при старте.
@@ -160,7 +161,7 @@ services:
       - /tmp:size=256m,uid=65534,gid=65534
     volumes:
       - ./litellm/config.yaml:/antec/config.yaml:ro
-      - ./litellm/entrypoint.sh:/antec/entrypoint.sh:ro
+      - ./common/env-from-files.sh:/antec/env-from-files.sh:ro
       - litellm-secrets:/run/antec-secrets:ro
     # data: PostgreSQL; llm: клиенты шлюза (Platform API, Open WebUI); llm-egress: API провайдеров.
     networks: [data, llm, llm-egress]
@@ -180,6 +181,114 @@ services:
       postgres:
         condition: service_healthy
 
+  # Веб-чат (ADR-0002). На стенде до Platform API ходит в LiteLLM своим виртуальным ключом
+  # (временное отклонение от ADR-0002, п. 1; ADR-0018).
+  open-webui:
+    <<: *hardening
+    image: ghcr.io/open-webui/open-webui:v0.13.3@sha256:46b59158e6558eeb980bc828e0f1b30238ad24d82ed84d5e5eda1dab2a082f14
+    user: "65534:65534"
+    working_dir: /app/backend
+    entrypoint: ["/bin/sh", "/antec/env-from-files.sh"]
+    command: ["bash", "start.sh"]
+    environment:
+      HOME: /tmp
+      WEBUI_URL: http://localhost:3000
+      CORS_ALLOW_ORIGIN: http://localhost:3000
+      WEBUI_NAME: antec.ai
+      # БД: всё, кроме пароля (DATABASE_PASSWORD из OpenBao через env-from-files.sh).
+      DATABASE_TYPE: postgresql
+      DATABASE_USER: openwebui
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: openwebui
+      DATABASE_POOL_SIZE: "10"
+      # Конфигурация только из окружения, не из БД: правки в админке не переживают перезапуск.
+      ENABLE_PERSISTENT_CONFIG: "False"
+      # Вход только через Keycloak (ADR-0002, п. 2).
+      ENABLE_LOGIN_FORM: "False"
+      ENABLE_PASSWORD_AUTH: "False"
+      ENABLE_SIGNUP: "False"
+      ENABLE_OAUTH_SIGNUP: "True"
+      OAUTH_MERGE_ACCOUNTS_BY_EMAIL: "False"
+      OAUTH_PROVIDER_NAME: antec.ai
+      OAUTH_CLIENT_ID: open-webui
+      # Discovery по внутреннему адресу: authorization_endpoint и issuer остаются
+      # http://localhost:8080 (hostname Keycloak), token и jwks идут по сети ui.
+      OPENID_PROVIDER_URL: http://keycloak:8080/realms/antec/.well-known/openid-configuration
+      OPENID_REDIRECT_URI: http://localhost:3000/oauth/oidc/callback
+      OAUTH_SCOPES: openid email profile
+      OAUTH_CODE_CHALLENGE_METHOD: S256
+      DEFAULT_USER_ROLE: user
+      WEBUI_SESSION_COOKIE_SECURE: "False"
+      # Единственное подключение: LiteLLM (до Platform API); ключ OPENAI_API_KEYS из OpenBao.
+      ENABLE_OLLAMA_API: "False"
+      ENABLE_OPENAI_API: "True"
+      OPENAI_API_BASE_URLS: http://litellm:4000/v1
+      ENABLE_DIRECT_CONNECTIONS: "False"
+      # Пользователь в заголовке X-OpenWebUI-User-Id: учёт и бюджет в LiteLLM.
+      ENABLE_FORWARD_USER_INFO_HEADERS: "True"
+      # Ничего не исполняется на сервере UI (ADR-0002, п. 4).
+      ENABLE_PLUGINS: "False"
+      ENABLE_CODE_EXECUTION: "False"
+      ENABLE_CODE_INTERPRETER: "False"
+      ENABLE_USER_WEBHOOKS: "False"
+      # RAG делает Platform API (ADR-0002, п. 3); загрузка файлов и база знаний выключены.
+      BYPASS_EMBEDDING_AND_RETRIEVAL: "True"
+      # Без локальных моделей эмбеддингов: иначе при старте попытка загрузки из интернета.
+      RAG_EMBEDDING_MODEL: ""
+      AUXILIARY_EMBEDDING_MODEL: ""
+      USER_PERMISSIONS_CHAT_FILE_UPLOAD: "False"
+      USER_PERMISSIONS_WORKSPACE_MODELS_ACCESS: "False"
+      USER_PERMISSIONS_WORKSPACE_KNOWLEDGE_ACCESS: "False"
+      USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS: "False"
+      USER_PERMISSIONS_WORKSPACE_PROMPTS_ACCESS: "False"
+      USER_PERMISSIONS_WORKSPACE_SKILLS_ACCESS: "False"
+      ENABLE_COMMUNITY_SHARING: "False"
+      ENABLE_WEB_SEARCH: "False"
+      ENABLE_IMAGE_GENERATION: "False"
+      ENABLE_EVALUATION_ARENA_MODELS: "False"
+      ENABLE_MEMORIES: "False"
+      ENABLE_API_KEYS: "False"
+      ENABLE_ADMIN_EXPORT: "False"
+      # Служебные генерации на дешёвой модели; лишние выключены.
+      TASK_MODEL_EXTERNAL: chat-fast
+      ENABLE_AUTOCOMPLETE_GENERATION: "False"
+      ENABLE_FOLLOW_UP_GENERATION: "False"
+      ENABLE_TAGS_GENERATION: "False"
+      # Без обращений в интернет.
+      OFFLINE_MODE: "True"
+      ENABLE_VERSION_UPDATE_CHECK: "False"
+    read_only: true
+    tmpfs:
+      # Данные UI не хранятся в контейнере: история и настройки в PostgreSQL, загрузки выключены.
+      - /app/backend/data:size=512m,uid=65534,gid=65534,mode=0700
+      - /tmp:size=256m,uid=65534,gid=65534
+    volumes:
+      - ./common/env-from-files.sh:/antec/env-from-files.sh:ro
+      - open-webui-secrets:/run/antec-secrets:ro
+    # data: PostgreSQL; llm: LiteLLM; ui: Keycloak и публикация порта на 127.0.0.1 хоста.
+    networks: [data, llm, ui]
+    ports:
+      - "127.0.0.1:3000:8080"
+    mem_limit: 1536m
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
 networks:
   # Без выхода наружу и без публикации портов на хост.
   secrets:
@@ -194,6 +303,9 @@ networks:
     internal: true
   # Выход LiteLLM к API провайдеров. Ограничение по доменам: открытый вопрос ADR-0018.
   llm-egress: {}
+  # Браузер пользователя -> Open WebUI (порт на 127.0.0.1) и Open WebUI -> Keycloak.
+  # Сеть не internal: Docker публикует порт только из такой сети.
+  ui: {}
 
 volumes:
   openbao-data:
@@ -201,3 +313,4 @@ volumes:
   postgres-secrets:
   keycloak-secrets:
   litellm-secrets:
+  open-webui-secrets:
