@@ -36,6 +36,11 @@
       "config": {"syncMode": "FORCE", "claim": "oid", "user.attribute": "entra_oid"}
     },
     {
+      "name": "antec-uid",
+      "identityProviderMapper": "oidc-user-attribute-idp-mapper",
+      "config": {"syncMode": "FORCE", "claim": "oid", "user.attribute": "antec_uid"}
+    },
+    {
       "name": "entra-tid",
       "identityProviderMapper": "oidc-user-attribute-idp-mapper",
       "config": {"syncMode": "FORCE", "claim": "tid", "user.attribute": "entra_tid"}
