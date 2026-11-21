@@ -108,8 +108,10 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 
 ## Open WebUI
 
-http://localhost:3000, вход только через Keycloak (Entra или `breakglass`). Первый вошедший
-пользователь становится администратором Open WebUI. Чат идёт в LiteLLM виртуальным ключом
+http://localhost:3000, вход только через Keycloak (Entra или `breakglass`). Роль в Open WebUI
+задаёт Keycloak при каждом входе: роль `user` клиента `open-webui` есть у всех, `admin` назначается
+в админ-консоли Keycloak (Clients → open-webui → Roles, сейчас только у `breakglass`).
+Администратор Open WebUI не видит чаты пользователей; сессия 8 часов. Чат идёт в LiteLLM виртуальным ключом
 `open-webui` (временно, до Platform API: ADR-0018); каждый пользователь получает бюджет
 `open-webui-user` (5 USD на 30 дней). Настройки задаются только окружением в `compose.yaml`:
 изменения в админке Open WebUI не переживают перезапуск.
@@ -142,6 +144,8 @@ client secret со сроком не больше 180 дней, «Assignment req
 ## Ограничения локального стенда
 
 - TLS OpenBao выключен, одна доля ключа распечатывания. На сервере так нельзя (ADR-0017).
+- `up.sh` перезапускает работающий сервис, только если изменились его секреты. Изменения
+  `litellm/config.yaml` применяются `docker compose -f deploy/compose/compose.yaml restart litellm`.
 - LiteLLM: секреты в окружении процесса (Vault в LiteLLM платный), выход в интернет не ограничен
   доменами провайдеров, админка выключена (ADR-0018).
 - Keycloak по HTTP на localhost; Admin API на том же адресе, что и вход. На сервере TLS через
