@@ -68,18 +68,19 @@ PY
 fi
 
 # Секреты Keycloak (ADR-0007). Недостающие ключи дополняются, существующие не меняются.
-existing="$(bao_exec kv get -mount=antec -format=json keycloak 2>/dev/null || echo '{}')"
+# Генерация только при подтверждённом отсутствии ключей; ошибка чтения прерывает запуск.
+existing="$(bao_kv_json keycloak)"
 if ! printf '%s' "$existing" | python3 -c '
 import json, sys
 need = {"bootstrap_client_secret", "automation_client_secret", "admin_password",
         "breakglass_password", "platform_api_client_secret", "open_webui_client_secret"}
-doc = json.load(sys.stdin)
+doc = json.load(sys.stdin) or {}
 have = set(((doc.get("data") or {}).get("data") or {}).keys())
 sys.exit(0 if need <= have else 1)'; then
   log "генерация секретов Keycloak в OpenBao (antec/keycloak)"
   printf '%s' "$existing" | python3 -c '
 import json, secrets, sys
-doc = json.load(sys.stdin)
+doc = json.load(sys.stdin) or {}
 data = dict(((doc.get("data") or {}).get("data") or {}))
 for k in ("bootstrap_client_secret", "automation_client_secret", "admin_password",
           "breakglass_password", "platform_api_client_secret", "open_webui_client_secret"):

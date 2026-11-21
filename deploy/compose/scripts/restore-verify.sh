@@ -145,6 +145,15 @@ print("ok" if need <= have else "неполные: нет " + ", ".join(sorted(n
 unset BAO_TOKEN
 keys="$(printf '%s' "$secrets_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["data"]))')"
 [[ "$keys" == "6" ]] || die "в восстановленном OpenBao неполные секреты antec/postgres ($keys из 6)"
+# Без antec/keycloak допустим только бэкап с пустой БД keycloak (сделан до Keycloak): иначе
+# восстановленный realm master недоступен автоматизации (bootstrap-клиент уже удалён).
+kc_db_rows="$(python3 -c '
+import json, sys
+counts = json.load(open(sys.argv[1]))["row_counts"].get("keycloak") or {}
+print(sum(counts.values()))' "$dir/manifest.json")"
+if [[ "$kc_keys" == "нет" && "$kc_db_rows" != "0" ]]; then
+  die "в бэкапе БД keycloak не пуста ($kc_db_rows строк), а в OpenBao нет antec/keycloak"
+fi
 [[ "$kc_keys" == "ok" || "$kc_keys" == "нет" ]] || die "в восстановленном OpenBao antec/keycloak $kc_keys"
 log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей, antec/keycloak: $kc_keys"
 
