@@ -40,17 +40,18 @@ components:
   litellm:
     role: llm-gateway
     license: "MIT, кроме каталога enterprise/ (коммерческая лицензия)"
-    image: ghcr.io/berriai/litellm   # вариант образа (litellm / litellm-database / litellm-non_root) уточнить в PoC
-    allowed: ["1.108.7"]             # линия LTS 1.108; проверить release notes перед первым pull
-    image_tag_prefix: "v"            # теги образов LiteLLM с префиксом v: v1.108.7
+    image: ghcr.io/berriai/litellm-non_root   # uid 65534, Prisma офлайн (ADR-0018)
+    allowed: ["1.108.8"]             # LTS от 2026-11-13; 1.108.9+ ещё в карантине на 2026-11-21
+    image_tag_prefix: "v"            # теги образов LiteLLM с префиксом v: v1.108.8
     candidate:
       version: "1.110.0"             # stable от 2026-11-18, первая stable с keyless-подписью
       not_before: 2026-11-25
     min_version: "1.106.3"           # первая версия после октябрьского инцидента, подписана новым ключом
-    digest: null
+    # Индекс litellm-non_root:v1.108.8 (linux/amd64, linux/arm64), сборка 2026-11-13.
+    digest: "sha256:ea2d1a480818e51db8ec8219c7973abfaeb9a82841f91c1722d4e060ec019d51"
     signature:
-      method: "cosign: keyless (Sigstore) с 1.110.0; новый ключ для 1.103.8+, 1.104.6+, 1.105.4+, 1.106.3+"
-      note: "Валидная подпись НЕ доказывает чистоту: 1.107.0 подписан старым ключом. Всегда сверять digest с denylist."
+      method: "cosign: keyless (Sigstore) с 1.110.0 и 1.108.10+; ключ cosign.pub для 1.103.8+, 1.104.6+, 1.105.4+, 1.106.3+, 1.108.0-1.108.9"
+      note: "Валидная подпись НЕ доказывает чистоту: 1.107.0 подписан старым ключом. Всегда сверять digest с denylist. Проверено 2026-11-21 для 1.108.8 (litellm, litellm-database, litellm-non_root): cosign verify --key cosign.pub из коммита e82a3c646908ba0a6ee0beddc4310d7a6cac4065 (ротация ключа 2026-10-23; sha256 ключа e3fe3e08c44b16407fe0b37c43b4f8b603b3a0f4ee74c29e647bc022d762c2c0) OK; digest не в denylist; OSV по litellm 1.108.8 пусто; открытых GHSA на линии 1.108 нет"
       howto: https://docs.litellm.ai/docs/proxy/docker_image_security
     denied:
       pypi: ["1.82.7", "1.82.8", "1.107.0"]
