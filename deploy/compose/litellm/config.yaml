@@ -1,0 +1,43 @@
+# LiteLLM 1.108.8, локальный стенд (ADR-0001, ADR-0018).
+# Конфигурация моделей в git (GitOps): STORE_MODEL_IN_DB выключен, модели не меняются через API.
+# Секреты только ссылками os.environ/: значения выгружает из OpenBao secrets-render, обёртка
+# litellm/entrypoint.sh кладёт их в окружение процесса (не контейнера).
+
+# Логические имена моделей: клиенты (Platform API, Open WebUI, coding-агенты) знают только их.
+# Смена провайдера или модели не меняет клиентов (ADR-0001, план выхода).
+model_list:
+  - model_name: chat-default
+    litellm_params:
+      model: anthropic/claude-opus-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+    model_info:
+      description: "Модель по умолчанию: Claude Opus 5.5"
+  - model_name: chat-fast
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+    model_info:
+      description: "Быстрая и дешёвая модель: Claude Haiku 5.5"
+
+litellm_settings:
+  # Параметры OpenAI, которых нет у провайдера, отбрасываются, а не дают 400.
+  drop_params: true
+  # Ответы и запросы не пишутся в логи и БД расходов (персональные данные, ADR-0012).
+  turn_off_message_logging: true
+  # Каждый запрос в одну попытку на шлюзе: повторы решает вызывающий (Platform API).
+  num_retries: 0
+  request_timeout: 600
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  # Вход в админку по UI_USERNAME/UI_PASSWORD и мастер-ключу выключен; сама админка выключена
+  # переменной DISABLE_ADMIN_UI (compose.yaml).
+  disable_env_credential_login: true
+  # Мастер-ключ не возвращается в ответах management API.
+  disable_master_key_return: true
+  # Конечный пользователь для учёта и бюджетов: поле `user` запроса или этот заголовок
+  # (Open WebUI на стенде до Platform API, ADR-0018).
+  user_header_name: X-OpenWebUI-User-Id
+  # Пул соединений с PostgreSQL: лимит роли litellm 50 (ADR-0017).
+  database_connection_pool_limit: 20

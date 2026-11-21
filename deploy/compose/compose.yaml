@@ -58,6 +58,7 @@ services:
       - ./openbao/render.sh:/render/render.sh:ro
       - postgres-secrets:/out/postgres
       - keycloak-secrets:/out/keycloak
+      - litellm-secrets:/out/litellm
     networks: [secrets]
     depends_on:
       openbao:
@@ -141,6 +142,44 @@ services:
       postgres:
         condition: service_healthy
 
+  litellm:
+    <<: *hardening
+    image: ghcr.io/berriai/litellm-non_root:v1.108.8@sha256:ea2d1a480818e51db8ec8219c7973abfaeb9a82841f91c1722d4e060ec019d51
+    # Обёртка переносит секреты из файлов в окружение процесса LiteLLM (ADR-0018).
+    entrypoint: ["/bin/sh", "/antec/entrypoint.sh"]
+    command: ["--config", "/antec/config.yaml", "--port", "4000", "--num_workers", "1"]
+    environment:
+      # Карта цен моделей из образа, без загрузки из интернета при старте.
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      # Админка выключена: управление ключами и бюджетами только через API (ADR-0001).
+      DISABLE_ADMIN_UI: "True"
+      NO_DOCS: "True"
+      STORE_MODEL_IN_DB: "False"
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,uid=65534,gid=65534
+    volumes:
+      - ./litellm/config.yaml:/antec/config.yaml:ro
+      - ./litellm/entrypoint.sh:/antec/entrypoint.sh:ro
+      - litellm-secrets:/run/antec-secrets:ro
+    # data: PostgreSQL; llm: клиенты шлюза (Platform API, Open WebUI); llm-egress: API провайдеров.
+    networks: [data, llm, llm-egress]
+    mem_limit: 1536m
+    healthcheck:
+      # В образе нет curl; /health/liveliness без аутентификации.
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 networks:
   # Без выхода наружу и без публикации портов на хост.
   secrets:
@@ -150,9 +189,15 @@ networks:
   # Выход наружу и публикация порта на 127.0.0.1 хоста: только Keycloak
   # (браузер пользователя и login.microsoftonline.com).
   egress: {}
+  # Клиенты LLM-шлюза; без выхода наружу.
+  llm:
+    internal: true
+  # Выход LiteLLM к API провайдеров. Ограничение по доменам: открытый вопрос ADR-0018.
+  llm-egress: {}
 
 volumes:
   openbao-data:
   postgres-data:
   postgres-secrets:
   keycloak-secrets:
+  litellm-secrets:
