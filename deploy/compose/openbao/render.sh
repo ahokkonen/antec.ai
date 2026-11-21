@@ -27,6 +27,18 @@ fetch() { # путь поле файл
   fi
 }
 
+# Замена итогового файла с учётом изменений: up.sh перезапускает работающий сервис, только
+# если его секреты изменились (на stdout печатается «changed», остальной вывод в stderr).
+changed=0
+replace() { # новый итоговый
+  if [ ! -f "$2" ] || ! cmp -s "$1" "$2"; then changed=1; fi
+  mv -f "$1" "$2"
+}
+remove() { # итоговый
+  if [ -e "$1" ]; then changed=1; fi
+  rm -f "$1"
+}
+
 case "$target" in
   postgres)
     out=/out/postgres
@@ -36,7 +48,7 @@ case "$target" in
       fetch postgres "$key" "$out/.$key.new"
     done
     for key in $keys; do
-      mv -f "$out/.$key.new" "$out/$key"
+      replace "$out/.$key.new" "$out/$key"
     done
     # Владелец: пользователь postgres в официальном образе (uid/gid 999).
     owner=999:999
@@ -68,12 +80,12 @@ case "$target" in
       printf 'bootstrap-admin-client-id=antec-bootstrap\n'
       printf 'bootstrap-admin-client-secret=%s\n' "$(cat "$out/.bootstrap")"
     } > "$out/keycloak.conf.tmp"
-    mv -f "$out/keycloak.conf.tmp" "$out/keycloak.conf"
+    replace "$out/keycloak.conf.tmp" "$out/keycloak.conf"
     # Файловый vault Keycloak: <realm>_<ключ>.
     if [ "$entra" = present ]; then
-      mv -f "$tmp" "$out/vault/antec_entra-client-secret"
+      replace "$tmp" "$out/vault/antec_entra-client-secret"
     else
-      rm -f "$out/vault/antec_entra-client-secret"
+      remove "$out/vault/antec_entra-client-secret"
       echo "render: секрет Entra не задан (antec/entra), вход через Entra будет недоступен" >&2
     fi
     # Пользователь keycloak в официальном образе: uid 1000, группа root (gid 0).
@@ -107,12 +119,12 @@ case "$target" in
       fi
     done
     for var in LITELLM_MASTER_KEY LITELLM_SALT_KEY DATABASE_URL; do
-      mv -f "$out/.$var.new" "$out/$var"
+      replace "$out/.$var.new" "$out/$var"
     done
     for var in ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY; do
       case " $providers " in
-        *" $var "*) mv -f "$out/.$var.new" "$out/$var" ;;
-        *) rm -f "$out/$var" ;;
+        *" $var "*) replace "$out/.$var.new" "$out/$var" ;;
+        *) remove "$out/$var" ;;
       esac
     done
     [ -n "$providers" ] || echo "render: ключи провайдеров не заданы (scripts/set-llm-key.sh): модели недоступны" >&2
@@ -130,7 +142,7 @@ case "$target" in
     # Виртуальный ключ Open WebUI в LiteLLM (не ключ провайдера).
     fetch open-webui litellm_key "$out/.OPENAI_API_KEYS.new"
     for var in WEBUI_SECRET_KEY DATABASE_PASSWORD OAUTH_CLIENT_SECRET OPENAI_API_KEYS; do
-      mv -f "$out/.$var.new" "$out/$var"
+      replace "$out/.$var.new" "$out/$var"
     done
     owner=65534:65534
     ;;
@@ -143,4 +155,5 @@ esac
 chown -R "$owner" "$out"
 find "$out" -type f -exec chmod 0400 {} +
 find "$out" -type d -exec chmod 0700 {} +
-echo "render: секреты $target выгружены"
+echo "render: секреты $target выгружены" >&2
+if [ "$changed" = 1 ]; then echo changed; fi

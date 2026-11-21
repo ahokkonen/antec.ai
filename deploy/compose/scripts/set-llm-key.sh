@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Ключ API провайдера LLM для LiteLLM (ADR-0018): сохраняется в OpenBao (antec/llm-providers),
-# вводится без эха и передаётся только через stdin. После сохранения секреты выгружаются заново
-# и LiteLLM перезапускается.
+# вводится без эха и передаётся только через stdin. После сохранения up.sh выгружает секреты
+# заново и перезапускает LiteLLM.
 #   set-llm-key.sh anthropic|openai|openrouter
 # У провайдера должен стоять лимит расходов: ключ шлюза даёт доступ ко всем его моделям.
 set -euo pipefail
@@ -35,9 +35,6 @@ fi
 unset api_key BAO_TOKEN
 log "ключ $provider сохранён в OpenBao (antec/llm-providers:$field)"
 
+# up.sh выгрузит новый ключ и перезапустит LiteLLM, если ключ изменился.
 "$(dirname "$0")/up.sh"
-# Секреты читаются обёрткой entrypoint при старте процесса: перезапуск применяет новый ключ.
-log "перезапуск LiteLLM с новым ключом"
-compose restart litellm >/dev/null
-compose up -d --wait litellm
 log "готово: проверка scripts/litellm-smoke.sh"
