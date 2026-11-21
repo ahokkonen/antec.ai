@@ -132,10 +132,21 @@ kc_get "$unseal_key_name" | tr -d '\n' | bx bao write sys/unseal key=- >/dev/nul
 BAO_TOKEN="$(kc_get "$root_token_name")"; export BAO_TOKEN
 secrets_json="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN "$bao_name" \
   bao kv get -mount=antec -format=json postgres)"
+# Секреты Keycloak (ADR-0007); в бэкапах до появления Keycloak их нет.
+kc_keys="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN "$bao_name" \
+  bao kv get -mount=antec -format=json keycloak 2>/dev/null \
+  | python3 -c '
+import json, sys
+need = {"db_password", "bootstrap_client_secret", "automation_client_secret", "admin_password",
+        "breakglass_password", "platform_api_client_secret", "open_webui_client_secret"}
+have = {k for k, v in json.load(sys.stdin)["data"]["data"].items() if v}
+print("ok" if need <= have else "неполные: нет " + ", ".join(sorted(need - have)))' 2>/dev/null \
+  || echo "нет")"
 unset BAO_TOKEN
 keys="$(printf '%s' "$secrets_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["data"]))')"
 [[ "$keys" == "6" ]] || die "в восстановленном OpenBao неполные секреты antec/postgres ($keys из 6)"
-log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей"
+[[ "$kc_keys" == "ok" || "$kc_keys" == "нет" ]] || die "в восстановленном OpenBao antec/keycloak $kc_keys"
+log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей, antec/keycloak: $kc_keys"
 
 # --- Роли: пароли из восстановленного OpenBao и вход каждой роли в свою БД по SCRAM ---
 # Бэкап ролей снят без паролей; источник истины паролей OpenBao. SQL с паролями идёт через stdin.

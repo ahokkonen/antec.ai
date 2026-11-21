@@ -99,3 +99,24 @@ ROWCOUNT_SQL="select coalesce(json_object_agg(n.nspname || '.' || c.relname,
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
   where c.relkind in ('r', 'p') and n.nspname not in ('pg_catalog', 'information_schema')
   and n.nspname not like 'pg_toast%'"
+
+# Входные данные scripts/keycloak.py (JSON на stdout): секреты antec/keycloak и, если задан,
+# antec/entra (tenant_id, client_id; client_secret не передаётся, он в vault-файле Keycloak).
+# Нужен BAO_TOKEN с правом чтения обоих путей.
+keycloak_inputs() {
+  # Оба документа идут через stdin одного python3, а не через argv.
+  { bao_exec kv get -mount=antec -format=json keycloak
+    bao_exec kv get -mount=antec -format=json entra 2>/dev/null || echo null
+  } | python3 -c '
+import json, sys
+text, dec, docs, pos = sys.stdin.read(), json.JSONDecoder(), [], 0
+while len(docs) < 2:
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    doc, pos = dec.raw_decode(text, pos)
+    docs.append(doc)
+kc = docs[0]["data"]["data"]
+entra = docs[1]["data"]["data"] if docs[1] else None
+kc["entra"] = {k: entra[k] for k in ("tenant_id", "client_id")} if entra else None
+print(json.dumps(kc))'
+}
