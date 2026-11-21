@@ -8,7 +8,7 @@
     keycloak.py smoke                      вход через браузер и обмен токенов (RFC 8693)
 
 Realm как код: deploy/compose/keycloak/realm-antec.json создаётся, если realm нет.
-Изменения в существующем realm файл не применяет: локально realm пересоздаётся
+Существующие объекты realm файл не меняет (недостающие создаются): локально realm пересоздаётся
 (`up.sh --recreate-realm`), сверка с дрейфом на сервере решается отдельно (ADR-0007).
 """
 
@@ -40,6 +40,7 @@ ADMIN_USER = "antec-admin"
 BREAKGLASS_USER = "breakglass"
 IDP_ALIAS = "entra"
 ADMIN_API_SCOPE = "kc-admin-api"
+OTP_BROWSER_FLOW = "antec browser"
 DEFAULT_SA_SCOPES = ("service_account", "web-origins", "acr", "profile", "roles", "basic", "email")
 # Атрибуты, которые брокер Entra пишет в профиль пользователя (oid, tid).
 PROFILE_ATTRIBUTES = ("entra_oid", "entra_tid")
@@ -206,13 +207,14 @@ def ensure_master(admin: Admin, secrets_in: Json) -> Admin:
         client = admin.find_client("master", AUTOMATION_CLIENT)
         if client is None:
             raise KeycloakError(f"клиент {AUTOMATION_CLIENT} не найден после создания")
-        sa = admin.call("GET", f"/master/clients/{client['id']}/service-account-user")
-        role = admin.call("GET", "/master/roles/admin")
-        admin.call("POST", f"/master/users/{sa['id']}/role-mappings/realm", [role])
     elif client.get("secret") != automation_secret or client.get("fullScopeAllowed"):
         client["secret"] = automation_secret
         client["fullScopeAllowed"] = False
         admin.call("PUT", f"/master/clients/{client['id']}", client)
+    # Роль admin проверяется при каждом запуске: прерванный первый запуск (клиент создан,
+    # роль не назначена) восстанавливается повторным apply, пока bootstrap-клиент доступен.
+    sa = admin.call("GET", f"/master/clients/{client['id']}/service-account-user")
+    ensure_realm_role(admin, "master", sa["id"], "admin")
     scoped = admin.call("GET", f"/master/clients/{client['id']}/scope-mappings/realm")
     if not any(r["name"] == "admin" for r in scoped):
         role = admin.call("GET", "/master/roles/admin")
@@ -232,9 +234,10 @@ def ensure_master(admin: Admin, secrets_in: Json) -> Admin:
     # Проверка, что токен принимает Admin API (в 26.8.2 проверяется аудитория токена).
     admin.call("GET", "/master")
 
-    if admin.find_user("master", ADMIN_USER) is None:
-        log(f"создание администратора {ADMIN_USER} (realm master, TOTP при первом входе)")
-        user_id = admin.call(
+    user = admin.find_user("master", ADMIN_USER)
+    if user is None:
+        log(f"создание администратора {ADMIN_USER} (realm master, TOTP обязателен)")
+        admin.call(
             "POST",
             "/master/users",
             {
@@ -254,8 +257,12 @@ def ensure_master(admin: Admin, secrets_in: Json) -> Admin:
                 ],
             },
         )
-        role = admin.call("GET", "/master/roles/admin")
-        admin.call("POST", f"/master/users/{user_id}/role-mappings/realm", [role])
+        user = admin.find_user("master", ADMIN_USER)
+        if user is None:
+            raise KeycloakError(f"пользователь {ADMIN_USER} не найден после создания")
+    # Роль и обязательный OTP проверяются при каждом запуске и до удаления bootstrap-клиента.
+    ensure_realm_role(admin, "master", user["id"], "admin")
+    ensure_otp_browser_flow(admin, "master")
 
     bootstrap = admin.find_client("master", BOOTSTRAP_CLIENT)
     if bootstrap is not None:
@@ -264,42 +271,99 @@ def ensure_master(admin: Admin, secrets_in: Json) -> Admin:
     return admin
 
 
-def create_realm(admin: Admin, secrets_in: Json) -> None:
+def ensure_realm_role(admin: Admin, realm: str, user_id: str, role_name: str) -> None:
+    mapped = admin.call("GET", f"/{realm}/users/{user_id}/role-mappings/realm")
+    if not any(r["name"] == role_name for r in mapped):
+        role = admin.call("GET", f"/{realm}/roles/{role_name}")
+        admin.call("POST", f"/{realm}/users/{user_id}/role-mappings/realm", [role])
+
+
+def ensure_otp_browser_flow(admin: Admin, realm: str) -> None:
+    """Вход по паролю всегда требует OTP: копия browser flow, где шаг 2FA обязателен.
+
+    В стандартном flow OTP условный (только если настроен), поэтому удаление второго фактора
+    через account console оставляет вход по одному паролю. Здесь OTP Form обязателен: без
+    настроенного OTP Keycloak требует его настройку. Вход через брокер (Entra) этот шаг не
+    проходит: MFA там обеспечивает внешний IdP.
+    """
+    flows = admin.call("GET", f"/{realm}/authentication/flows")
+    if not any(f["alias"] == OTP_BROWSER_FLOW for f in flows):
+        log(f"realm {realm}: browser flow с обязательным OTP ({OTP_BROWSER_FLOW})")
+        admin.call(
+            "POST", f"/{realm}/authentication/flows/browser/copy", {"newName": OTP_BROWSER_FLOW}
+        )
+    path = f"/{realm}/authentication/flows/{urllib.parse.quote(OTP_BROWSER_FLOW)}/executions"
+    executions = cast(list[Json], admin.call("GET", path))
+    otp_index = next(
+        (i for i, e in enumerate(executions) if e.get("providerId") == "auth-otp-form"), None
+    )
+    if otp_index is None:
+        raise KeycloakError(f"realm {realm}: в {OTP_BROWSER_FLOW} нет OTP Form")
+    otp_level = int(executions[otp_index]["level"])
+    parent_index = next(
+        i for i in range(otp_index - 1, -1, -1) if int(executions[i]["level"]) == otp_level - 1
+    )
+    wanted: dict[str, str] = {executions[parent_index]["id"]: "REQUIRED"}
+    for e in executions[parent_index + 1 :]:
+        if int(e["level"]) < otp_level:
+            break
+        if int(e["level"]) == otp_level:
+            wanted[e["id"]] = "REQUIRED" if e.get("providerId") == "auth-otp-form" else "DISABLED"
+    for e in executions:
+        if e["id"] in wanted and e["requirement"] != wanted[e["id"]]:
+            admin.call("PUT", path, {**e, "requirement": wanted[e["id"]]})
+    if admin.call("GET", f"/{realm}")["browserFlow"] != OTP_BROWSER_FLOW:
+        admin.call("PUT", f"/{realm}", {"browserFlow": OTP_BROWSER_FLOW})
+
+
+def ensure_realm(admin: Admin, secrets_in: Json) -> None:
+    """Создаёт realm и недостающие объекты из realm-antec.json; существующие не меняет.
+
+    Повторный запуск после прерванного первого достраивает realm (scopes, клиенты,
+    breakglass), но не перезаписывает объекты, которые уже есть.
+    """
     spec = cast(Json, json.loads((KEYCLOAK_DIR / "realm-antec.json").read_text()))
     scopes = cast(list[Json], spec.pop("clientScopes", []))
     clients = cast(list[Json], spec.pop("clients", []))
-    log(f"создание realm {REALM} из keycloak/realm-antec.json")
-    admin.call("POST", "", spec)
+    if not admin.realm_exists(REALM):
+        log(f"создание realm {REALM} из keycloak/realm-antec.json")
+        admin.call("POST", "", spec)
+    have_scopes = {sc["name"] for sc in admin.call("GET", f"/{REALM}/client-scopes")}
     for scope in scopes:
-        admin.call("POST", f"/{REALM}/client-scopes", scope)
+        if scope["name"] not in have_scopes:
+            admin.call("POST", f"/{REALM}/client-scopes", scope)
     client_secrets = client_secret_map(secrets_in)
     for client in clients:
-        client = copy.deepcopy(client)
-        if client["clientId"] in client_secrets:
-            client["secret"] = client_secrets[client["clientId"]]
-        admin.call("POST", f"/{REALM}/clients", client)
+        if admin.find_client(REALM, client["clientId"]) is None:
+            client = copy.deepcopy(client)
+            if client["clientId"] in client_secrets:
+                client["secret"] = client_secrets[client["clientId"]]
+            admin.call("POST", f"/{REALM}/clients", client)
     ensure_user_profile(admin)
-    log(f"создание аварийного пользователя {BREAKGLASS_USER} (TOTP при первом входе)")
-    admin.call(
-        "POST",
-        f"/{REALM}/users",
-        {
-            "username": BREAKGLASS_USER,
-            "enabled": True,
-            "email": "breakglass@antec.invalid",
-            "emailVerified": True,
-            "firstName": "Аварийный",
-            "lastName": "вход",
-            "requiredActions": ["CONFIGURE_TOTP"],
-            "credentials": [
-                {
-                    "type": "password",
-                    "value": _secret(secrets_in, "breakglass_password"),
-                    "temporary": False,
-                }
-            ],
-        },
-    )
+    ensure_client_secrets(admin, secrets_in)
+    ensure_otp_browser_flow(admin, REALM)
+    if admin.find_user(REALM, BREAKGLASS_USER) is None:
+        log(f"создание аварийного пользователя {BREAKGLASS_USER} (TOTP обязателен)")
+        admin.call(
+            "POST",
+            f"/{REALM}/users",
+            {
+                "username": BREAKGLASS_USER,
+                "enabled": True,
+                "email": "breakglass@antec.invalid",
+                "emailVerified": True,
+                "firstName": "Аварийный",
+                "lastName": "вход",
+                "requiredActions": ["CONFIGURE_TOTP"],
+                "credentials": [
+                    {
+                        "type": "password",
+                        "value": _secret(secrets_in, "breakglass_password"),
+                        "temporary": False,
+                    }
+                ],
+            },
+        )
 
 
 def client_secret_map(secrets_in: Json) -> dict[str, str]:
@@ -387,11 +451,7 @@ def cmd_apply(secrets_in: Json, recreate: bool) -> None:
     if recreate and admin.realm_exists(REALM):
         log(f"удаление realm {REALM} (--recreate-realm)")
         admin.call("DELETE", f"/{REALM}")
-    if not admin.realm_exists(REALM):
-        create_realm(admin, secrets_in)
-    else:
-        ensure_user_profile(admin)
-        ensure_client_secrets(admin, secrets_in)
+    ensure_realm(admin, secrets_in)
     ensure_idp(admin, cast(Json | None, secrets_in.get("entra")))
     log(f"готово: {BASE_URL.replace('127.0.0.1', 'localhost')}/realms/{REALM}/account")
 
