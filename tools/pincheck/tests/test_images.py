@@ -16,6 +16,7 @@ COMPOSE = FIXTURES / "compose"
         pytest.param(
             "malicious_variant_digest", ["PIN013", "PIN018"], id="denylist-digest-other-repo"
         ),
+        pytest.param("malicious_digest_prefix", ["PIN018"], id="denylist-digest-prefix"),
         pytest.param("latest", ["PIN011"], id="latest-tag"),
         pytest.param("latest_no_digest", ["PIN010", "PIN011"], id="latest-without-digest"),
         pytest.param("no_digest", ["PIN010"], id="image-without-digest"),
@@ -118,3 +119,9 @@ def test_github_format_emits_annotations(pincheck: Runner) -> None:
     assert first.startswith("::error file=")
     assert "line=3" in first
     assert "title=PIN010" in first
+
+
+def test_prefix_match_is_reported_as_prefix(pincheck: Runner) -> None:
+    result = pincheck(COMPOSE / "malicious_digest_prefix")
+    assert "совпадает по префиксу sha256:c00f9d92c427" in result.output
+    assert "single-source" in result.output

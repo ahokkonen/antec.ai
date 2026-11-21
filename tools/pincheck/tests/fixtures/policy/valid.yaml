@@ -23,8 +23,20 @@ components:
       pypi: ["1.82.7", "1.82.8", "1.107.0"]
       image_tags: ["v1.107.0"]
       image_digests:
-        - "sha256:1bbcb1443bc962e45f5aad53fe3d2c30600e0379715fb6c664cdd3ac126c339e"
-        - "sha256:24581ddc30767f16ecb69d2b0517556f2cd7dea56971adb42a3d1beb97d69523"
+        - digest: "sha256:1bbcb1443bc962e45f5aad53fe3d2c30600e0379715fb6c664cdd3ac126c339e"
+          source: https://docs.litellm.ai/blog/security-incident-oct-21-2026
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+        - digest: "sha256:24581ddc30767f16ecb69d2b0517556f2cd7dea56971adb42a3d1beb97d69523"
+          image: ghcr.io/berriai/litellm-database
+          source: https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          confidence: single-source
+      image_digest_prefixes:
+        - prefix: "sha256:c00f9d92c427"
+          image: ghcr.io/berriai/litellm-database
+          source: https://docs.litellm.ai/blog/security-incident-oct-21-2026
+          confidence: single-source
 
   keycloak:
     role: oidc-provider

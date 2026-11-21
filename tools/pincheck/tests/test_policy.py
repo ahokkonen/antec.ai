@@ -146,6 +146,66 @@ def test_broken_registry_stops_file_checks(pincheck: Runner, policy_variant: Var
             id="unknown-field",
         ),
         pytest.param(
+            'prefix: "sha256:c00f9d92c427"',
+            'prefix: "sha256:c00f9d92c42"',
+            "PIN002",
+            None,
+            id="digest-prefix-too-short",
+        ),
+        pytest.param(
+            'prefix: "sha256:c00f9d92c427"',
+            'prefix: "sha256:c00f9d92c427…"',
+            "PIN002",
+            None,
+            id="digest-prefix-with-ellipsis",
+        ),
+        pytest.param(
+            'prefix: "sha256:c00f9d92c427"',
+            'prefix: "sha256:' + "c" * 64 + '"',
+            "PIN002",
+            None,
+            id="full-digest-in-prefixes",
+        ),
+        pytest.param(
+            "          confidence: single-source\n      image_digest_prefixes:",
+            "          confidence: multi-source\n      image_digest_prefixes:",
+            "PIN002",
+            None,
+            id="multi-source-without-corroboration",
+        ),
+        pytest.param(
+            "          confidence: multi-source\n",
+            "          confidence: maybe\n",
+            "PIN002",
+            None,
+            id="unknown-confidence",
+        ),
+        pytest.param(
+            "          source: https://docs.litellm.ai/blog/security-incident-oct-21-2026\n"
+            "          confidence: single-source",
+            "          source: konfirmity\n          confidence: single-source",
+            "PIN002",
+            None,
+            id="source-not-url",
+        ),
+        pytest.param(
+            '        - digest: "sha256:24581ddc',
+            '        - digest: "sha256:1bbcb1443bc962e45f5aad53fe3d2c30'
+            '600e0379715fb6c664cdd3ac126c339e"\n'
+            "          source: https://example.org/x\n          confidence: single-source\n"
+            '        - digest: "sha256:24581ddc',
+            "PIN003",
+            None,
+            id="duplicate-denied-digest",
+        ),
+        pytest.param(
+            'digest: "sha256:aaaaaaaaaaaa',
+            'digest: "sha256:c00f9d92c427',
+            "PIN005",
+            None,
+            id="pinned-digest-matches-denied-prefix",
+        ),
+        pytest.param(
             "python_forbidden: [litellm]",
             "python_forbidden: [litellm, LiteLLM]",
             "PIN003",

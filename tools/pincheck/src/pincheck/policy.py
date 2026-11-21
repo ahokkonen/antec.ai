@@ -16,6 +16,7 @@ from pydantic import (
     StrictInt,
     StrictStr,
     ValidationError,
+    model_validator,
 )
 
 from pincheck.imageref import DIGEST_RE, ImageRefError, normalize_registry_image
@@ -24,6 +25,10 @@ from pincheck.versions import PyVersion, Version, VersionError, canonical_py_ver
 from pincheck.yamlload import LoadedYaml, YamlLoadError, load_yaml
 
 _PY_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_URL_RE = re.compile(r"^https://[^\s/]+(?:/\S*)?$")
+# Минимальная длина префикса digest: 12 hex (48 бит), как в коротких ID Docker.
+MIN_DIGEST_PREFIX_HEX = 12
+_DIGEST_PREFIX_RE = re.compile(r"^sha256:(?P<hex>[0-9a-f]*)$")
 
 
 def canonical_py_name(name: str) -> str:
@@ -42,6 +47,29 @@ def _check_version(value: str) -> str:
 def _check_digest(value: str) -> str:
     if not DIGEST_RE.fullmatch(value):
         raise ValueError("digest должен иметь вид sha256:<64 строчных шестнадцатеричных символа>")
+    return value
+
+
+def _check_digest_prefix(value: str) -> str:
+    m = _DIGEST_PREFIX_RE.fullmatch(value)
+    if m is None:
+        raise ValueError(
+            "префикс digest должен иметь вид sha256:<строчные шестнадцатеричные символы> "
+            "без многоточия"
+        )
+    n = len(m.group("hex"))
+    if n < MIN_DIGEST_PREFIX_HEX:
+        raise ValueError(
+            f"префикс digest слишком короткий: {n} hex-символов, минимум {MIN_DIGEST_PREFIX_HEX}"
+        )
+    if n >= 64:
+        raise ValueError("полный digest указывается в image_digests, а не в image_digest_prefixes")
+    return value
+
+
+def _check_url(value: str) -> str:
+    if not _URL_RE.fullmatch(value):
+        raise ValueError(f"источник должен быть https-ссылкой, получено {value!r}")
     return value
 
 
@@ -69,6 +97,8 @@ def _check_py_version(value: str) -> str:
 
 VersionStr = Annotated[StrictStr, AfterValidator(_check_version)]
 DigestStr = Annotated[StrictStr, AfterValidator(_check_digest)]
+DigestPrefixStr = Annotated[StrictStr, AfterValidator(_check_digest_prefix)]
+UrlStr = Annotated[StrictStr, AfterValidator(_check_url)]
 ImageStr = Annotated[StrictStr, AfterValidator(_check_image)]
 PyNameStr = Annotated[StrictStr, AfterValidator(_check_py_name)]
 PyVersionStr = Annotated[StrictStr, AfterValidator(_check_py_version)]
@@ -95,10 +125,44 @@ class Signature(_Model):
     howto: NonEmptyStr | None = None
 
 
+Confidence = Literal["multi-source", "single-source"]
+
+
+class _DigestEvidence(_Model):
+    """Происхождение записи denylist: откуда взят digest и насколько он подтверждён."""
+
+    source: UrlStr
+    confidence: Confidence
+    corroborated_by: list[UrlStr] = Field(default_factory=list)
+    image: ImageStr | None = None  # к какому образу относится (может отличаться от компонента)
+    note: NonEmptyStr | None = None
+
+    @model_validator(mode="after")
+    def _confidence_matches_sources(self) -> _DigestEvidence:
+        if self.confidence == "multi-source" and not self.corroborated_by:
+            raise ValueError(
+                "confidence: multi-source требует хотя бы одну ссылку в corroborated_by"
+            )
+        if self.confidence == "single-source" and self.corroborated_by:
+            raise ValueError(
+                "есть corroborated_by: укажите confidence: multi-source вместо single-source"
+            )
+        return self
+
+
+class DeniedDigest(_DigestEvidence):
+    digest: DigestStr
+
+
+class DeniedDigestPrefix(_DigestEvidence):
+    prefix: DigestPrefixStr
+
+
 class Denied(_Model):
     pypi: list[PyVersionStr] = Field(default_factory=list)
     image_tags: list[NonEmptyStr] = Field(default_factory=list)
-    image_digests: list[DigestStr] = Field(default_factory=list)
+    image_digests: list[DeniedDigest] = Field(default_factory=list)
+    image_digest_prefixes: list[DeniedDigestPrefix] = Field(default_factory=list)
     note: NonEmptyStr | None = None
 
 
@@ -144,8 +208,27 @@ class ComponentIndex:
     """Индексы реестра для быстрой проверки образов."""
 
     by_repository: dict[str, tuple[str, Component]]
-    denied_digests: dict[str, str]  # digest -> компонент
+    denied_digests: dict[str, tuple[str, DeniedDigest]]  # digest -> (компонент, запись)
+    denied_prefixes: list[tuple[str, DeniedDigestPrefix]]  # (компонент, запись)
     floating_tags: frozenset[str]
+
+    def denied_match(self, digest: str) -> DenyMatch | None:
+        """Совпадение digest с denylist: точное или по префиксу. Проверяется для любого образа."""
+        exact = self.denied_digests.get(digest)
+        if exact is not None:
+            return DenyMatch(exact[0], exact[1].digest, exact[1].confidence, by_prefix=False)
+        for comp_name, entry in self.denied_prefixes:
+            if digest.startswith(entry.prefix):
+                return DenyMatch(comp_name, entry.prefix, entry.confidence, by_prefix=True)
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class DenyMatch:
+    component: str
+    value: str  # digest или префикс из реестра
+    confidence: str
+    by_prefix: bool
 
 
 @dataclass(slots=True)
@@ -194,6 +277,7 @@ class _SemanticChecker:
         self.path = path
         self.today = today
         self.findings: list[Finding] = []
+        self.global_index = _build_index(policy)
 
     def _err(self, code: Code, loc: tuple[str | int, ...], message: str, fix: str) -> None:
         self.findings.append(error(code, self.path, self.doc.line_of(loc), message, fix))
@@ -246,8 +330,13 @@ class _SemanticChecker:
                 f"{name}: версия {v} повторяется в allowed",
                 "удалите повтор",
             )
-        for key in ("image_tags", "image_digests", "pypi"):
-            values: list[str] = getattr(comp.denied, key)
+        listed: dict[str, list[str]] = {
+            "image_tags": comp.denied.image_tags,
+            "image_digests": [d.digest for d in comp.denied.image_digests],
+            "image_digest_prefixes": [d.prefix for d in comp.denied.image_digest_prefixes],
+            "pypi": [canonical_py_version(v) for v in comp.denied.pypi],
+        }
+        for key, values in listed.items():
             for v in _duplicates(values):
                 self._err(
                     Code.POLICY_DUPLICATE,
@@ -284,13 +373,17 @@ class _SemanticChecker:
                     f"{name}: версия {ver} одновременно в allowed и в denied",
                     "удалите версию из allowed: denylist имеет приоритет",
                 )
-        if comp.digest is not None and comp.digest in comp.denied.image_digests:
-            self._err(
-                Code.POLICY_VERSION,
-                (*base, "digest"),
-                f"{name}: зафиксированный digest находится в denied.image_digests",
-                "зафиксируйте digest чистого образа",
-            )
+        if comp.digest is not None:
+            # Denylist общий для всех компонентов, как и при проверке образов.
+            hit = self.global_index.denied_match(comp.digest)
+            if hit is not None:
+                self._err(
+                    Code.POLICY_VERSION,
+                    (*base, "digest"),
+                    f"{name}: зафиксированный digest совпадает с denylist компонента "
+                    f"{hit.component!r} ({hit.value})",
+                    "зафиксируйте digest чистого образа",
+                )
         if comp.candidate is not None:
             self._candidate(name, comp, comp.candidate, minimum, denied_versions, denied_tags)
 
@@ -362,16 +455,19 @@ class _SemanticChecker:
 
 def _build_index(policy: Policy) -> ComponentIndex:
     by_repo: dict[str, tuple[str, Component]] = {}
-    denied: dict[str, str] = {}
+    denied: dict[str, tuple[str, DeniedDigest]] = {}
+    prefixes: list[tuple[str, DeniedDigestPrefix]] = []
     for name, comp in policy.components.items():
         repo = comp.repository
         if repo is not None:
             by_repo.setdefault(repo, (name, comp))
         for d in comp.denied.image_digests:
-            denied.setdefault(d, name)
+            denied.setdefault(d.digest, (name, d))
+        prefixes.extend((name, d) for d in comp.denied.image_digest_prefixes)
     return ComponentIndex(
         by_repository=by_repo,
         denied_digests=denied,
+        denied_prefixes=prefixes,
         floating_tags=frozenset(policy.defaults.floating_tags_forbidden),
     )
 

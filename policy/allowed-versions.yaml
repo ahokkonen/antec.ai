@@ -15,7 +15,11 @@
 #                 при первом pull после проверки подписи и denylist. null = ещё не
 #                 зафиксирован: pincheck выдаёт предупреждение, а с --require-digest
 #                 (prod, репозитории инсталляций) ошибку (ADR-0016)
-#   denied        известные вредоносные или отозванные версии, теги, дайджесты
+#   denied        известные вредоносные или отозванные версии, теги, дайджесты.
+#                 Каждая запись image_digests / image_digest_prefixes содержит
+#                 source (https), confidence (multi-source | single-source) и,
+#                 для multi-source, corroborated_by. image_digest_prefixes: усечённые
+#                 digest не короче 12 hex-символов, сверка по префиксу.
 #   floating_tags_forbidden  теги, которые нельзя использовать никогда
 #   prerelease_forbidden     пре-релизы (rc, beta, alpha, dev) запрещены всегда (ADR-0016)
 #   note          свободное пояснение к компоненту
@@ -52,21 +56,68 @@ components:
       pypi: ["1.82.7", "1.82.8", "1.107.0"]
       image_tags: ["v1.107.0"]
       image_digests:
-        # Индекс ghcr.io/berriai/litellm:v1.107.0 и docker.io/litellm/litellm:v1.107.0
-        # (официальный отчёт LiteLLM, Konfirmity)
-        - "sha256:1bbcb1443bc962e45f5aad53fe3d2c30600e0379715fb6c664cdd3ac126c339e"
-        # Платформенные манифесты litellm v1.107.0: amd64 (issue BerriAI/litellm#47826, Konfirmity), arm64 (то же)
-        - "sha256:bd1aeee419ea36da9aa2b657288da4101887be468f020ac63d22ba6ed84a3ea5"
-        - "sha256:56b74573eed6e4aafe4b50603dbe7853e0345f188c8e44a09f1098caf1f4bcdf"
-        # Платформенные манифесты litellm-database v1.107.0: amd64, arm64 (только Konfirmity)
-        - "sha256:24581ddc30767f16ecb69d2b0517556f2cd7dea56971adb42a3d1beb97d69523"
-        - "sha256:827dd893c74cf621a860a66a3a447a5c732533f087589ce905573e285c0a239c"
-        # Платформенные манифесты litellm-non_root v1.107.0: amd64, arm64 (только Konfirmity)
-        - "sha256:645a67d810628252d63df85dcc8824c58bcc77cf8383f4d3e6321f0ccc3ce9e4"
-        - "sha256:f75c8edae59b72b1ebfd617295833f465c85bb2fab9c1d60f21b496db86cb8da"
-        # TODO: полные индексы litellm-database (sha256:c00f9d92c427...) и litellm-non_root
-        # (sha256:7b00e91cd2fe...) опубликованы только усечёнными (отчёт LiteLLM, Konfirmity,
-        # #47826 на 2026-11-21). Добавить, когда появятся полные значения в первоисточнике.
+        - digest: "sha256:1bbcb1443bc962e45f5aad53fe3d2c30600e0379715fb6c664cdd3ac126c339e"
+          image: ghcr.io/berriai/litellm
+          source: https://docs.litellm.ai/blog/security-incident-oct-21-2026
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          note: "Индекс v1.107.0; тот же индекс у docker.io/litellm/litellm"
+        - digest: "sha256:bd1aeee419ea36da9aa2b657288da4101887be468f020ac63d22ba6ed84a3ea5"
+          image: ghcr.io/berriai/litellm
+          source: https://github.com/BerriAI/litellm/issues/47826
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          note: "Платформенный манифест v1.107.0, linux/amd64"
+        - digest: "sha256:56b74573eed6e4aafe4b50603dbe7853e0345f188c8e44a09f1098caf1f4bcdf"
+          image: ghcr.io/berriai/litellm
+          source: https://github.com/BerriAI/litellm/issues/47826
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          note: "Платформенный манифест v1.107.0, linux/arm64"
+        - digest: "sha256:24581ddc30767f16ecb69d2b0517556f2cd7dea56971adb42a3d1beb97d69523"
+          image: ghcr.io/berriai/litellm-database
+          source: https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          confidence: single-source
+          note: "Платформенный манифест v1.107.0, linux/amd64"
+        - digest: "sha256:827dd893c74cf621a860a66a3a447a5c732533f087589ce905573e285c0a239c"
+          image: ghcr.io/berriai/litellm-database
+          source: https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          confidence: single-source
+          note: "Платформенный манифест v1.107.0, linux/arm64"
+        - digest: "sha256:645a67d810628252d63df85dcc8824c58bcc77cf8383f4d3e6321f0ccc3ce9e4"
+          image: ghcr.io/berriai/litellm-non_root
+          source: https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          confidence: single-source
+          note: "Платформенный манифест v1.107.0, linux/amd64"
+        - digest: "sha256:f75c8edae59b72b1ebfd617295833f465c85bb2fab9c1d60f21b496db86cb8da"
+          image: ghcr.io/berriai/litellm-non_root
+          source: https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+          confidence: single-source
+          note: "Платформенный манифест v1.107.0, linux/arm64"
+      # Индексы v1.107.0, опубликованные только усечёнными. pincheck сверяет по префиксу
+      # (минимум 12 hex-символов, ADR-0016).
+      # TODO: заменить префиксы полными digest в image_digests, когда появится второй
+      # источник с полным значением (на 2026-11-21 везде только усечённые).
+      image_digest_prefixes:
+        - prefix: "sha256:c00f9d92c427"
+          image: ghcr.io/berriai/litellm-database
+          source: https://docs.litellm.ai/blog/security-incident-oct-21-2026
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+            - https://github.com/BerriAI/litellm/issues/47826
+          note: "Индекс v1.107.0, усечённый"
+        - prefix: "sha256:7b00e91cd2fe"
+          image: ghcr.io/berriai/litellm-non_root
+          source: https://docs.litellm.ai/blog/security-incident-oct-21-2026
+          confidence: multi-source
+          corroborated_by:
+            - https://www.konfirmity.com/advisories/litellm-1-107-0-supply-chain-compromise
+            - https://github.com/BerriAI/litellm/issues/47826
+          note: "Индекс v1.107.0, усечённый"
       note: "21.10.2026 теги latest, main-latest, main-stable указывали на вредоносные образы litellm, litellm-database, litellm-non_root"
     python_package_policy: "Пакет litellm не импортируется в наш код. Только HTTP к контейнеру."
     advisories:

@@ -16,7 +16,8 @@ CI-проверка закрепления версий: не даёт разв�
 
 Правила для образа: `name:tag@sha256:digest` (без digest всегда ошибка); образ есть в реестре;
 тег = `image_tag_prefix` + версия из `allowed`, не ниже `min_version`; плавающие теги и пре-релизы
-запрещены; тег и digest не в denylist (digest из denylist ловится для любого образа); если digest
+запрещены; тег и digest не в denylist (digest из denylist ловится для любого образа, усечённые
+digest из `image_digest_prefixes` сверяются по префиксу); если digest
 в реестре зафиксирован, он совпадает. `digest: null` в реестре даёт предупреждение, с
 `--require-digest` ошибку.
 
@@ -69,7 +70,7 @@ uv run --locked pytest
 | PIN015 | Версия ниже `min_version` |
 | PIN016 | digest не совпадает с реестром |
 | PIN017 | Тег в denylist |
-| PIN018 | digest в denylist |
+| PIN018 | digest в denylist (точно или по префиксу из `image_digest_prefixes`) |
 | PIN019 | Компонент с пустым allowed |
 | PIN020 | Ссылку на образ нельзя проверить (переменная, некорректный формат) |
 | PIN021 | Образ без тега |

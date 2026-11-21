@@ -50,19 +50,25 @@ def check_image(raw: str, path: str, line: int | None, ctx: CheckContext) -> lis
                 f"(digest из {pol} или из проверенного pull)",
             )
         )
-    elif ref.digest in ctx.index.denied_digests:
-        comp_name = ctx.index.denied_digests[ref.digest]
-        out.append(
-            error(
-                Code.IMAGE_DENIED_DIGEST,
-                path,
-                line,
-                f"digest {ref.digest} в denylist компонента {comp_name!r} "
-                "(известный вредоносный или отозванный образ)",
-                f"немедленно замените на разрешённую версию из {pol}; если образ запускался, "
-                "действуйте по ADR-0004, п. 10 (ротация секретов, пересборка хоста)",
+    else:
+        hit = ctx.index.denied_match(ref.digest)
+        if hit is not None:
+            how = (
+                f"совпадает по префиксу {hit.value}"
+                if hit.by_prefix
+                else f"{ref.digest} в denylist"
             )
-        )
+            out.append(
+                error(
+                    Code.IMAGE_DENIED_DIGEST,
+                    path,
+                    line,
+                    f"digest {how} компонента {hit.component!r} "
+                    f"(известный вредоносный или отозванный образ, {hit.confidence})",
+                    f"немедленно замените на разрешённую версию из {pol}; если образ запускался, "
+                    "действуйте по ADR-0004, п. 10 (ротация секретов, пересборка хоста)",
+                )
+            )
 
     if ref.tag is None:
         out.append(
@@ -194,7 +200,7 @@ def check_image(raw: str, path: str, line: int | None, ctx: CheckContext) -> lis
         out.append(error(Code.IMAGE_VERSION_NOT_ALLOWED, path, line, msg, fix))
         return out
 
-    if ref.digest is None or ref.digest in ctx.index.denied_digests:
+    if ref.digest is None or ctx.index.denied_match(ref.digest) is not None:
         return out
 
     current = allowed[0]
