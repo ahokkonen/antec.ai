@@ -99,3 +99,46 @@ ROWCOUNT_SQL="select coalesce(json_object_agg(n.nspname || '.' || c.relname,
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
   where c.relkind in ('r', 'p') and n.nspname not in ('pg_catalog', 'information_schema')
   and n.nspname not like 'pg_toast%'"
+
+# Секрет KV antec/<путь> как JSON на stdout; `null`, только если OpenBao подтвердил отсутствие
+# записи. Любая другая ошибка чтения (доступ, сеть, запечатан) завершает скрипт: отсутствие и
+# сбой нельзя путать, иначе up.sh перегенерирует существующие секреты. Нужен BAO_TOKEN.
+bao_kv_json() {
+  local out err rc=0
+  err="$(mktemp)"
+  out="$(bao_exec kv get -mount=antec -format=json "$1" 2>"$err")" || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    printf '%s\n' "$out"
+  elif grep -q "^No value found at " "$err"; then
+    echo null
+  else
+    cat "$err" >&2
+    rm -f "$err"
+    die "не удалось прочитать antec/$1 из OpenBao (код $rc)"
+  fi
+  rm -f "$err"
+}
+
+# Входные данные scripts/keycloak.py (JSON на stdout): секреты antec/keycloak и, если задан,
+# antec/entra (tenant_id, client_id; client_secret не передаётся, он в vault-файле Keycloak).
+# Нужен BAO_TOKEN с правом чтения обоих путей.
+keycloak_inputs() {
+  # Оба документа идут через stdin одного python3, а не через argv. Ошибка чтения любого
+  # из них завершает конвейер (pipefail), а не превращается в «Entra не настроен».
+  { bao_kv_json keycloak && bao_kv_json entra; } | python3 -c '
+import json, sys
+text, dec, docs, pos = sys.stdin.read(), json.JSONDecoder(), [], 0
+if not text.strip():
+    sys.exit(1)  # чтение из OpenBao не удалось, причина уже напечатана bao_kv_json
+while len(docs) < 2:
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    doc, pos = dec.raw_decode(text, pos)
+    docs.append(doc)
+if not docs[0]:
+    sys.exit("в OpenBao нет antec/keycloak; запустите scripts/up.sh")
+kc = docs[0]["data"]["data"]
+entra = docs[1]["data"]["data"] if docs[1] else None
+kc["entra"] = {k: entra[k] for k in ("tenant_id", "client_id")} if entra else None
+print(json.dumps(kc))'
+}

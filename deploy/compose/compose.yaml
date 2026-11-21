@@ -1,7 +1,8 @@
-# Базовый слой antec.ai: OpenBao + PostgreSQL (ADR-0003, ADR-0017).
+# Локальный стенд antec.ai: базовый слой OpenBao + PostgreSQL (ADR-0003, ADR-0017)
+# и Keycloak (ADR-0007).
 # Образы только по digest из policy/allowed-versions.yaml (ADR-0004).
 # Запуск только через scripts/up.sh: он распечатывает OpenBao, выгружает секреты
-# (secrets-render) и только потом запускает PostgreSQL.
+# (secrets-render) и только потом запускает PostgreSQL и Keycloak.
 name: antec
 
 x-hardening: &hardening
@@ -39,12 +40,12 @@ services:
       start_period: 5s
 
   # Одноразовая выгрузка секретов; запускается только из scripts/up.sh
-  # (`compose run`), токен передаётся через stdin.
+  # (`compose run ... secrets-render <цель>`), токен передаётся через stdin.
   secrets-render:
     profiles: [bootstrap]
     image: ghcr.io/openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f
     entrypoint: ["/bin/sh", "/render/render.sh"]
-    user: "0:0"   # нужен chown файлов на uid postgres
+    user: "0:0"   # нужен chown файлов на uid сервиса
     restart: "no"
     security_opt:
       - no-new-privileges:true
@@ -55,7 +56,8 @@ services:
       BAO_ADDR: http://openbao:8200
     volumes:
       - ./openbao/render.sh:/render/render.sh:ro
-      - postgres-secrets:/out
+      - postgres-secrets:/out/postgres
+      - keycloak-secrets:/out/keycloak
     networks: [secrets]
     depends_on:
       openbao:
@@ -87,14 +89,70 @@ services:
       retries: 5
       start_period: 10s
 
+  keycloak:
+    <<: *hardening
+    build:
+      context: ./images/keycloak
+    image: localhost/antec/keycloak:26.8.2
+    pull_policy: build
+    # Несекретные опции здесь; секретные (пароль БД, bootstrap-клиент) в keycloak.conf,
+    # который secrets-render выгружает из OpenBao. Секрет клиента Entra в vault-файле.
+    command:
+      # --config-file задаётся до команды start (опция kc.sh, не start).
+      - --config-file=/run/antec-secrets/keycloak.conf
+      - start
+      - --optimized
+      - --vault-dir=/run/antec-secrets/vault
+      - --db-url=jdbc:postgresql://postgres:5432/keycloak
+      - --db-username=keycloak
+      - --db-pool-max-size=20
+      # Локальный стенд: HTTP только на 127.0.0.1 хоста. На сервере TLS через reverse proxy.
+      - --hostname=http://localhost:8080
+      - --hostname-backchannel-dynamic=true
+      - --http-enabled=true
+      - --http-port=8080
+      # Один узел: локальный кэш без кластерного Infinispan (HA на продакшне отдельно).
+      - --cache=local
+      - --log-console-output=default
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      - /opt/keycloak/data:size=64m,uid=1000,gid=0,mode=0700
+    volumes:
+      - keycloak-secrets:/run/antec-secrets:ro
+    networks: [data, egress]
+    ports:
+      - "127.0.0.1:8080:8080"
+    mem_limit: 1536m
+    healthcheck:
+      # В образе нет curl: запрос к /health/ready порта управления через /dev/tcp.
+      test:
+        - CMD-SHELL
+        # Готовность только по коду 200: в теле 503 тоже встречается "UP" (вложенные проверки).
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          head -n 1 <&3 | grep -q ' 200 '
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 networks:
   # Без выхода наружу и без публикации портов на хост.
   secrets:
     internal: true
   data:
     internal: true
+  # Выход наружу и публикация порта на 127.0.0.1 хоста: только Keycloak
+  # (браузер пользователя и login.microsoftonline.com).
+  egress: {}
 
 volumes:
   openbao-data:
   postgres-data:
   postgres-secrets:
+  keycloak-secrets:

@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# Запуск локального стенда: OpenBao (init/unseal), секреты, PostgreSQL. Идемпотентен.
+# Запуск локального стенда: OpenBao (init/unseal), секреты, PostgreSQL, Keycloak. Идемпотентен.
+#   --recreate-realm   удалить realm antec и создать заново из keycloak/realm-antec.json
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_macos_keychain
+
+recreate_realm=""
+case "${1:-}" in
+  "") ;;
+  --recreate-realm) recreate_realm="--recreate-realm" ;;
+  *) die "использование: up.sh [--recreate-realm]" ;;
+esac
 
 log "запуск OpenBao"
 compose up -d openbao
@@ -45,8 +53,10 @@ if ! bao_exec secrets list -format=json | python3 -c 'import json,sys; sys.exit(
   bao_exec secrets enable -path=antec -version=2 kv >/dev/null
 fi
 
-compose exec -T -e BAO_TOKEN openbao bao policy write render-postgres - \
-  < "$COMPOSE_DIR/openbao/policies/render-postgres.hcl" >/dev/null
+for policy in render-postgres render-keycloak; do
+  compose exec -T -e BAO_TOKEN openbao bao policy write "$policy" - \
+    < "$COMPOSE_DIR/openbao/policies/$policy.hcl" >/dev/null
+done
 
 if ! bao_exec kv get -mount=antec postgres >/dev/null 2>&1; then
   log "генерация паролей PostgreSQL в OpenBao (antec/postgres)"
@@ -57,13 +67,49 @@ print(json.dumps({k: secrets.token_urlsafe(32) for k in keys}))
 PY
 fi
 
-log "выгрузка секретов PostgreSQL (secrets-render)"
-# Короткоживущий токен только для secrets-render, передаётся через stdin.
-bao_exec token create -policy=render-postgres -ttl=5m -use-limit=10 \
-    -orphan -no-default-policy -field=token \
-  | compose --profile bootstrap run --rm -T secrets-render
-unset BAO_TOKEN
+# Секреты Keycloak (ADR-0007). Недостающие ключи дополняются, существующие не меняются.
+# Генерация только при подтверждённом отсутствии ключей; ошибка чтения прерывает запуск.
+existing="$(bao_kv_json keycloak)"
+if ! printf '%s' "$existing" | python3 -c '
+import json, sys
+need = {"bootstrap_client_secret", "automation_client_secret", "admin_password",
+        "breakglass_password", "platform_api_client_secret", "open_webui_client_secret"}
+doc = json.load(sys.stdin) or {}
+have = set(((doc.get("data") or {}).get("data") or {}).keys())
+sys.exit(0 if need <= have else 1)'; then
+  log "генерация секретов Keycloak в OpenBao (antec/keycloak)"
+  printf '%s' "$existing" | python3 -c '
+import json, secrets, sys
+doc = json.load(sys.stdin) or {}
+data = dict(((doc.get("data") or {}).get("data") or {}))
+for k in ("bootstrap_client_secret", "automation_client_secret", "admin_password",
+          "breakglass_password", "platform_api_client_secret", "open_webui_client_secret"):
+    data.setdefault(k, secrets.token_urlsafe(32))
+print(json.dumps(data))' | compose exec -T -e BAO_TOKEN openbao bao kv put -mount=antec keycloak - >/dev/null
+fi
+unset existing
+# Пароль роли keycloak копируется из antec/postgres, чтобы токен выгрузки Keycloak
+# не имел доступа к паролям других ролей.
+bao_exec kv get -mount=antec -field=keycloak postgres \
+  | compose exec -T -e BAO_TOKEN openbao bao kv patch -mount=antec keycloak db_password=- >/dev/null
+
+# Короткоживущие токены только для secrets-render, передаются через stdin.
+render() { # цель
+  log "выгрузка секретов $1 (secrets-render)"
+  bao_exec token create -policy="render-$1" -ttl=5m -use-limit=10 \
+      -orphan -no-default-policy -field=token \
+    | compose --profile bootstrap run --rm -T secrets-render "$1"
+}
+render postgres
+render keycloak
 
 log "сборка и запуск PostgreSQL"
 compose up -d --build --wait postgres
+log "сборка и запуск Keycloak (первый запуск около минуты)"
+compose up -d --build --wait keycloak
+
+log "настройка Keycloak: master, realm antec, брокер Entra"
+keycloak_inputs | python3 "$COMPOSE_DIR/scripts/keycloak.py" apply $recreate_realm
+unset BAO_TOKEN
 log "стенд запущен: $(compose ps --format '{{.Service}}={{.State}}' | tr '\n' ' ')"
+log "Keycloak: http://localhost:8080/realms/antec/account (администрирование: http://localhost:8080/admin)"
