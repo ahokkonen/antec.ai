@@ -39,9 +39,16 @@ end_users="$(python3 -c '
 import json, sys
 print("\n".join(json.loads(r)["gateway_request_id"] or "-" for r in sys.stdin.read().splitlines() if r.strip()))' <<<"$calls" \
   | while read -r gw; do
-      pg_exec psql -X -q -At -d litellm -v gw="$gw" <<'SQL'
+      # LiteLLM пишет расходы асинхронно (у потока заметно позже ответа): ждём до 30 с.
+      for _ in $(seq 1 15); do
+        end_user="$(pg_exec psql -X -q -At -d litellm -v gw="$gw" <<'SQL'
 select coalesce(max("end_user"), '-') from "LiteLLM_SpendLogs" where request_id = :'gw';
 SQL
+)"
+        [[ "$end_user" != "-" ]] && break
+        sleep 2
+      done
+      echo "$end_user"
     done)"
 
 python3 - "$calls" "$end_users" <<'PY'
