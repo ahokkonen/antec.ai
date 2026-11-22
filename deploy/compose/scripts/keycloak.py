@@ -336,11 +336,26 @@ def ensure_otp_browser_flow(admin: Admin, realm: str) -> None:
         admin.call("PUT", f"/{realm}", {"browserFlow": OTP_BROWSER_FLOW})
 
 
+# Сроки сессии realm, которые up.sh держит равными realm-antec.json и на существующем realm.
+# Простой SSO-сессии = сроку сессии Open WebUI (JWT_EXPIRES_IN в compose.yaml, 8 часов): иначе
+# после простоя Open WebUI остаётся открытым без токена Keycloak и не видит моделей.
+REALM_SESSION_KEYS = ("ssoSessionIdleTimeout", "ssoSessionMaxLifespan")
+
+
+def ensure_realm_sessions(admin: Admin, spec: Json) -> None:
+    current = admin.call("GET", f"/{REALM}")
+    changed = {k: spec[k] for k in REALM_SESSION_KEYS if current.get(k) != spec[k]}
+    if changed:
+        log(f"realm {REALM}: сроки сессии {changed}")
+        admin.call("PUT", f"/{REALM}", changed)
+
+
 def ensure_realm(admin: Admin, secrets_in: Json) -> None:
     """Создаёт realm и недостающие объекты из realm-antec.json; существующие не меняет.
 
     Повторный запуск после прерванного первого достраивает realm (scopes, клиенты,
-    breakglass), но не перезаписывает объекты, которые уже есть.
+    breakglass), но не перезаписывает объекты, которые уже есть. Исключение: сроки сессии
+    (REALM_SESSION_KEYS) приводятся к realm-antec.json и на существующем realm.
     """
     spec = cast(Json, json.loads((KEYCLOAK_DIR / "realm-antec.json").read_text()))
     scopes = cast(list[Json], spec.pop("clientScopes", []))
@@ -348,6 +363,7 @@ def ensure_realm(admin: Admin, secrets_in: Json) -> None:
     if not admin.realm_exists(REALM):
         log(f"создание realm {REALM} из keycloak/realm-antec.json")
         admin.call("POST", "", spec)
+    ensure_realm_sessions(admin, spec)
     have_scopes = {sc["name"] for sc in admin.call("GET", f"/{REALM}/client-scopes")}
     for scope in scopes:
         if scope["name"] not in have_scopes:
@@ -723,8 +739,8 @@ def cmd_apply(secrets_in: Json, recreate: bool) -> None:
     log(f"готово: {BASE_URL.replace('127.0.0.1', 'localhost')}/realms/{REALM}/account")
 
 
-def _browser_login(open_browser: bool) -> str:
-    """Код авторизации через браузер (клиент antec-smoke, PKCE S256)."""
+def _browser_login(open_browser: bool) -> Json:
+    """Вход через браузер (клиент antec-smoke, PKCE S256): ответ token endpoint."""
     verifier = secrets.token_urlsafe(48)
     challenge = (
         base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -787,7 +803,7 @@ def _browser_login(open_browser: bool) -> str:
     )
     if status != 200 or not isinstance(payload, dict):
         raise KeycloakError(f"обмен кода: HTTP {status}: {payload}")
-    return cast(str, payload["access_token"])
+    return cast(Json, payload)
 
 
 def _show(title: str, claims: Json) -> None:
@@ -812,7 +828,7 @@ def _show(title: str, claims: Json) -> None:
 
 def cmd_smoke(secrets_in: Json, open_browser: bool) -> None:
     """Вход пользователя и обмен его токена на токен для mcp-m365 (RFC 8693, V2)."""
-    subject = _browser_login(open_browser)
+    subject = cast(str, _browser_login(open_browser)["access_token"])
     sub_claims = jwt_claims(subject)
     _show("токен пользователя (antec-smoke)", sub_claims)
     status, payload = token_request(
@@ -866,10 +882,34 @@ def cmd_user_token(open_browser: bool) -> None:
     Токен живёт 5 минут и годится только для Platform API на стенде (aud platform-api,
     azp antec-smoke); в терминал он не печатается, скрипт передаёт его через конвейер.
     """
-    token = _browser_login(open_browser)
     if sys.stdout.isatty():
         raise KeycloakError("user-token печатает токен только в конвейер, не в терминал")
-    sys.stdout.write(token)
+    tokens = _browser_login(open_browser)
+    refresh_token = tokens.get("refresh_token")
+    if not isinstance(refresh_token, str):
+        raise KeycloakError("Keycloak не выдал refresh token клиенту antec-smoke")
+    # Refresh token должен жить дольше старого простоя (30 минут) и обновляться: иначе Open WebUI
+    # теряет токен Keycloak раньше своей сессии (8 часов). Срок = min(простой, остаток максимума).
+    status, refreshed = token_request(
+        REALM,
+        {
+            "grant_type": "refresh_token",
+            "client_id": "antec-smoke",
+            "refresh_token": refresh_token,
+        },
+    )
+    ttl = refreshed.get("refresh_expires_in") if isinstance(refreshed, dict) else None
+    ok = status == 200 and isinstance(ttl, int) and ttl > 1800
+    print(
+        f"  [{'ok' if ok else 'FAIL'}] обновление токена, срок refresh token {ttl} с",
+        file=sys.stderr,
+    )
+    if not ok or not isinstance(refreshed, dict):
+        raise KeycloakError(
+            "обновление токена не прошло или срок refresh token мал; если сессии Keycloak в"
+            " браузере почти 10 часов (максимум), выйдите из Keycloak и запустите проверку снова"
+        )
+    sys.stdout.write(cast(str, refreshed["access_token"]))
 
 
 def main() -> int:
