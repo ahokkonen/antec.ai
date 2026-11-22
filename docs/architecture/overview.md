@@ -3,7 +3,7 @@
 Статус: черновик для MVP. Обновлено: 2026-11-22.
 Решения: [ADR-0001](../adr/0001-llm-gateway-litellm.md), [ADR-0002](../adr/0002-chat-ui-open-webui.md),
 [ADR-0003](../adr/0003-postgresql-single-datastore.md), [ADR-0004](../adr/0004-dependency-pinning-and-supply-chain.md),
-[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md), [ADR-0009](../adr/0009-authorization-cerbos.md), [ADR-0008](../adr/0008-plugin-contract-and-instance-template.md), [ADR-0010](../adr/0010-agent-runtime.md).
+[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md), [ADR-0009](../adr/0009-authorization-cerbos.md), [ADR-0008](../adr/0008-plugin-contract-and-instance-template.md), [ADR-0010](../adr/0010-agent-runtime.md), [ADR-0011](../adr/0011-data-classes-and-model-routing.md).
 
 ## Главная идея
 
@@ -117,7 +117,8 @@ flowchart LR
    и к LiteLLM отключены.
 3. Platform API сопоставляет пользователя по `(iss, sub)` токена Keycloak (плюс `idp`, `entra_oid`,
    ADR-0007) и спрашивает Cerbos, доступна ли ему выбранная модель или агент.
-4. Входные гардрейлы: маскирование PII, проверка на prompt injection.
+4. Класс данных (ADR-0011): ввод пользователя = класс по умолчанию инсталляции, модель и инструменты
+   с допуском ниже класса не используются. Входные гардрейлы: маскирование PII, проверка на prompt injection.
 5. Обычный чат: запрос уходит в LiteLLM служебным ключом Platform API с идентификатором
    пользователя для учёта расходов и бюджета. Агент: рантайм выполняет шаги, ищет в RAG,
    вызывает инструменты.
