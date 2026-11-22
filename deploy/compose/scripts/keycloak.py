@@ -725,7 +725,8 @@ def cmd_open_webui_identities(secrets_in: Json) -> None:
     print(json.dumps({"admins": admins, "uid_by_id": uid_by_id}))
 
 
-_AUDIENCE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# Как в схеме манифеста (tools/instance): только mcp-*, клиенты ядра аудиторией быть не могут.
+_AUDIENCE_RE = re.compile(r"mcp-[a-z0-9][a-z0-9-]{0,59}")
 
 
 def ensure_mcp_audiences(admin: Admin, audiences: list[str]) -> None:
@@ -746,8 +747,8 @@ def ensure_mcp_audiences(admin: Admin, audiences: list[str]) -> None:
         for sc in admin.call("GET", f"/{REALM}/clients/{platform['id']}/optional-client-scopes")
     }
     for audience in audiences:
-        if not _AUDIENCE_RE.fullmatch(audience) or audience == PLATFORM_CLIENT:
-            raise KeycloakError(f"недопустимая аудитория MCP-сервера: {audience!r}")
+        if not _AUDIENCE_RE.fullmatch(audience):
+            raise KeycloakError(f"недопустимая аудитория MCP-сервера (нужно mcp-*): {audience!r}")
         if admin.find_client(REALM, audience) is None:
             log(f"клиент-аудитория MCP-сервера {audience}")
             admin.call(
