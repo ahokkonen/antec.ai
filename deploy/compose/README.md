@@ -3,14 +3,15 @@
 Локальный стенд antec.ai на Docker (Mac): базовый слой OpenBao 2.7.2 и PostgreSQL 18.7 с
 pgvector 0.8.7 ([ADR-0017](../../docs/adr/0017-base-layer-openbao-postgres.md)) и Keycloak 26.8.2
 с брокером Entra ID ([ADR-0007](../../docs/adr/0007-idp-and-agent-delegation.md)), LLM-шлюз LiteLLM
-1.108.8 и веб-чат Open WebUI 0.13.3 ([ADR-0018](../../docs/adr/0018-litellm-on-base-layer.md)). Образы только по
+1.108.8 и веб-чат Open WebUI 0.13.3 ([ADR-0018](../../docs/adr/0018-litellm-on-base-layer.md)), Platform API
+([ADR-0006](../../docs/adr/0006-platform-api-data-model.md), [services/platform-api](../../services/platform-api/README.md)). Образы только по
 digest из [`policy/allowed-versions.yaml`](../../policy/allowed-versions.yaml) (ADR-0004).
 
 ## Требования
 
 - macOS с Docker Desktop (Compose v2 или новее); скрипты используют Связку ключей (`security`) и `python3`.
-- Около 6 GB свободной памяти в VM Docker (лимиты: OpenBao 256 MB, PostgreSQL 1 GB, Keycloak,
-  LiteLLM и Open WebUI по 1,5 GB; фактически около 2,5 GB).
+- Около 6,5 GB свободной памяти в VM Docker (лимиты: OpenBao 256 MB, PostgreSQL 1 GB, Keycloak,
+  LiteLLM и Open WebUI по 1,5 GB, Platform API 512 MB; фактически около 2,7 GB).
 - Свободные порты `127.0.0.1:8080` (Keycloak) и `127.0.0.1:3000` (Open WebUI).
 
 ## Команды
@@ -84,6 +85,16 @@ deploy/compose/scripts/litellm-smoke.sh
 бюджет конечного пользователя, учёт расходов, отзыв ключа. Вызовы `chat-fast` стоят доли цента.
 Код выхода 2: ключ провайдера не задан, вызовы моделей пропущены.
 
+```bash
+deploy/compose/scripts/platform-smoke.sh
+```
+
+Проверка Platform API: откроется браузер для входа (клиент `antec-smoke`), затем изнутри
+контейнера `platform-api`: модели, отказ без токена и с подделанной подписью, чат `chat-fast` с
+потоком и без (с параметрами шлюза, которые фасад должен отбросить), неизвестная модель; в БД:
+статус и токены вызовов, вопрос и ответ в истории, запись аудита, конечный пользователь в учёте
+LiteLLM = пользователь Platform API. Токен передаётся только через конвейер.
+
 Подключиться к PostgreSQL:
 
 ```bash
@@ -95,11 +106,13 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 | Сервис | Роль | Сеть | Память |
 | --- | --- | --- | --- |
 | `openbao` | Секреты, Raft-хранилище в томе `openbao-data` | `secrets` (internal) | 256 MB |
-| `secrets-render` | Одноразовая выгрузка секретов из OpenBao в тома `postgres-secrets` и `keycloak-secrets` (профиль `bootstrap`) | `secrets` | |
+| `secrets-render` | Одноразовая выгрузка секретов из OpenBao в тома сервисов (профиль `bootstrap`) | `secrets` | |
 | `postgres` | `localhost/antec/postgres:18.7-pgvector0.8.7`, БД `keycloak`, `litellm`, `openwebui`, `platform`, `dbos` | `data` (internal) | 1 GB |
 | `keycloak` | `localhost/antec/keycloak:26.8.2`, realm `antec`, брокер `entra`; `http://localhost:8080` | `data`, `egress` | 1,5 GB |
 | `litellm` | `litellm-non_root:v1.108.8`, модели `chat-default` (Claude Opus 5.5), `chat-fast` (Claude Haiku 5.5); порт 4000 только внутри | `data`, `llm` (internal), `llm-egress` | 1,5 GB |
-| `open-webui` | `open-webui:v0.13.3`, вход через Keycloak; `http://localhost:3000` | `data`, `llm`, `ui` | 1,5 GB |
+| `platform-migrate` | Одноразовые миграции БД `platform` ролью владельца схемы (профиль `bootstrap`) | `data` | 256 MB |
+| `platform-api` | `localhost/antec/platform-api:0.1.0`, фасад `/v1`, роль БД `platform_app`; порт 8000 только внутри | `data`, `llm`, `platform` (internal) | 512 MB |
+| `open-webui` | `open-webui:v0.13.3`, вход через Keycloak; `http://localhost:3000` | `data`, `platform`, `ui` | 1,5 GB |
 
 Наружу опубликованы только порты Keycloak `127.0.0.1:8080` и Open WebUI `127.0.0.1:3000` (сеть
 `ui`). Выход в интернет нужен Keycloak (вход через Entra) и LiteLLM (API провайдеров); у Open WebUI
@@ -115,9 +128,14 @@ http://localhost:3000, вход только через Keycloak (Entra или `
 Open WebUI с Keycloak: создаёт `breakglass` в пустом Open WebUI (иначе первый вошедший стал бы
 администратором), снимает роль admin с аккаунтов без роли `admin` в Keycloak и переносит аккаунты,
 созданные по `sub`, на `antec_uid`. Локальным пользователям Keycloak `antec_uid` = логин
-(заполняется `up.sh`). Чат идёт в LiteLLM виртуальным ключом
-`open-webui` (временно, до Platform API: ADR-0018); каждый пользователь получает бюджет
-`open-webui-user` (5 USD на 30 дней). Настройки задаются только окружением в `compose.yaml`:
+(заполняется `up.sh`).
+
+Единственное подключение Open WebUI: фасад Platform API с access token пользователя из Keycloak
+(`auth_type: system_oauth`, ADR-0006); ключа LiteLLM у Open WebUI нет, прежний ключ `open-webui`
+`up.sh` удаляет. Platform API ходит в LiteLLM ключом `platform-api` и передаёт `user` = id
+пользователя Platform API; каждый пользователь получает бюджет `platform-user` (5 USD на 30 дней).
+Если SSO-сессия Keycloak истекла (30 минут без активности), фасад отвечает 401: выйдите из
+Open WebUI и войдите заново. Настройки задаются только окружением в `compose.yaml`:
 изменения в админке Open WebUI не переживают перезапуск.
 
 ## Keycloak
@@ -156,5 +174,8 @@ client secret со сроком не больше 180 дней, «Assignment req
 - Keycloak по HTTP на localhost; Admin API на том же адресе, что и вход. На сервере TLS через
   reverse proxy и отдельный адрес админ-консоли (ADR-0007).
 - Логический бэкап без PITR.
+- Сеть `data` общая для всех сервисов с БД: Open WebUI видит по ней LiteLLM и Platform API.
+  Доступ закрывают ключи и токены (у Open WebUI ключа LiteLLM нет), а не сеть; отдельные сети
+  к PostgreSQL на сервис: открытый вопрос ADR-0006.
 - Перезапуск `postgres` напрямую через `docker compose` работает, но обновить секреты можно
   только через `up.sh`.

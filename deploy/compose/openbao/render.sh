@@ -4,6 +4,8 @@
 #   render.sh keycloak   keycloak.conf и vault-файлы realm в /out/keycloak (uid 1000)
 #   render.sh litellm    файлы-переменные окружения LiteLLM в /out/litellm (uid 65534)
 #   render.sh open-webui файлы-переменные окружения Open WebUI в /out/open-webui (uid 65534)
+#   render.sh platform-api      секреты Platform API в /out/platform-api (uid 65534)
+#   render.sh platform-migrate  пароль владельца схемы platform в /out/platform-migrate (uid 65534)
 # Токен приходит через stdin (`compose run -T`), живёт 5 минут и умеет читать только
 # пути своей цели. Значения не печатаются и не попадают в argv и окружение контейнера.
 set -eu
@@ -42,7 +44,7 @@ remove() { # итоговый
 case "$target" in
   postgres)
     out=/out/postgres
-    keys="superuser keycloak litellm openwebui platform dbos"
+    keys="superuser keycloak litellm openwebui platform dbos platform_app"
     trap 'rm -f "$out"/.*.new' EXIT
     for key in $keys; do
       fetch postgres "$key" "$out/.$key.new"
@@ -139,15 +141,33 @@ case "$target" in
     fetch open-webui webui_secret_key "$out/.WEBUI_SECRET_KEY.new"
     fetch open-webui db_password "$out/.DATABASE_PASSWORD.new"
     fetch open-webui oauth_client_secret "$out/.OAUTH_CLIENT_SECRET.new"
-    # Виртуальный ключ Open WebUI в LiteLLM (не ключ провайдера).
-    fetch open-webui litellm_key "$out/.OPENAI_API_KEYS.new"
-    for var in WEBUI_SECRET_KEY DATABASE_PASSWORD OAUTH_CLIENT_SECRET OPENAI_API_KEYS; do
+    for var in WEBUI_SECRET_KEY DATABASE_PASSWORD OAUTH_CLIENT_SECRET; do
+      replace "$out/.$var.new" "$out/$var"
+    done
+    # Ключ LiteLLM у Open WebUI больше не нужен: чат идёт через Platform API (ADR-0006).
+    remove "$out/OPENAI_API_KEYS"
+    owner=65534:65534
+    ;;
+  platform-api)
+    # Файлы секретов pydantic-settings: имя = имя переменной в нижнем регистре (ADR-0006, п. 10).
+    out=/out/platform-api
+    trap 'rm -f "$out"/.*.new' EXIT
+    fetch platform-api db_password "$out/.platform_database_password.new"
+    fetch platform-api litellm_key "$out/.platform_gateway_api_key.new"
+    for var in platform_database_password platform_gateway_api_key; do
       replace "$out/.$var.new" "$out/$var"
     done
     owner=65534:65534
     ;;
+  platform-migrate)
+    out=/out/platform-migrate
+    trap 'rm -f "$out"/.*.new' EXIT
+    fetch platform-migrate db_password "$out/.platform_database_password.new"
+    replace "$out/.platform_database_password.new" "$out/platform_database_password"
+    owner=65534:65534
+    ;;
   *)
-    echo "render: использование: render.sh postgres|keycloak|litellm|open-webui" >&2
+    echo "render: использование: render.sh postgres|keycloak|litellm|open-webui|platform-api|platform-migrate" >&2
     exit 2
     ;;
 esac

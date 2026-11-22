@@ -168,10 +168,13 @@ print(json.dumps(data))' $missing \
     | compose exec -T -e BAO_TOKEN openbao bao kv put -mount=antec "$path" - >/dev/null
 }
 
-# Копирует поле одной записи KV в другую (значение идёт только через stdin).
+# Копирует поле одной записи KV в другую (значение идёт только через stdin). Запись-приёмник
+# создаётся, если её нет (kv patch работает только с существующей записью).
 copy_secret_field() { # путь-источник поле-источник путь-приёмник поле-приёмник
+  local verb=patch
+  [[ "$(bao_kv_json "$3")" == null ]] && verb=put
   bao_exec kv get -mount=antec -field="$2" "$1" \
-    | compose exec -T -e BAO_TOKEN openbao bao kv patch -mount=antec "$3" "$4=-" >/dev/null
+    | compose exec -T -e BAO_TOKEN openbao bao kv "$verb" -mount=antec "$3" "$4=-" >/dev/null
 }
 
 # Копирует пароль роли PostgreSQL из antec/postgres в antec/<путь>:db_password.
@@ -204,9 +207,9 @@ print(json.dumps(kc))'
 }
 
 # Входные данные scripts/litellm_provision.py (JSON на stdout): мастер-ключ LiteLLM и
-# виртуальный ключ Open WebUI. Оба документа идут через stdin одного python3. Нужен BAO_TOKEN.
+# виртуальный ключ Platform API. Оба документа идут через stdin одного python3. Нужен BAO_TOKEN.
 litellm_provision_inputs() {
-  { bao_kv_json litellm && bao_kv_json open-webui; } | python3 -c '
+  { bao_kv_json litellm && bao_kv_json platform-api; } | python3 -c '
 import json, sys
 text, dec, docs, pos = sys.stdin.read(), json.JSONDecoder(), [], 0
 if not text.strip():
@@ -217,9 +220,23 @@ while len(docs) < 2:
     doc, pos = dec.raw_decode(text, pos)
     docs.append(doc)
 if not docs[0] or not docs[1]:
-    sys.exit("в OpenBao нет antec/litellm или antec/open-webui; запустите scripts/up.sh")
+    sys.exit("в OpenBao нет antec/litellm или antec/platform-api; запустите scripts/up.sh")
 print(json.dumps({"master_key": docs[0]["data"]["data"]["master_key"],
-                  "open_webui_key": docs[1]["data"]["data"]["litellm_key"]}))'
+                  "platform_api_key": docs[1]["data"]["data"]["litellm_key"]}))'
+}
+
+# Роль platform_app (ADR-0006, п. 9): создаётся, если её нет, пароль приводится к OpenBao.
+# Пароль читается psql из файла секретов внутри контейнера postgres (не argv, не окружение).
+# Права на таблицы выдают миграции (владелец схемы platform).
+ensure_platform_app_role() {
+  pg_exec psql -X -q -v ON_ERROR_STOP=1 -d postgres >/dev/null <<'SQL'
+\set pw `cat /run/antec-secrets/platform_app`
+select 'create role platform_app login connection limit 30'
+  where not exists (select 1 from pg_roles where rolname = 'platform_app') \gexec
+alter role platform_app login connection limit 30 password :'pw';
+grant connect on database platform to platform_app;
+SQL
+  pg_exec psql -X -q -v ON_ERROR_STOP=1 -d platform -c 'grant usage on schema public to platform_app' >/dev/null
 }
 
 # Сверка аккаунтов Open WebUI с Keycloak (open-webui/sync-identities.sql, ADR-0018): перенос
