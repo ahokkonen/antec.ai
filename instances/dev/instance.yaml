@@ -1,5 +1,5 @@
 # Dev-инсталляция ядра (ADR-0008, п. 7): локальный стенд deploy/compose и CI.
-schema_version: 1
+schema_version: 2
 instance:
   id: dev
   name: "antec.ai dev"
@@ -26,6 +26,14 @@ models:
       api_key: os.environ/ANTHROPIC_API_KEY
 
 mcp_servers: []
+
+# Агенты (ADR-0010): видны в /v1/models рядом с моделями, имя начинается с agent-.
+agents:
+  - name: agent-assistant
+    description: "Ассистент dev-инсталляции без инструментов"
+    model: chat-fast
+    instructions_file: agents/assistant.md
+    max_steps: 5
 
 settings:
   # antec-smoke: только стенд (scripts/platform-smoke.sh).

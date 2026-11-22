@@ -39,6 +39,11 @@ def test_render_dev(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
         "PLATFORM_POLICY_SCOPE": "dev",
         "PLATFORM_ALLOWED_CLIENTS": "open-webui,antec-smoke",
     }
+    agents = json.loads((out / "agents.json").read_text())
+    assert [a["name"] for a in agents] == ["agent-assistant"]
+    assert agents[0]["model"] == "chat-fast"
+    assert "dev-инсталляции" in agents[0]["instructions"]
+    assert agents[0]["max_steps"] == 5
     summary = json.loads((out / "instance.json").read_text())
     assert summary["id"] == "dev"
     assert summary["models"] == ["chat-default", "chat-fast", "chat-lab"]
@@ -98,3 +103,15 @@ def test_init_failure_leaves_no_partial_dir(core_dir: Path, tmp_path: Path) -> N
     assert not new.exists()
     assert empty.is_dir()
     assert not any(empty.iterdir())
+
+
+def test_instructions_file_problems(core_dir: Path, dev_instance: Path) -> None:
+    md = dev_instance / "agents" / "assistant.md"
+    md.unlink()
+    assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_INVALID
+    (dev_instance.parent / "outside.md").write_text("x")
+    md.symlink_to(dev_instance.parent / "outside.md")
+    assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_INVALID
+    md.unlink()
+    md.write_text("  \n")
+    assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_INVALID

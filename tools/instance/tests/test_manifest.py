@@ -53,7 +53,7 @@ def test_minimal_manifest() -> None:
 @pytest.mark.parametrize(
     ("path", "value", "needle"),
     [
-        ("schema_version", 2, "schema_version"),
+        ("schema_version", 3, "schema_version"),
         ("instance.id", "Acme", "instance.id"),
         ("instance.id", "a.b", "instance.id"),
         ("models.0.litellm.api_key", "sk-plain-secret", "os.environ"),
@@ -74,10 +74,6 @@ def test_rejected(path: str, value: object, needle: str) -> None:
 
 def test_unknown_top_level_field() -> None:
     assert "extra" in _problems({**BASE, "extra": 1})
-
-
-def test_agents_reserved() -> None:
-    assert "ADR-0010" in _problems({**BASE, "agents": []})
 
 
 def test_duplicate_models() -> None:
@@ -119,3 +115,55 @@ def test_settings() -> None:
 def test_int_timeout_accepted() -> None:
     m = parse_manifest(_with("models.0.litellm.timeout", 30))
     assert m.models[0].litellm.timeout == 30
+
+
+AGENT: dict[str, Any] = {
+    "name": "agent-sales",
+    "model": "chat-default",
+    "instructions": "Ты помощник.",
+}
+
+
+def test_agents_v2() -> None:
+    m = parse_manifest({**BASE, "schema_version": 2, "agents": [AGENT]})
+    assert m.agents[0].max_steps == 10
+    assert m.agents[0].tools == []
+
+
+def test_agents_need_v2() -> None:
+    assert "schema_version: 2" in _problems({**BASE, "agents": [AGENT]})
+
+
+@pytest.mark.parametrize(
+    ("agent", "needle"),
+    [
+        ({**AGENT, "name": "sales"}, "agents.0.name"),
+        ({**AGENT, "model": "chat-x"}, "chat-x"),
+        ({**AGENT, "tools": ["crm.search"]}, "crm.search"),
+        ({"name": "agent-a", "model": "chat-default"}, "ровно одно"),
+        ({**AGENT, "instructions_file": "a.md"}, "ровно одно"),
+        ({"name": "agent-a", "model": "chat-default", "instructions_file": "a/../../x.md"}, ".."),
+        ({**AGENT, "max_steps": 0}, "max_steps"),
+        ({**AGENT, "instructions": "x" * (32 * 1024 + 1)}, "байт"),
+    ],
+)
+def test_agent_rejected(agent: dict[str, Any], needle: str) -> None:
+    assert needle in _problems({**BASE, "schema_version": 2, "agents": [agent]})
+
+
+def test_agent_tool_refs_and_unique() -> None:
+    server = {
+        "name": "crm",
+        "url": "http://mcp-crm:8080/mcp",
+        "audience": "mcp-crm",
+        "protocol_version": "2026-07-28",
+        "tools": [{"name": "search"}],
+    }
+    data = {**BASE, "schema_version": 2, "mcp_servers": [server]}
+    m = parse_manifest({**data, "agents": [{**AGENT, "tools": ["crm.search"]}]})
+    assert m.agents[0].tools == ["crm.search"]
+    assert "повторяется" in _problems({**data, "agents": [AGENT, AGENT]})
+
+
+def test_model_name_agent_prefix_reserved() -> None:
+    assert "agent-" in _problems(_with("models.0.name", "agent-x"))
