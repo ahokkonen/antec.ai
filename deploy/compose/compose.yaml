@@ -200,7 +200,9 @@ services:
     tmpfs:
       - /tmp:size=16m,uid=65534,gid=65534
     volumes:
-      - ./cerbos/config.yaml:/antec/config.yaml:ro
+      # Каталог, а не файл: git при смене ветки пересоздаёт файл, и монтирование одного файла
+      # остаётся на удалённой копии (healthcheck перестаёт находить конфигурацию).
+      - ./cerbos:/antec:ro
       - ../../policies/cerbos:/policies:ro
     networks: [policy]
     mem_limit: 256m
@@ -324,6 +326,8 @@ services:
       OAUTH_ROLES_CLAIM: roles
       OAUTH_ALLOWED_ROLES: user,admin
       OAUTH_ADMIN_ROLES: admin
+      # Равен простою SSO-сессии Keycloak (ssoSessionIdleTimeout в keycloak/realm-antec.json):
+      # пока сессия Open WebUI жива, токен Keycloak обновляется (ADR-0006, п. 3).
       JWT_EXPIRES_IN: 8h
       # Администратор не читает чаты пользователей.
       ENABLE_ADMIN_CHAT_ACCESS: "False"
