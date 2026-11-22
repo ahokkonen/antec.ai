@@ -166,10 +166,10 @@ services:
       - /tmp:size=256m,uid=65534,gid=65534
     volumes:
       - ./litellm/config.yaml:/antec/config.yaml:ro
-      # Производные файлы инсталляции (tools/instance render, ADR-0008): include в config.yaml.
-      # Каталог, а не файл: рендер заменяет файлы атомарно, монтирование файла осталось бы на
-      # прежней копии.
-      - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered:/antec/instance:ro
+      # Модели инсталляции (tools/instance render, ADR-0008): include в config.yaml. Только
+      # подкаталог LiteLLM (агенты и настройки Platform API ему не видны). Каталог, а не файл:
+      # рендер заменяет файлы атомарно, монтирование файла осталось бы на прежней копии.
+      - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered/litellm:/antec/instance:ro
       - ./common/env-from-files.sh:/antec/env-from-files.sh:ro
       - litellm-secrets:/run/antec-secrets:ro
     # data: PostgreSQL; llm: клиенты шлюза (Platform API); llm-egress: API провайдеров.
@@ -276,9 +276,9 @@ services:
       - /tmp:size=64m,uid=65534,gid=65534
     volumes:
       - platform-api-secrets:/run/antec-secrets:ro
-      # Производные файлы инсталляции: agents.json (ADR-0010). Каталог, а не файл (рендер
+      # Агенты инсталляции (ADR-0010): только подкаталог Platform API. Каталог, а не файл (рендер
       # заменяет файлы атомарно).
-      - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered:/antec/instance:ro
+      - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered/platform-api:/antec/instance:ro
     # data: PostgreSQL и JWKS Keycloak; llm: LiteLLM; platform: клиенты фасада; policy: Cerbos.
     networks: [data, llm, platform, policy]
     mem_limit: 512m
