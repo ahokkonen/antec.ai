@@ -271,3 +271,28 @@ async def test_call_history_and_audit(app_engine: AsyncEngine) -> None:
     ]
     assert statuses == {call.id: "ok", failed.id: "rejected"}
     assert [tuple(a) for a in audit] == [("allow", "ok"), ("error", "rejected")]
+
+
+async def test_entra_attrs_conflict_does_not_break_user(app_engine: AsyncEngine) -> None:
+    """Пара Entra уже у другой идентичности: дописывание пропускается, а не падает каждый раз."""
+    store = PgStore(app_engine)
+    oid = f"oid-{uuid.uuid4()}"
+    local = await store.resolve_user(_principal(f"local-{uuid.uuid4()}"), uuid.uuid7())
+    await store.resolve_user(_principal(f"broker-{uuid.uuid4()}", oid), uuid.uuid7())
+    # Тот же локальный пользователь получил атрибуты Entra, занятые другой идентичностью.
+    async with app_engine.begin() as conn:
+        await conn.execute(text("update users set last_seen_at = now() - interval '1 hour'"))
+    sub = await _sub_of(app_engine, local.id)
+    again = await store.resolve_user(_principal(sub, oid), uuid.uuid7())
+    assert again.id == local.id
+
+
+async def _sub_of(engine: AsyncEngine, user_id: uuid.UUID) -> str:
+    async with engine.connect() as conn:
+        return str(
+            (
+                await conn.execute(
+                    text("select subject from identities where user_id = :u"), {"u": user_id}
+                )
+            ).scalar_one()
+        )

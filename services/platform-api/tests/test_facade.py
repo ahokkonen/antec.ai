@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 
 import pytest
 from conftest import FakeStream, Harness, TokenFactory, ok_meta
@@ -243,3 +244,70 @@ async def test_unknown_route_is_openai_error(harness: Harness) -> None:
     resp = await harness.client.get("/v1/embeddings")
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "not_found"
+
+
+@pytest.mark.parametrize("upstream_status", [401, 403])
+async def test_upstream_auth_error_is_502(
+    harness: Harness, make_token: TokenFactory, upstream_status: int
+) -> None:
+    harness.gateway.response = GatewayResponse(
+        meta=GatewayMeta(status=upstream_status, request_id=None, cost_usd=None),
+        body={
+            "error": {"message": "Authentication Error, invalid key sk-...", "type": "auth_error"}
+        },
+    )
+    resp = await harness.client.post(
+        "/v1/chat/completions", json=_chat(), headers=_auth(make_token())
+    )
+    assert resp.status_code == 502
+    assert resp.json()["error"]["code"] == "upstream_auth_error"
+    assert "sk-" not in resp.text
+    assert harness.store.finished[0][1].status == "error"
+
+
+async def test_stream_finalized_when_body_never_read(
+    harness: Harness, make_token: TokenFactory
+) -> None:
+    """Клиент ушёл до первой итерации тела: поток шлюза закрыт, итог вызова записан."""
+    harness.gateway.stream_value = FakeStream(meta=ok_meta(), chunks=[b"data: [DONE]\n\n"])
+
+    from antec_platform.app import _GuardedStream
+
+    captured: list[_GuardedStream] = []
+    original = _GuardedStream.__call__
+
+    async def fail_before_body(
+        self: _GuardedStream, scope: object, receive: object, send: object
+    ) -> None:
+        captured.append(self)
+
+        async def broken_send(_message: object) -> None:
+            raise OSError("клиент ушёл")
+
+        await original(self, scope, receive, broken_send)  # type: ignore[arg-type]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_GuardedStream, "__call__", fail_before_body)
+        await harness.client.post(
+            "/v1/chat/completions", json=_chat(stream=True), headers=_auth(make_token())
+        )
+    await _settle(harness)
+    assert captured
+    assert harness.gateway.stream_closed == 1
+    assert harness.store.finished[0][1].status == "cancelled"
+
+
+async def test_stream_unexpected_error_is_recorded_as_error(
+    harness: Harness, make_token: TokenFactory
+) -> None:
+    class Boom(FakeStream):
+        async def events(self) -> AsyncIterator[bytes]:
+            yield _sse({"choices": [{"delta": {"content": "x"}}]})
+            raise ValueError("неожиданно")
+
+    harness.gateway.stream_value = Boom(meta=ok_meta(), chunks=[])
+    await harness.client.post(
+        "/v1/chat/completions", json=_chat(stream=True), headers=_auth(make_token())
+    )
+    await _settle(harness)
+    assert harness.store.finished[0][1].status == "error"

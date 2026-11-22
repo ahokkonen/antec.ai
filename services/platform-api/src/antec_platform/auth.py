@@ -105,17 +105,28 @@ class JwksCache:
         async with self._lock:
             await self._load()
 
+    async def _reload(self) -> None:
+        """Перезагрузка под блокировкой. Пока в кэше есть ключи, сбой Keycloak их не стирает:
+        токены, подписанные известным ключом, продолжают проверяться (Keycloak перезапускается),
+        следующая попытка не раньше чем через _REFRESH_MIN_INTERVAL."""
+        try:
+            await self._load()
+        except JwksUnavailable:
+            if not self._keys:
+                raise
+            log.warning("JWKS недоступен, используются ключи из кэша")
+            self._loaded_at = time.monotonic() - self._ttl + _REFRESH_MIN_INTERVAL
+
     async def get(self, kid: str) -> jwt.PyJWK | None:
-        now = time.monotonic()
-        if not self._keys or now - self._loaded_at > self._ttl:
+        if not self._keys or time.monotonic() - self._loaded_at > self._ttl:
             async with self._lock:
                 if not self._keys or time.monotonic() - self._loaded_at > self._ttl:
-                    await self._load()
+                    await self._reload()
         key = self._keys.get(kid)
         if key is None and time.monotonic() - self._loaded_at > _REFRESH_MIN_INTERVAL:
             async with self._lock:
                 if time.monotonic() - self._loaded_at > _REFRESH_MIN_INTERVAL:
-                    await self._load()
+                    await self._reload()
             key = self._keys.get(kid)
         return key
 

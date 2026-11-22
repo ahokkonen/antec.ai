@@ -236,9 +236,26 @@ class PgStore:
                 update(users).where(users.c.id == row.id).values(last_seen_at=func.now(), **changes)
             )
             ident: dict[str, Any] = {"last_seen_at": func.now()}
-            # Атрибуты Entra появляются после первого входа через брокер; не стираем их.
+            # Атрибуты Entra появляются после первого входа через брокер; не стираем их. Если та же
+            # пара уже у другой идентичности, не дописываем: иначе нарушение уникальности на
+            # каждом запросе (500 навсегда). Разбирает администратор по журналу.
             if principal.entra_tid and principal.entra_oid and not row.entra_oid:
-                ident |= {"entra_tid": principal.entra_tid, "entra_oid": principal.entra_oid}
+                taken = (
+                    await conn.execute(
+                        select(identities.c.id).where(
+                            identities.c.entra_tid == principal.entra_tid,
+                            identities.c.entra_oid == principal.entra_oid,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if taken is None:
+                    ident |= {"entra_tid": principal.entra_tid, "entra_oid": principal.entra_oid}
+                else:
+                    log.warning(
+                        "entra_oid уже у другой идентичности %s, user_id=%s не изменён",
+                        taken,
+                        row.id,
+                    )
             if principal.idp and principal.idp != row.idp:
                 ident["idp"] = principal.idp
             await conn.execute(

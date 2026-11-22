@@ -135,6 +135,16 @@ def _upstream_error(meta: GatewayMeta, body: object) -> ApiError:
             type_ = err["type"][:64]
         if isinstance(err.get("code"), (str, int)):
             code = str(err["code"])[:64]
+    if meta.status in (401, 403, 407):
+        # Отказ шлюза в доступе = ошибка ключа Platform API, а не пользователя: клиенту 502,
+        # текст шлюза (о ключе) не показывается.
+        log.error("LLM-шлюз отклонил ключ Platform API: HTTP %s", meta.status)
+        return ApiError(
+            502,
+            "LLM-шлюз отклонил запрос Platform API",
+            type_="api_error",
+            code="upstream_auth_error",
+        )
     if 400 <= meta.status < 500:
         return ApiError(meta.status, message, type_=type_, code=code)
     return ApiError(502, "LLM-шлюз вернул ошибку", type_="api_error", code="upstream_error")
@@ -188,7 +198,7 @@ async def _complete(deps: Deps, call: CallStart, payload: dict[str, Any]) -> Res
     meta = resp.meta
     if meta.status != 200:
         err = _upstream_error(meta, resp.body)
-        status = "rejected" if 400 <= meta.status < 500 else "error"
+        status = "rejected" if 400 <= err.status < 500 else "error"
         await _finish(
             deps,
             call,
@@ -248,7 +258,7 @@ async def _stream(
         finally:
             await stack.aclose()
         err = _upstream_error(meta, error_payload)
-        status = "rejected" if 400 <= meta.status < 500 else "error"
+        status = "rejected" if 400 <= err.status < 500 else "error"
         await _finish(
             deps,
             call,
@@ -263,6 +273,23 @@ async def _stream(
 
     acc = StreamAccumulator(client_wants_usage=chat.client_wants_usage)
     result = CallResult(status="cancelled", http_status=200, gateway_request_id=meta.request_id)
+    finalized = False
+
+    def finalize() -> None:
+        """Итог вызова и закрытие потока шлюза ровно один раз, отдельной задачей.
+
+        Вызывается из finally генератора и из _GuardedStream: если клиент ушёл до первой
+        итерации, генератор не запускается и его finally не выполняется.
+        """
+        nonlocal finalized
+        if finalized:
+            return
+        finalized = True
+        result.prompt_tokens, result.completion_tokens = usage_tokens(acc.usage)
+        result.cost_usd = meta.cost_usd
+        result.gateway_request_id = acc.response_id or meta.request_id
+        result.response_message = acc.message()
+        deps.spawn(_close_and_finish(stack, deps, call, result))
 
     async def body() -> AsyncIterator[bytes]:
         try:
@@ -279,20 +306,42 @@ async def _stream(
             result.error = f"поток шлюза прерван: {type(exc).__name__}"
             log.warning("поток шлюза прерван: %s", type(exc).__name__)
             yield _sse_error("ответ модели прерван", "upstream_interrupted")
+        except Exception as exc:
+            result.status = "error"
+            result.error = f"ошибка обработки потока: {type(exc).__name__}"
+            raise
         finally:
             # Отмена клиентом приходит сюда как CancelledError или GeneratorExit: статус остаётся
-            # cancelled. Запись итога и закрытие потока шлюза идут отдельной задачей.
-            result.prompt_tokens, result.completion_tokens = usage_tokens(acc.usage)
-            result.cost_usd = meta.cost_usd
-            result.gateway_request_id = acc.response_id or meta.request_id
-            result.response_message = acc.message()
-            deps.spawn(_close_and_finish(stack, deps, call, result))
+            # cancelled.
+            finalize()
 
-    return StreamingResponse(
+    return _GuardedStream(
         body(),
+        finalize,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+class _GuardedStream(StreamingResponse):
+    """Поток, который гарантированно вызывает finalize, даже если тело не начали читать."""
+
+    def __init__(
+        self,
+        content: AsyncIterator[bytes],
+        finalize: Callable[[], None],
+        *,
+        media_type: str,
+        headers: dict[str, str],
+    ) -> None:
+        super().__init__(content, media_type=media_type, headers=headers)
+        self._finalize = finalize
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._finalize()
 
 
 async def _close_and_finish(

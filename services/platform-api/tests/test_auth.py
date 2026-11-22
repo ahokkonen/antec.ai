@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from antec_platform.auth import (
     DeniedToken,
     InvalidToken,
+    JwksCache,
     JwksUnavailable,
     TokenVerifier,
     bearer_token,
@@ -132,3 +133,17 @@ async def test_jwks_unavailable(
 )
 def test_bearer_token(header: str | None, expected: str | None) -> None:
     assert bearer_token(header) == expected
+
+
+async def test_stale_keys_used_when_jwks_down(
+    verifier: TokenVerifier, make_token: TokenFactory, jwks_server: JwksServer, jwks: JwksCache
+) -> None:
+    """Keycloak недоступен при истечении кэша: токены с известным kid проверяются по кэшу."""
+    await verifier.verify(make_token())
+    jwks._loaded_at -= 10_000  # кэш истёк
+    jwks_server.fail = True
+    principal = await verifier.verify(make_token())
+    assert principal.subject == "sub-1"
+    calls = jwks_server.calls
+    await verifier.verify(make_token())
+    assert jwks_server.calls == calls  # следующая попытка не раньше чем через 30 с

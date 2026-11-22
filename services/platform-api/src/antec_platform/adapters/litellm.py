@@ -56,7 +56,8 @@ class _Stream:
     async def events(self) -> AsyncIterator[bytes]:
         buf = b""
         async for chunk in self._resp.aiter_bytes():
-            buf += chunk.replace(b"\r\n", b"\n")
+            # Нормализация по буферу: \r и \n могут прийти в разных чанках.
+            buf = (buf + chunk).replace(b"\r\n", b"\n")
             while (sep := buf.find(b"\n\n")) != -1:
                 event, buf = buf[: sep + 2], buf[sep + 2 :]
                 yield event
