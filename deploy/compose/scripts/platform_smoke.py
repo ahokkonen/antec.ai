@@ -94,6 +94,15 @@ def tool_scenario(token: str, checks: dict[str, bool], ids: dict[str, str]) -> N
     )[0]
     checks["agent-notes: повторное решение отклонено"] = again == 404
 
+    # Классы данных (ADR-0011): agent-lab на chat-lab (допуск internal), create_note confidential.
+    lab = {"model": "agent-lab", "messages": [{"role": "user", "content": note.format("lab")}]}
+    status, headers, raw = call("POST", "/chat/completions", token, lab, chat)
+    answer = json.loads(raw)["choices"][0]["message"]["content"] if status == 200 else ""
+    ids["class_lab"] = headers.get("x-request-id", "")
+    checks["agent-lab: инструмент выше допуска модели без запроса подтверждения"] = (
+        status == 200 and code_of(str(answer or "")) is None
+    )
+
 
 def main() -> int:
     token = sys.stdin.read().strip()
@@ -125,8 +134,9 @@ def main() -> int:
             "chat-fast",
             "chat-lab",
         ]
-        checks["GET /models: агенты agent-assistant и agent-notes (ADR-0010)"] = sorted(agents) == [
+        checks["GET /models: агенты dev-инсталляции (ADR-0010)"] = sorted(agents) == [
             "agent-assistant",
+            "agent-lab",
             "agent-notes",
         ]
     model = "chat-fast" if "chat-fast" in models else (models or ["chat-fast"])[0]

@@ -29,7 +29,8 @@ deploy/compose/scripts/up.sh
 Инсталляция: `ANTEC_INSTANCE_DIR` (по умолчанию `instances/dev`). `up.sh` сначала проверяет её
 манифест и политики и пишет производные файлы в `<инсталляция>/.rendered/` (`tools/instance render`):
 модели LiteLLM (`include` в `litellm/config.yaml`), `PLATFORM_MODELS`, `PLATFORM_POLICY_SCOPE` и
-настройки Platform API, агенты (`agents.json`, ADR-0010), MCP-серверы (`mcp_servers.json`), модели ключа
+настройки Platform API, агенты (`agents.json`, ADR-0010), MCP-серверы (`mcp_servers.json`), допуски моделей по классам
+данных (`models.json`, ADR-0011), модели ключа
 `platform-api` в LiteLLM. По `mcp_servers` манифеста `up.sh` создаёт в Keycloak клиенты-аудитории
 для обмена токена, а сервисы плагинов из `compose.override.yaml` собирает и запускает в сети `mcp`. `compose.override.yaml` инсталляции,
 если есть, подключается к `compose.yaml`. Репозиторий инсталляции с ядром в `core/`:
@@ -109,7 +110,8 @@ deploy/compose/scripts/platform-smoke.sh
 контейнера `platform-api`: модели (`chat-lab` разрешает только политика scope `dev`), агент
 `agent-assistant` с потоком и без (ADR-0010; в БД: `agent_runs`, шаги в `model_calls`, история, аудит),
 агент `agent-notes` с инструментами `mcp-demo`: read-only вызов, пауза с кодом, неверный код, отмена,
-подтверждение в чате и через `/v1/agent-runs/{id}/decision` (аудит `tool.call`, `tool.approval`), отказ без токена и с подделанной подписью, чат `chat-fast` с
+подтверждение в чате и через `/v1/agent-runs/{id}/decision` (аудит `tool.call`, `tool.approval`), агент
+`agent-lab` на `chat-lab` (допуск `internal`): `create_note` (`confidential`) отклоняется до вызова (ADR-0011), отказ без токена и с подделанной подписью, чат `chat-fast` с
 потоком и без (с параметрами шлюза, которые фасад должен отбросить), неизвестная модель; в БД:
 статус и токены вызовов, вопрос и ответ в истории, запись аудита, конечный пользователь в учёте
 LiteLLM = пользователь Platform API. Токен передаётся только через конвейер.
