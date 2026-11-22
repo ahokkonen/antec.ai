@@ -57,6 +57,9 @@ def _check_local_tag(raw: str, tag: str | None, ctx: CheckContext) -> str | None
     return None
 
 
+_VAR_DEFAULT_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?-([^}$]*)\}")
+
+
 def _check_build_dockerfile(
     build: Node, compose_file: Path | None, path: str, line: int, ctx: CheckContext
 ) -> list[Finding]:
@@ -99,6 +102,20 @@ def _check_build_dockerfile(
         ]
     if inline is not None:
         return check_dockerfile(f"{path}:build.dockerfile_inline", inline, ctx)
+    # Интерполяция compose: ${VAR:-default} и ${VAR-default} проверяются по значению по
+    # умолчанию (так их увидит compose без переменной); переменная без значения по умолчанию
+    # не даёт найти Dockerfile.
+    context = _VAR_DEFAULT_RE.sub(lambda m: m.group(1), context)
+    if "$" in context:
+        return [
+            error(
+                Code.IMAGE_LOCAL_BUILD,
+                path,
+                line,
+                f"контекст сборки {context!r} содержит переменную без значения по умолчанию",
+                "задайте ${VAR:-путь} или укажите путь без переменной",
+            )
+        ]
     if _REMOTE_CONTEXT_RE.match(context):
         return [
             error(

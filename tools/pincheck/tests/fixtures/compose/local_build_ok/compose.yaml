@@ -11,3 +11,8 @@ services:
     pull_policy: build
   plain:
     build: ./img
+  from_var:
+    build:
+      context: ${PLUGIN_DIR:-./img}
+    image: localhost/antec/plugin:0.1.0
+    pull_policy: build

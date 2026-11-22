@@ -182,6 +182,7 @@ def test_local_build_images(pincheck: Runner) -> None:
         pytest.param(18, "PIN022", "пре-релиз", id="prerelease-local-tag"),
         pytest.param(22, "PIN022", "pull_policy: build", id="missing-pull-policy"),
         pytest.param(31, "PIN022", "удалённый контекст", id="remote-build-context"),
+        pytest.param(36, "PIN022", "без значения по умолчанию", id="context-variable-no-default"),
     ],
 )
 def test_local_build_images_invalid(pincheck: Runner, line: int, code: str, fragment: str) -> None:
