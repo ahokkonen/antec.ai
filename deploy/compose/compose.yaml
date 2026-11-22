@@ -307,6 +307,9 @@ services:
       OPENAI_API_KEYS: ""
       OPENAI_API_CONFIGS: '{"0": {"auth_type": "system_oauth"}}'
       ENABLE_DIRECT_CONNECTIONS: "False"
+      # Доступ к моделям решает Platform API (список /v1/models для пользователя, позже Cerbos,
+      # ADR-0009), а не права моделей в БД Open WebUI: без этого роль user не видит ни одной модели.
+      BYPASS_MODEL_ACCESS_CONTROL: "True"
       # Ради X-OpenWebUI-Chat-Id (разговор в истории Platform API). Заголовки X-OpenWebUI-User-*
       # идут вместе с ним, но Platform API их игнорирует: пользователь берётся из токена.
       ENABLE_FORWARD_USER_INFO_HEADERS: "True"

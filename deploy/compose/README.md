@@ -134,6 +134,8 @@ Open WebUI с Keycloak: создаёт `breakglass` в пустом Open WebUI (
 (`auth_type: system_oauth`, ADR-0006); ключа LiteLLM у Open WebUI нет, прежний ключ `open-webui`
 `up.sh` удаляет. Platform API ходит в LiteLLM ключом `platform-api` и передаёт `user` = id
 пользователя Platform API; каждый пользователь получает бюджет `platform-user` (5 USD на 30 дней).
+Доступ к моделям решает Platform API: права моделей в Open WebUI отключены
+(`BYPASS_MODEL_ACCESS_CONTROL`), иначе роль `user` не видит ни одной модели.
 Если SSO-сессия Keycloak истекла (30 минут без активности), фасад отвечает 401: выйдите из
 Open WebUI и войдите заново. Настройки задаются только окружением в `compose.yaml`:
 изменения в админке Open WebUI не переживают перезапуск.
