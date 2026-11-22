@@ -61,6 +61,8 @@ class Deps:
     policy: PolicyClient
     models: list[str]
     max_request_bytes: int
+    # Scope политик инсталляции (ADR-0008) для аудита отказов.
+    policy_scope: str | None = None
     # Фоновые записи итогов вызова: переживают отмену запроса клиентом, ждутся при остановке.
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
 
@@ -142,7 +144,13 @@ async def authorize_model(request: Request, principal: Principal, user: User, mo
     )
     if not allowed:
         await deps.store.record_policy_deny(
-            principal, user.id, INVOKE, MODEL_KIND, model, _request_id(request)
+            principal,
+            user.id,
+            INVOKE,
+            MODEL_KIND,
+            model,
+            _request_id(request),
+            scope=deps.policy_scope,
         )
         log.info("политика: нет права invoke на модель %s", model)
         raise forbidden(f"нет доступа к модели {model!r}", code="model_forbidden")

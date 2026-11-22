@@ -40,6 +40,7 @@ def build_app(settings: Settings) -> FastAPI:
             ),
             models=settings.models,
             max_request_bytes=settings.max_request_bytes,
+            policy_scope=settings.policy_scope,
         )
 
     async def shutdown(deps: Deps) -> None:

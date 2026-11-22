@@ -71,6 +71,7 @@ class Store(Protocol):
         resource_type: str,
         resource_id: str,
         request_id: uuid.UUID,
+        scope: str | None = None,
     ) -> None: ...
 
     async def ensure_conversation(
@@ -304,8 +305,16 @@ class PgStore:
         resource_type: str,
         resource_id: str,
         request_id: uuid.UUID,
+        scope: str | None = None,
     ) -> None:
-        """Отказ политики (ADR-0009, п. 6): кто, что и с какими ролями пытался сделать."""
+        """Отказ политики (ADR-0009, п. 6): кто, что и с какими ролями пытался сделать.
+
+        `scope`: scope политик инсталляции (ADR-0008), чтобы отказ можно было отнести к
+        политикам ядра или инсталляции той версии, что действовала.
+        """
+        details: dict[str, object] = {"action": action, "roles": list(principal.roles)}
+        if scope:
+            details["policy_scope"] = scope
         async with self._engine.begin() as conn:
             await conn.execute(
                 insert(audit_events).values(
@@ -317,7 +326,7 @@ class PgStore:
                         actor_client=principal.client_id or None,
                         resource_type=resource_type,
                         resource_id=resource_id,
-                        details={"action": action, "roles": list(principal.roles)},
+                        details=details,
                     )
                 )
             )

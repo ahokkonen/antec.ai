@@ -317,3 +317,15 @@ async def test_policy_deny_audited(app_engine: AsyncEngine) -> None:
         ).one()
     assert (row.action, row.outcome, row.resource_id) == ("policy.deny", "deny", "chat-default")
     assert row.details == {"action": "invoke", "roles": ["open-webui-user"]}
+
+    rid = uuid.uuid7()
+    await store.record_policy_deny(
+        principal, user.id, "invoke", "model", "chat-lab", rid, scope="dev"
+    )
+    async with app_engine.connect() as conn:
+        details = (
+            await conn.execute(
+                select(audit_events.c.details).where(audit_events.c.request_id == rid)
+            )
+        ).scalar_one()
+    assert details == {"action": "invoke", "roles": ["open-webui-user"], "policy_scope": "dev"}

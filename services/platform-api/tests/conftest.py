@@ -168,6 +168,7 @@ class FakeStore:
         resource_type: str,
         resource_id: str,
         request_id: uuid.UUID,
+        scope: str | None = None,
     ) -> None:
         self.policy_denied.append((action, resource_type, resource_id))
 
