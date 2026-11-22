@@ -80,4 +80,46 @@ for kind in ("completion", "stream"):
     print(f"  {kind}: стоимость {r.get('cost_usd')} USD", file=sys.stderr)
 sys.exit(0 if all(checks.values()) else 1)
 PY
+
+agent_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("agent", ""))' "$ids")"
+if [[ -n "$agent_id" ]]; then
+  log "запуски агента в БД platform (ADR-0010)"
+  runs_sql="select json_build_object(
+    'kind', k.kind, 'status', r.status, 'steps', r.steps, 'user_id', r.user_id,
+    'prompt_tokens', r.prompt_tokens, 'completion_tokens', r.completion_tokens,
+    'calls', (select json_agg(json_build_object('status', c.status, 'tokens', c.prompt_tokens,
+                'gw', c.gateway_request_id)) from model_calls c where c.agent_run_id = r.id),
+    'roles', (select json_agg(m.role order by m.position) from messages m
+              join model_calls c on c.id = m.model_call_id where c.agent_run_id = r.id),
+    'audit', (select json_agg(a.action || ':' || a.outcome order by a.occurred_at, a.id)
+              from audit_events a where a.request_id = r.id))
+  from (values ('agent', :'agent'), ('agent_stream', :'agent_stream')) as k(kind, id)
+  join agent_runs r on r.id = k.id::uuid"
+  runs="$(pg_exec psql -X -q -v ON_ERROR_STOP=1 -At -d platform \
+    -v agent="$agent_id" -v agent_stream="$(json_field agent_stream <<<"$ids")" <<<"$runs_sql")"
+  python3 - "$runs" <<'PY'
+import json
+import sys
+
+rows = {r["kind"]: r for r in map(json.loads, filter(str.strip, sys.argv[1].splitlines()))}
+checks = {}
+for kind in ("agent", "agent_stream"):
+    r = rows.get(kind, {})
+    calls = r.get("calls") or []
+    checks[f"{kind}: agent_runs ok, шаги и токены"] = (
+        r.get("status") == "ok" and r.get("steps", 0) >= 1 and (r.get("prompt_tokens") or 0) > 0
+    )
+    checks[f"{kind}: шаги в model_calls с agent_run_id"] = len(calls) == r.get("steps") and all(
+        c["status"] == "ok" and (c["tokens"] or 0) > 0 and c["gw"] for c in calls
+    )
+    checks[f"{kind}: в истории вопрос и ответ агента"] = r.get("roles") == ["user", "assistant"]
+    audit = r.get("audit") or []
+    checks[f"{kind}: аудит model.call по шагам и agent.run"] = (
+        audit[-1:] == ["agent.run:allow"] and audit.count("model.call:allow") == r.get("steps")
+    )
+for name, ok in checks.items():
+    print(f"  [{'ok' if ok else 'FAIL'}] {name}", file=sys.stderr)
+sys.exit(0 if all(checks.values()) else 1)
+PY
+fi
 log "Platform API: проверка пройдена"

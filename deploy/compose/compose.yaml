@@ -270,11 +270,15 @@ services:
       PLATFORM_OIDC_AUDIENCE: platform-api
       PLATFORM_GATEWAY_URL: http://litellm:4000/v1
       PLATFORM_POLICY_URL: http://cerbos:3592
+      PLATFORM_AGENTS_FILE: /antec/instance/agents.json
     read_only: true
     tmpfs:
       - /tmp:size=64m,uid=65534,gid=65534
     volumes:
       - platform-api-secrets:/run/antec-secrets:ro
+      # Производные файлы инсталляции: agents.json (ADR-0010). Каталог, а не файл (рендер
+      # заменяет файлы атомарно).
+      - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered:/antec/instance:ro
     # data: PostgreSQL и JWKS Keycloak; llm: LiteLLM; platform: клиенты фасада; policy: Cerbos.
     networks: [data, llm, platform, policy]
     mem_limit: 512m

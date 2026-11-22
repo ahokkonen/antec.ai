@@ -73,7 +73,8 @@ compute_config_shas() {
     tree_sha "$COMPOSE_DIR/../../policies/cerbos" "$ANTEC_INSTANCE_DIR/policies"; } \
     | shasum -a 256 | cut -c1-16)"
   # env_file не меняет окружение контейнера при compose up без хэша: та же схема.
-  ANTEC_PLATFORM_CONFIG_SHA="$(config_sha "$ANTEC_INSTANCE_RENDERED/platform-api.env")"
+  ANTEC_PLATFORM_CONFIG_SHA="$(config_sha "$ANTEC_INSTANCE_RENDERED/platform-api.env" \
+    "$ANTEC_INSTANCE_RENDERED/agents.json")"
 }
 compute_config_shas
 
@@ -93,7 +94,8 @@ die() { printf '\033[31m[antec] ошибка:\033[0m %s\n' "$*" >&2; exit 1; }
 # них не работает ни одна команда compose, поэтому их нет = рендер сейчас.
 if [[ ! -f "$ANTEC_INSTANCE_RENDERED/platform-api.env" \
   || ! -f "$ANTEC_INSTANCE_RENDERED/litellm-models.yaml" \
-  || ! -f "$ANTEC_INSTANCE_RENDERED/instance.json" ]]; then
+  || ! -f "$ANTEC_INSTANCE_RENDERED/instance.json" \
+  || ! -f "$ANTEC_INSTANCE_RENDERED/agents.json" ]]; then
   render_instance
 fi
 
