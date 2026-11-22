@@ -166,6 +166,10 @@ services:
       - /tmp:size=256m,uid=65534,gid=65534
     volumes:
       - ./litellm/config.yaml:/antec/config.yaml:ro
+      # Производные файлы инсталляции (tools/instance render, ADR-0008): include в config.yaml.
+      # Каталог, а не файл: рендер заменяет файлы атомарно, монтирование файла осталось бы на
+      # прежней копии.
+      - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered:/antec/instance:ro
       - ./common/env-from-files.sh:/antec/env-from-files.sh:ro
       - litellm-secrets:/run/antec-secrets:ro
     # data: PostgreSQL; llm: клиенты шлюза (Platform API); llm-egress: API провайдеров.
@@ -186,8 +190,8 @@ services:
       postgres:
         condition: service_healthy
 
-  # PDP Platform API (ADR-0009): политики policies/cerbos ядра, только чтение; доступ только из
-  # сети policy. Образ запускается от root, поэтому пользователь задан явно.
+  # PDP Platform API (ADR-0009): политики ядра и инсталляции (ADR-0008), только чтение; доступ
+  # только из сети policy. Образ запускается от root, поэтому пользователь задан явно.
   cerbos:
     <<: *hardening
     image: ghcr.io/cerbos/cerbos:0.57.0@sha256:e5e3b150b3cb0090975605254f255164567d67e233634199fb20972e3eaff300
@@ -199,11 +203,16 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,uid=65534,gid=65534
+      # Корень дерева политик: при read_only точки монтирования /policies/core и
+      # /policies/instance иначе негде создать. Сам каталог пуст и только для чтения.
+      - /policies:size=1m,mode=0555
     volumes:
       # Каталог, а не файл: git при смене ветки пересоздаёт файл, и монтирование одного файла
       # остаётся на удалённой копии (healthcheck перестаёт находить конфигурацию).
       - ./cerbos:/antec:ro
-      - ../../policies/cerbos:/policies:ro
+      # Одно дерево /policies: базовые политики ядра и политики инсталляции в её scope.
+      - ../../policies/cerbos:/policies/core:ro
+      - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/policies:/policies/instance:ro
     networks: [policy]
     mem_limit: 256m
     healthcheck:
@@ -247,16 +256,19 @@ services:
       context: ../../services/platform-api
     image: localhost/antec/platform-api:0.1.0
     pull_policy: build
+    # Модели, scope политик и настройки инсталляции (tools/instance render, ADR-0008).
+    env_file:
+      - path: ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered/platform-api.env
+        required: true
     environment:
+      # Хэш platform-api.env (scripts/lib.sh): изменение пересоздаёт контейнер.
+      ANTEC_CONFIG_SHA: ${ANTEC_PLATFORM_CONFIG_SHA:-}
       PLATFORM_DATABASE_USER: platform_app
       # iss в токенах = публичный адрес Keycloak (hostname), JWKS по внутреннему адресу.
       PLATFORM_OIDC_ISSUER: http://localhost:8080/realms/antec
       PLATFORM_OIDC_JWKS_URL: http://keycloak:8080/realms/antec/protocol/openid-connect/certs
       PLATFORM_OIDC_AUDIENCE: platform-api
-      # antec-smoke: только стенд (scripts/platform-smoke.sh); в инсталляциях только open-webui.
-      PLATFORM_ALLOWED_CLIENTS: open-webui,antec-smoke
       PLATFORM_GATEWAY_URL: http://litellm:4000/v1
-      PLATFORM_MODELS: chat-default,chat-fast
       PLATFORM_POLICY_URL: http://cerbos:3592
     read_only: true
     tmpfs:

@@ -102,7 +102,9 @@ def wait_spend(master: str, path: str, *, attempts: int = 20) -> float:
 
 
 def main() -> int:
-    master = cast(str, json.load(sys.stdin)["master_key"])
+    inputs = json.load(sys.stdin)
+    master = cast(str, inputs["master_key"])
+    expected = sorted(cast(list[str], inputs["models"]))
     c = Checks()
     suffix = secrets.token_hex(4)
     end_user = f"smoke-user-{suffix}"
@@ -117,7 +119,7 @@ def main() -> int:
     )
     status, models = call("GET", "/v1/models", master)
     ids = sorted(m["id"] for m in models.get("data", [])) if isinstance(models, dict) else []
-    c.check("логические модели chat-default и chat-fast", ids == ["chat-default", "chat-fast"], ids)
+    c.check("логические модели = модели манифеста инсталляции", sorted(ids) == expected, ids)
 
     status, gen = call(
         "POST",

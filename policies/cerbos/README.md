@@ -1,7 +1,9 @@
 # Политики Cerbos
 
-Политики Platform API ([ADR-0009](../../docs/adr/0009-authorization-cerbos.md)). Всё, что не
-разрешено явно, запрещено.
+Базовые политики Platform API ([ADR-0009](../../docs/adr/0009-authorization-cerbos.md)), без scope. Всё,
+что не разрешено явно, запрещено. Инсталляция дополняет и переопределяет их своими политиками в
+scope = id инсталляции ([ADR-0008](../../docs/adr/0008-plugin-contract-and-instance-template.md));
+вместе с политиками инсталляции: `deploy/compose/scripts/policies-check.sh`.
 
 | Ресурс | Действия | Кто |
 | --- | --- | --- |

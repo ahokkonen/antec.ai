@@ -17,7 +17,8 @@ esac
 log "вход пользователя через браузер (клиент antec-smoke)"
 # Токен идёт только через конвейер: в argv, окружение и терминал он не попадает.
 ids="$(echo '{}' | python3 "$COMPOSE_DIR/scripts/keycloak.py" user-token ${open_flag[@]+"${open_flag[@]}"} \
-  | compose exec -T platform-api python -c "$(cat "$COMPOSE_DIR/scripts/platform_smoke.py")")" \
+  | compose exec -T platform-api python -c "$(cat "$COMPOSE_DIR/scripts/platform_smoke.py")" \
+      "$(cat "$ANTEC_INSTANCE_RENDERED/instance.json")")" \
   || die "проверка фасада не пройдена"
 
 log "записи в БД platform и в учёте LiteLLM"

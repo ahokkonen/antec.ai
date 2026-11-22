@@ -15,7 +15,10 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 Аутентификация: `Authorization: Bearer <access token Keycloak>` с `aud: platform-api` и `azp` из
 `PLATFORM_ALLOWED_CLIENTS`. Права ([ADR-0009](../../docs/adr/0009-authorization-cerbos.md)):
 `invoke` на `model` проверяется в Cerbos по AuthZEN (`PLATFORM_POLICY_URL`) с ролями из claim
-`platform_roles`; `/v1/models` отдаёт только разрешённые модели; отказ PDP = 503. Ошибки в формате OpenAI, у каждого ответа заголовок `x-request-id`
+`platform_roles`; `/v1/models` отдаёт только разрешённые модели; отказ PDP = 503. Scope политик
+инсталляции (`PLATFORM_POLICY_SCOPE`, [ADR-0008](../../docs/adr/0008-plugin-contract-and-instance-template.md))
+уходит в каждом ресурсе как `cerbos.scope`; `PLATFORM_MODELS` и `PLATFORM_POLICY_SCOPE` задаёт манифест
+инсталляции (`tools/instance render`). Ошибки в формате OpenAI, у каждого ответа заголовок `x-request-id`
 (он же id вызова в `model_calls` и `audit_events`).
 
 ## Код

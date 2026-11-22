@@ -1,0 +1,65 @@
+# Тесты политики model в scope dev вместе с политикой ядра (scripts/policies-check.sh).
+name: DevModelPolicy
+principals:
+  user:
+    id: user-1
+    roles: [platform-user]
+  admin:
+    id: admin-1
+    roles: [platform-admin]
+  other:
+    id: other-1
+    roles: [open-webui-user]
+resources:
+  lab_dev:
+    kind: model
+    id: chat-lab
+    scope: dev
+  lab_core:
+    kind: model
+    id: chat-lab
+  default_dev:
+    kind: model
+    id: chat-default
+    scope: dev
+  unknown_dev:
+    kind: model
+    id: gpt-unknown
+    scope: dev
+tests:
+  - name: Политика инсталляции расширяет права ядра только в своём scope
+    input:
+      principals: [user]
+      resources: [lab_dev, lab_core]
+      actions: [invoke]
+    expected:
+      - principal: user
+        resource: lab_dev
+        actions: {invoke: EFFECT_ALLOW}
+      - principal: user
+        resource: lab_core
+        actions: {invoke: EFFECT_DENY}
+  - name: Не переопределённое решает ядро
+    input:
+      principals: [user, admin, other]
+      resources: [default_dev, unknown_dev]
+      actions: [invoke]
+    expected:
+      - principal: user
+        resource: default_dev
+        actions: {invoke: EFFECT_ALLOW}
+      - principal: user
+        resource: unknown_dev
+        actions: {invoke: EFFECT_DENY}
+      - principal: admin
+        resource: default_dev
+        actions: {invoke: EFFECT_ALLOW}
+      - principal: admin
+        resource: unknown_dev
+        actions: {invoke: EFFECT_ALLOW}
+      - principal: other
+        resource: default_dev
+        actions: {invoke: EFFECT_DENY}
+      - principal: other
+        resource: unknown_dev
+        actions: {invoke: EFFECT_DENY}

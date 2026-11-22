@@ -123,6 +123,11 @@ jobs:
         run: >-
           uv run --project tools/pincheck --locked python -c
           "import yaml; yaml.safe_load(open('deploy/compose/litellm/config.yaml'))"
+      # compose.yaml читает производные файлы манифеста dev-инсталляции (ADR-0008).
+      - name: Рендер манифеста instances/dev
+        run: >-
+          uv run --project tools/instance --locked
+          antec-instance render instances/dev --out instances/dev/.rendered
       - name: docker compose config
         run: docker compose -f deploy/compose/compose.yaml --profile bootstrap config --quiet
       - name: Сборка localhost/antec/postgres

@@ -56,12 +56,14 @@ jobs:
           checksum: ${{ env.UV_CHECKSUM }}
           python-version: "3.14"
           enable-cache: false
-      - name: Cerbos с политиками репозитория
+      - name: Cerbos с политиками ядра и dev-инсталляции (как на стенде)
         working-directory: .
         run: >-
           docker run -d --name cerbos -u 65534:65534 -p 127.0.0.1:3592:3592
-          -v "$GITHUB_WORKSPACE/policies/cerbos:/policies:ro" "$CERBOS_IMAGE" server
+          -v "$GITHUB_WORKSPACE/policies/cerbos:/policies/core:ro"
+          -v "$GITHUB_WORKSPACE/instances/dev/policies:/policies/instance:ro" "$CERBOS_IMAGE" server
           --set=storage.driver=disk --set=storage.disk.directory=/policies
+          --set=engine.lenientScopeSearch=true
           --set=telemetry.disabled=true --set=server.apiExplorerEnabled=false
       - name: Cerbos готов
         run: |
@@ -91,7 +93,7 @@ jobs:
           if grep -q skipped <<<"$out"; then echo "тесты db или cerbos пропущены" >&2; exit 1; fi
 
   policies:
-    name: "policies/cerbos: компиляция и тесты политик"
+    name: "policies/cerbos и instances/dev: компиляция и тесты политик"
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -100,10 +102,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: cerbos compile (с тестами)
+      - name: cerbos compile (с тестами), только ядро
         run: >-
           docker run --rm -u 65534:65534 -v "$GITHUB_WORKSPACE/policies/cerbos:/policies:ro"
           "$CERBOS_IMAGE" compile --verbose /policies
+      # Тот же образ по digest из compose.yaml, дерево как на стенде (ADR-0008).
+      - name: cerbos compile (с тестами), ядро и instances/dev
+        run: deploy/compose/scripts/policies-check.sh instances/dev
 
   image:
     name: "platform-api: сборка образа"

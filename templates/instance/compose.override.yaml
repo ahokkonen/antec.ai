@@ -1,0 +1,4 @@
+# Сервисы плагинов инсталляции __INSTANCE_NAME__ поверх compose ядра (ADR-0008, п. 6).
+# Подключается скриптами ядра: core/deploy/compose/scripts/up.sh с ANTEC_INSTANCE_DIR.
+# Пути относительно core/deploy/compose (каталог проекта compose).
+services: {}

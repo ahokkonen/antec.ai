@@ -30,6 +30,9 @@ Claude Code состоит из одной строки `@AGENTS.md` (импор
 | `tools/pincheck/` | CI-проверка соответствия реестру версий (ADR-0016) |
 | `policies/cerbos/` | Политики Cerbos и их тесты (ADR-0009) |
 | `services/platform-api/` | Platform API: OpenAI-совместимый фасад, пользователи, история, аудит (ADR-0006) |
+| `tools/instance/` | Манифест инсталляции: схема, проверка, рендер, `init` из шаблона (ADR-0008) |
+| `templates/instance/` | Шаблон репозитория `instance-<org>` (ADR-0008) |
+| `instances/dev/` | Dev-инсталляция ядра: модели и политики стенда и CI (ADR-0008) |
 | `deploy/compose/` | Локальный стенд: OpenBao, PostgreSQL, Keycloak, LiteLLM, Platform API, Open WebUI |
 
 ## Обязательные правила

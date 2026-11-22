@@ -3,21 +3,13 @@
 # Секреты только ссылками os.environ/: значения выгружает из OpenBao secrets-render, обёртка
 # common/env-from-files.sh кладёт их в окружение процесса (не контейнера).
 
-# Логические имена моделей: клиенты (Platform API, Open WebUI, coding-агенты) знают только их.
-# Смена провайдера или модели не меняет клиентов (ADR-0001, план выхода).
-model_list:
-  - model_name: chat-default
-    litellm_params:
-      model: anthropic/claude-opus-5-5
-      api_key: os.environ/ANTHROPIC_API_KEY
-    model_info:
-      description: "Модель по умолчанию: Claude Opus 5.5"
-  - model_name: chat-fast
-    litellm_params:
-      model: anthropic/claude-haiku-5-5
-      api_key: os.environ/ANTHROPIC_API_KEY
-    model_info:
-      description: "Быстрая и дешёвая модель: Claude Haiku 5.5"
+# Логические модели задаёт манифест инсталляции (ADR-0008): tools/instance render пишет
+# litellm-models.yaml (только model_list), каталог рендера монтируется как /antec/instance.
+# Клиенты (Platform API, Open WebUI, coding-агенты) знают только логические имена; смена
+# провайдера или модели не меняет клиентов (ADR-0001, план выхода). Другие ключи в включаемом
+# файле заменили бы настройки ниже целиком, поэтому рендер пишет только model_list.
+include:
+  - instance/litellm-models.yaml
 
 litellm_settings:
   # Параметры OpenAI, которых нет у провайдера, отбрасываются, а не дают 400.

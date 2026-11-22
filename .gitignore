@@ -29,3 +29,6 @@ coverage.xml
 .vscode/
 .DS_Store
 .claude/settings.local.json
+
+# Инсталляция последнего запуска стенда (deploy/compose/scripts/lib.sh)
+deploy/compose/.active-instance

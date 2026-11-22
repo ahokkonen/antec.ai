@@ -3,7 +3,8 @@
 Только стандартная библиотека. Access token пользователя приходит через stdin (scripts/
 platform-smoke.sh получает его входом через браузер, клиент antec-smoke). На stdout последней
 строкой JSON с идентификаторами запросов: по ним platform-smoke.sh сверяет записи в БД.
-Вызовы chat-fast стоят доли цента.
+Первый аргумент: instance.json инсталляции (ADR-0008), из него id и логические модели.
+Вызовы chat-fast (или первой доступной модели) стоят доли цента.
 """
 
 from __future__ import annotations
@@ -51,10 +52,19 @@ def main() -> int:
     )
     status, _, body = call("GET", "/models", token)
     models = [m["id"] for m in json.loads(body).get("data", [])] if status == 200 else []
-    checks["GET /models: обе модели разрешены политикой"] = sorted(models) == [
-        "chat-default",
-        "chat-fast",
-    ]
+    instance = json.loads(sys.argv[1])
+    dev = instance["id"] == "dev"
+    checks["GET /models: только модели манифеста инсталляции"] = bool(models) and set(
+        models
+    ) <= set(instance["models"])
+    if dev:
+        # chat-lab разрешает только политика scope dev (instances/dev/policies).
+        checks["GET /models: модели ядра и chat-lab из политики инсталляции"] = sorted(models) == [
+            "chat-default",
+            "chat-fast",
+            "chat-lab",
+        ]
+    model = "chat-fast" if "chat-fast" in models else (models or ["chat-fast"])[0]
     status, headers, _ = call("GET", "/models", None)
     checks["без токена: 401 и WWW-Authenticate"] = status == 401 and "Bearer" in headers.get(
         "www-authenticate", ""
@@ -64,7 +74,7 @@ def main() -> int:
     checks["подделанная подпись: 401"] = call("GET", "/models", forged)[0] == 401
 
     question: Any = {
-        "model": "chat-fast",
+        "model": model,
         "messages": [{"role": "user", "content": "Ответь одним словом: да"}],
         "max_tokens": 5,
         # Параметры шлюза в обход белого списка: должны быть отброшены, а не переданы.
@@ -73,12 +83,18 @@ def main() -> int:
     }
     status, headers, body = call("POST", "/chat/completions", token, question)
     usage = json.loads(body).get("usage") if status == 200 else None
-    checks["chat-fast без потока: 200 и usage"] = isinstance(usage, dict)
+    checks[f"{model} без потока: 200 и usage"] = isinstance(usage, dict)
     ids["completion"] = headers.get("x-request-id", "")
+
+    if dev:
+        lab = {**question, "model": "chat-lab"}
+        checks["chat-lab (политика инсталляции): 200"] = (
+            call("POST", "/chat/completions", token, lab)[0] == 200
+        )
 
     status, headers, body = call("POST", "/chat/completions", token, {**question, "stream": True})
     events = [line for line in body.decode().splitlines() if line.startswith("data:")]
-    checks["chat-fast поток: 200 и [DONE]"] = status == 200 and events[-1:] == ["data: [DONE]"]
+    checks[f"{model} поток: 200 и [DONE]"] = status == 200 and events[-1:] == ["data: [DONE]"]
     ids["stream"] = headers.get("x-request-id", "")
 
     status, _, _ = call("POST", "/chat/completions", token, {**question, "model": "gpt-unknown"})

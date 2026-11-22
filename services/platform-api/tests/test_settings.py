@@ -53,6 +53,8 @@ def test_missing_secret_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         ("PLATFORM_ALLOWED_CLIENTS", "bad client"),
         ("PLATFORM_MODELS", "Chat Default"),
         ("PLATFORM_APP_ROLE", "Robert'); drop"),
+        ("PLATFORM_POLICY_SCOPE", "a.b"),
+        ("PLATFORM_POLICY_SCOPE", "Acme"),
     ],
 )
 def test_invalid_values(
@@ -63,3 +65,16 @@ def test_invalid_values(
     monkeypatch.setenv(key, value)
     with pytest.raises(ValidationError):
         _settings(secrets)
+
+
+@pytest.mark.usefixtures("no_env")
+@pytest.mark.parametrize(
+    ("value", "expected"), [("", None), ("dev", "dev"), ("acme-oy", "acme-oy")]
+)
+def test_policy_scope(
+    secrets: Path, monkeypatch: pytest.MonkeyPatch, value: str, expected: str | None
+) -> None:
+    monkeypatch.setenv("PLATFORM_OIDC_ISSUER", "http://x")
+    monkeypatch.setenv("PLATFORM_OIDC_JWKS_URL", "http://x/certs")
+    monkeypatch.setenv("PLATFORM_POLICY_SCOPE", value)
+    assert _settings(secrets).policy_scope == expected

@@ -19,6 +19,8 @@ DEFAULT_SECRETS_DIR = Path("/run/antec-secrets")
 
 _CLIENT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _MODEL_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+# Scope политик инсталляции = id инсталляции из манифеста (ADR-0008, п. 4).
+_SCOPE_RE = re.compile(r"[a-z][a-z0-9-]{1,30}")
 
 
 def _split_list(value: object) -> object:
@@ -89,6 +91,8 @@ class Settings(DatabaseSettings):
     # PDP по AuthZEN (ADR-0009).
     policy_url: str = "http://cerbos:3592"
     policy_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 3.0
+    # Scope политик инсталляции (ADR-0008, п. 4); пусто = только базовые политики ядра.
+    policy_scope: str | None = None
 
     max_request_bytes: Annotated[int, Field(ge=1024, le=64 * 1024 * 1024)] = 8 * 1024 * 1024
     log_level: str = "INFO"
@@ -116,6 +120,15 @@ class Settings(DatabaseSettings):
         for item in value:
             if not _MODEL_RE.fullmatch(item):
                 raise ValueError(f"недопустимое имя модели: {item!r}")
+        return value
+
+    @field_validator("policy_scope", mode="before")
+    @classmethod
+    def _scope(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str) or not _SCOPE_RE.fullmatch(value):
+            raise ValueError(f"недопустимый scope политик: {value!r}")
         return value
 
     @field_validator("oidc_issuer")

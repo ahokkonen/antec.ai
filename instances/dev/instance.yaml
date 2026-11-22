@@ -1,0 +1,32 @@
+# Dev-инсталляция ядра (ADR-0008, п. 7): локальный стенд deploy/compose и CI.
+schema_version: 1
+instance:
+  id: dev
+  name: "antec.ai dev"
+core:
+  version: "0.1.0"
+
+models:
+  - name: chat-default
+    description: "Модель по умолчанию: Claude Opus 5.5"
+    litellm:
+      model: anthropic/claude-opus-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - name: chat-fast
+    description: "Быстрая и дешёвая модель: Claude Haiku 5.5"
+    litellm:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  # Модель инсталляции: политика ядра её не разрешает, разрешает политика scope dev
+  # (policies/model.yaml). Проверяется scripts/platform-smoke.sh.
+  - name: chat-lab
+    description: "Модель dev-инсталляции: Claude Haiku 5.5"
+    litellm:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+mcp_servers: []
+
+settings:
+  # antec-smoke: только стенд (scripts/platform-smoke.sh).
+  allowed_clients: [open-webui, antec-smoke]

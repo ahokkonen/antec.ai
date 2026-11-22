@@ -1,0 +1,40 @@
+# Манифест инсталляции __INSTANCE_NAME__ (ADR-0008). Схема v1: tools/instance ядра.
+# Проверка: uv run --project core/tools/instance --locked antec-instance validate .
+schema_version: 1
+instance:
+  # id = scope политик Cerbos инсталляции (policies/), менять нельзя.
+  id: __INSTANCE_ID__
+  name: "__INSTANCE_NAME__"
+core:
+  # Версия ядра в submodule core/ (файл core/VERSION).
+  version: "__CORE_VERSION__"
+
+# Логические модели: клиенты знают только имя, провайдер меняется здесь (ADR-0001).
+# api_key только ссылкой на переменную, которую ядро выгружает из OpenBao.
+models:
+  - name: chat-default
+    description: "Модель по умолчанию: Claude Opus 5.5"
+    litellm:
+      model: anthropic/claude-opus-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - name: chat-fast
+    description: "Быстрая и дешёвая модель: Claude Haiku 5.5"
+    litellm:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+# MCP-серверы инсталляции (исполняются вместе с MCP-клиентом Platform API). Пример:
+# mcp_servers:
+#   - name: crm
+#     url: http://mcp-crm:8080/mcp
+#     audience: mcp-crm               # аудитория token exchange (ADR-0007)
+#     protocol_version: "2026-07-28"
+#     tools:
+#       - {name: search_contacts, read_only: true}
+#       - {name: create_deal}         # без read_only: только с подтверждением человека
+#     secrets: [api_token]            # OpenBao antec/plugins/crm
+mcp_servers: []
+
+# Параметры Platform API, которые может менять инсталляция.
+settings:
+  allowed_clients: [open-webui]

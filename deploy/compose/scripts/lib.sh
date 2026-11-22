@@ -12,26 +12,90 @@ KC_LEGACY_ROOT="antec-local-openbao-root-token"
 kc_unseal_name() { echo "antec-local-openbao-unseal-key-$1"; }
 kc_root_name() { echo "antec-local-openbao-root-token-$1"; }
 
+# Инсталляция (ADR-0008): манифест, политики и сервисы плагинов. Порядок: ANTEC_INSTANCE_DIR
+# (репозиторий инсталляции задаёт свой корень, ядро в core/), затем инсталляция последнего
+# up.sh (ACTIVE_INSTANCE_FILE), затем dev-инсталляция ядра. Так down.sh, backup.sh и smoke без
+# переменной работают с той инсталляцией, что запущена.
+ACTIVE_INSTANCE_FILE="$COMPOSE_DIR/.active-instance"
+if [[ -z "${ANTEC_INSTANCE_DIR:-}" && -f "$ACTIVE_INSTANCE_FILE" ]]; then
+  ANTEC_INSTANCE_DIR="$(cat "$ACTIVE_INSTANCE_FILE")"
+fi
+ANTEC_INSTANCE_DIR="$(cd "${ANTEC_INSTANCE_DIR:-$COMPOSE_DIR/../../instances/dev}" 2>/dev/null && pwd)" \
+  || { printf '[antec] ошибка: нет каталога инсталляции %s\n' "${ANTEC_INSTANCE_DIR:-}" >&2; exit 1; }
+ANTEC_INSTANCE_RENDERED="$ANTEC_INSTANCE_DIR/.rendered"
+export ANTEC_INSTANCE_DIR
+
+# Проверка манифеста и производные файлы (tools/instance render): модели LiteLLM, env Platform
+# API, сводка instance.json. Нужен uv на хосте.
+render_instance() {
+  command -v uv >/dev/null 2>&1 || die "нужен uv (https://docs.astral.sh/uv/) для рендера манифеста инсталляции"
+  uv run --quiet --project "$COMPOSE_DIR/../../tools/instance" --locked antec-instance \
+    render "$ANTEC_INSTANCE_DIR" --out "$ANTEC_INSTANCE_RENDERED" >/dev/null \
+    || die "манифест инсталляции $ANTEC_INSTANCE_DIR не прошёл проверку"
+  compute_config_shas
+}
+
+# Запомнить инсталляцию, с которой запущен стенд (вызывает up.sh).
+remember_active_instance() {
+  printf '%s\n' "$ANTEC_INSTANCE_DIR" > "$ACTIVE_INSTANCE_FILE"
+}
+
+# Логические модели инсталляции из instance.json (JSON-массив).
+instance_models_json() {
+  python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["models"]))' \
+    "$ANTEC_INSTANCE_RENDERED/instance.json"
+}
+
 # Хэши смонтированных файлов конфигурации. Compose не замечает изменения содержимого
 # bind-mount, поэтому хэш передаётся в окружение сервиса (compose.yaml): изменился файл,
-# изменилось окружение, compose up пересоздаёт контейнер.
+# изменилось окружение, compose up пересоздаёт контейнер. Отсутствующие файлы (рендер ещё не
+# выполнялся) не учитываются: up.sh пересчитывает хэши после render_instance.
 config_sha() { # файлы...
-  cat "$@" | shasum -a 256 | cut -c1-16
+  local f
+  for f in "$@"; do
+    if [[ -f "$f" ]]; then printf '%s\n' "$f"; cat "$f"; fi
+  done | shasum -a 256 | cut -c1-16
 }
-export ANTEC_LITELLM_CONFIG_SHA ANTEC_OPEN_WEBUI_CONFIG_SHA ANTEC_CERBOS_CONFIG_SHA
-ANTEC_LITELLM_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/litellm/config.yaml" "$COMPOSE_DIR/common/env-from-files.sh")"
-ANTEC_OPEN_WEBUI_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/common/env-from-files.sh")"
-# Конфигурация Cerbos и все файлы каталога политик (.yaml, .yml, .json) в стабильном порядке (ADR-0009).
-ANTEC_CERBOS_CONFIG_SHA="$(cd "$COMPOSE_DIR/../.." && find policies/cerbos -type f | LC_ALL=C sort \
-  | { cat "$COMPOSE_DIR/cerbos/config.yaml"; while read -r f; do printf '%s\n' "$f"; cat "$f"; done; } \
-  | shasum -a 256 | cut -c1-16)"
+tree_sha() { # каталоги...
+  local d f
+  for d in "$@"; do
+    [[ -d "$d" ]] || continue
+    find "$d" -type f | LC_ALL=C sort | while read -r f; do printf '%s\n' "$f"; cat "$f"; done
+  done | shasum -a 256 | cut -c1-16
+}
+export ANTEC_LITELLM_CONFIG_SHA ANTEC_OPEN_WEBUI_CONFIG_SHA ANTEC_CERBOS_CONFIG_SHA ANTEC_PLATFORM_CONFIG_SHA
+compute_config_shas() {
+  ANTEC_LITELLM_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/litellm/config.yaml" \
+    "$COMPOSE_DIR/common/env-from-files.sh" "$ANTEC_INSTANCE_RENDERED/litellm-models.yaml")"
+  ANTEC_OPEN_WEBUI_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/common/env-from-files.sh")"
+  # Конфигурация Cerbos и все файлы политик ядра и инсталляции в стабильном порядке.
+  ANTEC_CERBOS_CONFIG_SHA="$( { config_sha "$COMPOSE_DIR/cerbos/config.yaml"
+    tree_sha "$COMPOSE_DIR/../../policies/cerbos" "$ANTEC_INSTANCE_DIR/policies"; } \
+    | shasum -a 256 | cut -c1-16)"
+  # env_file не меняет окружение контейнера при compose up без хэша: та же схема.
+  ANTEC_PLATFORM_CONFIG_SHA="$(config_sha "$ANTEC_INSTANCE_RENDERED/platform-api.env")"
+}
+compute_config_shas
 
 compose() {
-  docker compose --project-directory "$COMPOSE_DIR" -f "$COMPOSE_DIR/compose.yaml" "$@"
+  local files=(-f "$COMPOSE_DIR/compose.yaml")
+  # Сервисы плагинов инсталляции поверх compose ядра (ADR-0008, п. 6).
+  if [[ -f "$ANTEC_INSTANCE_DIR/compose.override.yaml" ]]; then
+    files+=(-f "$ANTEC_INSTANCE_DIR/compose.override.yaml")
+  fi
+  docker compose --project-directory "$COMPOSE_DIR" "${files[@]}" "$@"
 }
 
 log() { printf '\033[1m[antec]\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31m[antec] ошибка:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# compose.yaml читает производные файлы манифеста (env_file platform-api, модели LiteLLM): без
+# них не работает ни одна команда compose, поэтому их нет = рендер сейчас.
+if [[ ! -f "$ANTEC_INSTANCE_RENDERED/platform-api.env" \
+  || ! -f "$ANTEC_INSTANCE_RENDERED/litellm-models.yaml" \
+  || ! -f "$ANTEC_INSTANCE_RENDERED/instance.json" ]]; then
+  render_instance
+fi
 
 require_macos_keychain() {
   command -v security >/dev/null 2>&1 || die "нужна Связка ключей macOS (команда security); стенд рассчитан на macOS"
@@ -215,6 +279,7 @@ print(json.dumps(kc))'
 litellm_provision_inputs() {
   { bao_kv_json litellm && bao_kv_json platform-api; } | python3 -c '
 import json, sys
+models = json.loads(sys.argv[1])
 text, dec, docs, pos = sys.stdin.read(), json.JSONDecoder(), [], 0
 if not text.strip():
     sys.exit(1)  # чтение из OpenBao не удалось, причина уже напечатана bao_kv_json
@@ -226,7 +291,8 @@ while len(docs) < 2:
 if not docs[0] or not docs[1]:
     sys.exit("в OpenBao нет antec/litellm или antec/platform-api; запустите scripts/up.sh")
 print(json.dumps({"master_key": docs[0]["data"]["data"]["master_key"],
-                  "platform_api_key": docs[1]["data"]["data"]["litellm_key"]}))'
+                  "platform_api_key": docs[1]["data"]["data"]["litellm_key"],
+                  "models": models}))' "$(instance_models_json)"
 }
 
 # Роль platform_app (ADR-0006, п. 9): создаётся, если её нет, пароль приводится к OpenBao.
