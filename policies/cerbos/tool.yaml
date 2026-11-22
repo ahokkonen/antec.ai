@@ -1,0 +1,18 @@
+# Инструменты агентов: кто может вызывать инструмент MCP-сервера (ADR-0010, п. 6). id ресурса
+# = <server>.<tool> из манифеста инсталляции; вызывать можно только инструменты из белого
+# списка манифеста (это проверяет Platform API). Необратимые инструменты вдобавок ждут
+# подтверждения человеком. Базовая политика: platform-user и platform-admin вызывают
+# инструменты манифеста; сужает инсталляция в своём scope.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: tool
+  rules:
+    - name: platform-user-tools
+      actions: [call]
+      effect: EFFECT_ALLOW
+      roles: [platform-user]
+    - name: platform-admin-tools
+      actions: [call]
+      effect: EFFECT_ALLOW
+      roles: [platform-admin]
