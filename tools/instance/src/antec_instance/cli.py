@@ -57,12 +57,12 @@ def _validate(core_dir: Path, instance_dir: Path) -> Manifest:
             f"core.version: манифест рассчитан на ядро {manifest.core.version}, "
             f"закреплено ядро {version}"
         )
-    # Инструменты агентов исполняет MCP-клиент Platform API (ADR-0010, п. 6, 8); в этой версии
-    # ядра его нет, и Platform API с такими агентами не запустится: ошибка здесь, до развёртывания.
+    # MCP-клиент ядра понимает только ревизию 2026-07-28 (ADR-0010, п. 6).
     problems += [
-        f"агент {a.name}: инструменты агентов не поддерживаются ядром {version} (ADR-0010, п. 8)"
-        for a in manifest.agents
-        if a.tools
+        f"MCP-сервер {s.name}: protocol_version {s.protocol_version} не поддерживается "
+        f"MCP-клиентом ядра {version} (только 2026-07-28)"
+        for s in manifest.mcp_servers
+        if s.protocol_version != "2026-07-28"
     ]
     problems += check_policies(instance_dir, manifest.instance.id)
     try:

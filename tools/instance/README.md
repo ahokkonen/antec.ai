@@ -17,8 +17,8 @@ uv run --project tools/instance --locked antec-instance init ../instance-acme --
 
 | Команда | Что делает |
 | --- | --- |
-| `validate` | Схема `instance.yaml`, `core.version` = `VERSION` ядра, scope политик в `policies/` = id инсталляции, файлы инструкций агентов; инструменты агентов отклоняются, пока в ядре нет MCP-клиента |
-| `render` | То же и запись `litellm/models.yaml` (`model_list` для `include` LiteLLM), `platform-api/agents.json` (агенты, ADR-0010), `platform-api.env` (`PLATFORM_*`), `instance.json` (сводка для скриптов стенда); каждый сервис монтирует только свой подкаталог |
+| `validate` | Схема `instance.yaml`, `core.version` = `VERSION` ядра, scope политик в `policies/` = id инсталляции, файлы инструкций агентов; MCP-серверы только ревизии 2026-07-28 (MCP-клиент ядра) |
+| `render` | То же и запись `litellm/models.yaml` (`model_list` для `include` LiteLLM), `platform-api/agents.json` (агенты, ADR-0010), `platform-api/mcp_servers.json` (MCP-серверы и белые списки инструментов), `platform-api.env` (`PLATFORM_*`), `instance.json` (сводка для скриптов стенда: модели, агенты, аудитории MCP); каждый сервис монтирует только свой подкаталог |
 | `init` | Копия шаблона с подстановкой id, названия и версии ядра; каталог должен быть пустым |
 
 Код выхода: 0 успех, 1 манифест или политики не прошли проверку, 2 ошибка использования.

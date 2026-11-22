@@ -21,6 +21,7 @@ from antec_instance.manifest import Manifest
 # Каждому сервису свой подкаталог: контейнер монтирует только своё (LiteLLM не видит агентов).
 LITELLM_MODELS = "litellm/models.yaml"
 AGENTS = "platform-api/agents.json"
+MCP_SERVERS = "platform-api/mcp_servers.json"
 PLATFORM_ENV = "platform-api.env"
 SUMMARY = "instance.json"
 # Прежняя раскладка (до подкаталогов): удаляется, чтобы не осталось устаревших копий.
@@ -66,7 +67,22 @@ def summary(manifest: Manifest) -> dict[str, Any]:
         "core_version": manifest.core.version,
         "models": [m.name for m in manifest.models],
         "agents": [a.name for a in manifest.agents],
+        # Аудитории token exchange: клиенты Keycloak для MCP-серверов (ADR-0010, п. 6).
+        "mcp_audiences": [s.audience for s in manifest.mcp_servers],
     }
+
+
+def mcp_servers(manifest: Manifest) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": s.name,
+            "url": s.url,
+            "audience": s.audience,
+            "protocol_version": s.protocol_version,
+            "tools": [{"name": t.name, "read_only": t.read_only} for t in s.tools],
+        }
+        for s in manifest.mcp_servers
+    ]
 
 
 def _write(path: Path, content: str) -> None:
@@ -98,6 +114,7 @@ def render(manifest: Manifest, instance_dir: Path, out_dir: Path) -> list[Path]:
         SUMMARY: json.dumps(summary(manifest), ensure_ascii=False, indent=2) + "\n",
         # Всегда, даже пустой: Platform API читает файл при старте.
         AGENTS: json.dumps(agents, ensure_ascii=False, indent=2) + "\n",
+        MCP_SERVERS: json.dumps(mcp_servers(manifest), ensure_ascii=False, indent=2) + "\n",
     }
     for legacy in _LEGACY:
         (out_dir / legacy).unlink(missing_ok=True)

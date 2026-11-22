@@ -25,7 +25,16 @@ models:
       model: anthropic/claude-haiku-5-5
       api_key: os.environ/ANTHROPIC_API_KEY
 
-mcp_servers: []
+# Тестовый MCP-сервер dev-инсталляции (plugins/mcp-demo, ADR-0010, п. 6): read-only инструмент
+# и инструмент с подтверждением человеком.
+mcp_servers:
+  - name: mcp-demo
+    url: http://mcp-demo:8080/mcp
+    audience: mcp-demo
+    protocol_version: "2026-07-28"
+    tools:
+      - {name: get_time, read_only: true}
+      - {name: create_note}
 
 # Агенты (ADR-0010): видны в /v1/models рядом с моделями, имя начинается с agent-.
 agents:
@@ -34,6 +43,13 @@ agents:
     model: chat-fast
     instructions_file: agents/assistant.md
     max_steps: 5
+  - name: agent-notes
+    description: "Заметки dev-инсталляции: время и создание заметки (с подтверждением)"
+    model: chat-fast
+    instructions_file: agents/notes.md
+    tools: [mcp-demo.get_time, mcp-demo.create_note]
+    max_steps: 6
+    max_tool_calls: 4
 
 settings:
   # antec-smoke: только стенд (scripts/platform-smoke.sh).
