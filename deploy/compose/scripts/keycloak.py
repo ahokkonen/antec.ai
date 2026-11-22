@@ -584,7 +584,8 @@ def ensure_platform_roles(admin: Admin) -> None:
             f"/{REALM}/client-scopes/{sid}/protocol-mappers/models",
             {"name": PLATFORM_ROLES_CLAIM, **wanted},
         )
-    elif current.get("config") != wanted["config"]:
+    elif any(current.get("config", {}).get(k) != v for k, v in wanted["config"].items()):
+        # Сравниваются только наши ключи: Keycloak может добавлять в config свои.
         admin.call(
             "PUT",
             f"/{REALM}/client-scopes/{sid}/protocol-mappers/models/{current['id']}",
