@@ -4,14 +4,15 @@
 pgvector 0.8.7 ([ADR-0017](../../docs/adr/0017-base-layer-openbao-postgres.md)) и Keycloak 26.8.2
 с брокером Entra ID ([ADR-0007](../../docs/adr/0007-idp-and-agent-delegation.md)), LLM-шлюз LiteLLM
 1.108.8 и веб-чат Open WebUI 0.13.3 ([ADR-0018](../../docs/adr/0018-litellm-on-base-layer.md)), Platform API
-([ADR-0006](../../docs/adr/0006-platform-api-data-model.md), [services/platform-api](../../services/platform-api/README.md)). Образы только по
+([ADR-0006](../../docs/adr/0006-platform-api-data-model.md), [services/platform-api](../../services/platform-api/README.md)) и
+PDP Cerbos 0.57.0 ([ADR-0009](../../docs/adr/0009-authorization-cerbos.md), политики [policies/cerbos](../../policies/cerbos)). Образы только по
 digest из [`policy/allowed-versions.yaml`](../../policy/allowed-versions.yaml) (ADR-0004).
 
 ## Требования
 
 - macOS с Docker Desktop (Compose v2 или новее); скрипты используют Связку ключей (`security`) и `python3`.
 - Около 6,5 GB свободной памяти в VM Docker (лимиты: OpenBao 256 MB, PostgreSQL 1 GB, Keycloak,
-  LiteLLM и Open WebUI по 1,5 GB, Platform API 512 MB; фактически около 2,7 GB).
+  LiteLLM и Open WebUI по 1,5 GB, Platform API 512 MB, Cerbos 256 MB; фактически около 2,8 GB).
 - Свободные порты `127.0.0.1:8080` (Keycloak) и `127.0.0.1:3000` (Open WebUI).
 
 ## Команды
@@ -110,8 +111,9 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 | `postgres` | `localhost/antec/postgres:18.7-pgvector0.8.7`, БД `keycloak`, `litellm`, `openwebui`, `platform`, `dbos` | `data` (internal) | 1 GB |
 | `keycloak` | `localhost/antec/keycloak:26.8.2`, realm `antec`, брокер `entra`; `http://localhost:8080` | `data`, `egress` | 1,5 GB |
 | `litellm` | `litellm-non_root:v1.108.8`, модели `chat-default` (Claude Opus 5.5), `chat-fast` (Claude Haiku 5.5); порт 4000 только внутри | `data`, `llm` (internal), `llm-egress` | 1,5 GB |
+| `cerbos` | `cerbos:0.57.0`, политики `policies/cerbos` (только чтение); без телеметрии, Admin API и аудита | `policy` (internal) | 256 MB |
 | `platform-migrate` | Одноразовые миграции БД `platform` ролью владельца схемы (профиль `bootstrap`) | `data` | 256 MB |
-| `platform-api` | `localhost/antec/platform-api:0.1.0`, фасад `/v1`, роль БД `platform_app`; порт 8000 только внутри | `data`, `llm`, `platform` (internal) | 512 MB |
+| `platform-api` | `localhost/antec/platform-api:0.1.0`, фасад `/v1`, роль БД `platform_app`; порт 8000 только внутри | `data`, `llm`, `platform`, `policy` (internal) | 512 MB |
 | `open-webui` | `open-webui:v0.13.3`, вход через Keycloak; `http://localhost:3000` | `data`, `platform`, `ui` | 1,5 GB |
 
 Наружу опубликованы только порты Keycloak `127.0.0.1:8080` и Open WebUI `127.0.0.1:3000` (сеть
@@ -134,8 +136,11 @@ Open WebUI с Keycloak: создаёт `breakglass` в пустом Open WebUI (
 (`auth_type: system_oauth`, ADR-0006); ключа LiteLLM у Open WebUI нет, прежний ключ `open-webui`
 `up.sh` удаляет. Platform API ходит в LiteLLM ключом `platform-api` и передаёт `user` = id
 пользователя Platform API; каждый пользователь получает бюджет `platform-user` (5 USD на 30 дней).
-Доступ к моделям решает Platform API: права моделей в Open WebUI отключены
-(`BYPASS_MODEL_ACCESS_CONTROL`), иначе роль `user` не видит ни одной модели.
+Доступ к моделям решает Platform API по политикам Cerbos (ADR-0009): права моделей в Open WebUI
+отключены (`BYPASS_MODEL_ACCESS_CONTROL`), список моделей фильтрует фасад. Роли Platform API:
+роли клиента `platform-api` в Keycloak (`platform-user` у всех по умолчанию, `platform-admin`
+явно, Clients → platform-api → Roles), в токене claim `platform_roles`. Политики меняются в
+`policies/cerbos` и применяются `up.sh` (перезапуск Cerbos по хэшу).
 Если SSO-сессия Keycloak истекла (30 минут без активности), фасад отвечает 401: выйдите из
 Open WebUI и войдите заново. Настройки задаются только окружением в `compose.yaml`:
 изменения в админке Open WebUI не переживают перезапуск.

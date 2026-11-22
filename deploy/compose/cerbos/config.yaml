@@ -1,0 +1,27 @@
+# Cerbos PDP стенда (ADR-0009). Политики только с диска (policies/cerbos ядра, только чтение),
+# без Cerbos Hub. Изменения политик применяются перезапуском (up.sh пересоздаёт контейнер по хэшу).
+server:
+  httpListenAddr: ":3592"
+  grpcListenAddr: ":3593"
+  apiExplorerEnabled: false
+  adminAPI:
+    enabled: false
+  logRequestPayloads: false
+  # Только Platform API по сети policy; браузеры сюда не ходят.
+  cors:
+    disabled: true
+engine:
+  defaultPolicyVersion: "default"
+  lenientScopeSearch: false
+storage:
+  driver: "disk"
+  disk:
+    directory: /policies
+    watchForChanges: false
+schema:
+  enforcement: reject
+# Источник истины решений: аудит Platform API (audit_events).
+audit:
+  enabled: false
+telemetry:
+  disabled: true

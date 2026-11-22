@@ -56,6 +56,13 @@ OPEN_WEBUI_ACCESS_LIFESPAN = "900"
 # Роли клиента open-webui: user (доступ, есть у всех через роли по умолчанию), admin (администратор
 # Open WebUI, назначается явно). Open WebUI берёт их из claim roles (ENABLE_OAUTH_ROLE_MANAGEMENT).
 OPEN_WEBUI_ROLES = ("user", "admin")
+# Роли Platform API (ADR-0009): клиентские роли platform-api; platform-user у всех через роли realm
+# по умолчанию, platform-admin назначается явно. В токены клиентов с client scope platform-api
+# (open-webui, antec-smoke) они попадают claim'ом platform_roles.
+PLATFORM_CLIENT = "platform-api"
+PLATFORM_ROLES = ("platform-user", "platform-admin")
+PLATFORM_DEFAULT_ROLE = "platform-user"
+PLATFORM_ROLES_CLAIM = "platform_roles"
 PROFILE_PERMISSIONS: dict[str, list[str]] = {"view": ["admin"], "edit": ["admin"]}
 SMOKE_REDIRECT_PORT = 8765
 
@@ -356,6 +363,7 @@ def ensure_realm(admin: Admin, secrets_in: Json) -> None:
     ensure_client_secrets(admin, secrets_in)
     ensure_otp_browser_flow(admin, REALM)
     ensure_open_webui_access(admin)
+    ensure_platform_roles(admin)
     if admin.find_user(REALM, BREAKGLASS_USER) is None:
         log(f"создание аварийного пользователя {BREAKGLASS_USER} (TOTP обязателен)")
         admin.call(
@@ -507,6 +515,81 @@ def ensure_open_webui_access(admin: Admin) -> None:
                 f"/{REALM}/clients/{cid}/protocol-mappers/models/{current['id']}",
                 {**current, **spec},
             )
+
+
+def ensure_platform_roles(admin: Admin) -> None:
+    """Роли Platform API и их доставка в токен (ADR-0009).
+
+    - роли клиента platform-api (PLATFORM_ROLES); platform-user в ролях realm по умолчанию;
+    - client scope platform-api: маппер ролей клиента platform-api в claim platform_roles и
+      scope mapping этих ролей: у клиентов fullScopeAllowed выключен, без scope mapping роли
+      чужого клиента в токен не попадают.
+    """
+    client = admin.find_client(REALM, PLATFORM_CLIENT)
+    if client is None:
+        raise KeycloakError(f"в realm {REALM} нет клиента {PLATFORM_CLIENT}")
+    cid = client["id"]
+    have = {r["name"] for r in admin.call("GET", f"/{REALM}/clients/{cid}/roles")}
+    for role in PLATFORM_ROLES:
+        if role not in have:
+            log(f"роль клиента {PLATFORM_CLIENT}: {role}")
+            admin.call(
+                "POST",
+                f"/{REALM}/clients/{cid}/roles",
+                {"name": role, "description": f"Platform API: {role} (ADR-0009)"},
+            )
+    roles = {r: admin.call("GET", f"/{REALM}/clients/{cid}/roles/{r}") for r in PLATFORM_ROLES}
+    default_roles = f"/{REALM}/roles/default-roles-{REALM}/composites"
+    composites = admin.call("GET", f"{default_roles}/clients/{cid}")
+    if not any(r["name"] == PLATFORM_DEFAULT_ROLE for r in composites):
+        admin.call("POST", default_roles, [roles[PLATFORM_DEFAULT_ROLE]])
+
+    scope = next(
+        (
+            sc
+            for sc in admin.call("GET", f"/{REALM}/client-scopes")
+            if sc["name"] == PLATFORM_CLIENT
+        ),
+        None,
+    )
+    if scope is None:
+        raise KeycloakError(f"в realm {REALM} нет client scope {PLATFORM_CLIENT}")
+    sid = scope["id"]
+    mapped = admin.call("GET", f"/{REALM}/client-scopes/{sid}/scope-mappings/clients/{cid}")
+    missing = [roles[r] for r in PLATFORM_ROLES if not any(m["name"] == r for m in mapped)]
+    if missing:
+        admin.call("POST", f"/{REALM}/client-scopes/{sid}/scope-mappings/clients/{cid}", missing)
+    wanted = {
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-usermodel-client-role-mapper",
+        "config": {
+            "usermodel.clientRoleMapping.clientId": PLATFORM_CLIENT,
+            "claim.name": PLATFORM_ROLES_CLAIM,
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true",
+        },
+    }
+    mappers = {
+        m["name"]: m
+        for m in admin.call("GET", f"/{REALM}/client-scopes/{sid}/protocol-mappers/models")
+    }
+    current = mappers.get(PLATFORM_ROLES_CLAIM)
+    if current is None:
+        admin.call(
+            "POST",
+            f"/{REALM}/client-scopes/{sid}/protocol-mappers/models",
+            {"name": PLATFORM_ROLES_CLAIM, **wanted},
+        )
+    elif current.get("config") != wanted["config"]:
+        admin.call(
+            "PUT",
+            f"/{REALM}/client-scopes/{sid}/protocol-mappers/models/{current['id']}",
+            {**current, **wanted},
+        )
 
 
 def client_secret_map(secrets_in: Json) -> dict[str, str]:
