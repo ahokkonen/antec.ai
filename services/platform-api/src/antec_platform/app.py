@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import logging
 import re
+import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
@@ -26,7 +28,9 @@ from antec_platform.agents import (
     AgentDefinition,
     AgentRun,
     AgentRuntime,
+    Resume,
     RunOutcome,
+    Turn,
     agent_input,
 )
 from antec_platform.auth import (
@@ -48,7 +52,8 @@ from antec_platform.chat import (
 )
 from antec_platform.errors import ApiError, error_body, forbidden, unauthorized
 from antec_platform.policy import PolicyClient, PolicyUnavailable, Resource, Subject
-from antec_platform.store import AgentRunStart, CallResult, CallStart, Store, User
+from antec_platform.store import AgentRunStart, Approval, CallResult, CallStart, Store, User
+from antec_platform.tools import McpClient, McpServerSpec, TokenExchanger, ToolBroker
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +63,12 @@ CHAT_ID_HEADER = "x-openwebui-chat-id"
 _EXTERNAL_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 _ERROR_MESSAGE_LIMIT = 500
 _PROBES = frozenset({"/healthz", "/readyz"})
+# Подтверждение в чате (ADR-0010, п. 7): код без похожих символов (0/O, 1/I).
+_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_APPROVE_RE = re.compile(r"подтверждаю\s+([A-Za-z0-9]{4,8})[.!]?", re.IGNORECASE)
+_DENY_RE = re.compile(r"отмена[.!]?", re.IGNORECASE)
+# Итоги запуска, на которые клиент получает ответ (а не ошибку).
+_ANSWERED = frozenset({"ok", "awaiting_approval"})
 
 
 @dataclass(slots=True)
@@ -74,6 +85,11 @@ class Deps:
     # Агенты инсталляции (ADR-0010) и рантайм; без агентов рантайма нет.
     agents: dict[str, AgentDefinition] = field(default_factory=dict)
     runtime: AgentRuntime | None = None
+    # Инструменты агентов (ADR-0010, п. 6): MCP-серверы манифеста, транспорт, обмен токена.
+    mcp_servers: dict[str, McpServerSpec] = field(default_factory=dict)
+    mcp_client: McpClient | None = None
+    token_exchange: TokenExchanger | None = None
+    approval_ttl_seconds: int = 900
     # Фоновые записи итогов вызова: переживают отмену запроса клиентом, ждутся при остановке.
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
 
@@ -491,15 +507,49 @@ def _agent_error(outcome: RunOutcome) -> ApiError:
     )
 
 
-async def _finish_run(deps: Deps, run: AgentRunStart, outcome: RunOutcome) -> None:
-    try:
-        await deps.store.finish_agent_run(run, outcome)
-    except Exception:
-        log.exception("не удалось записать итог запуска агента %s", run.id)
+@dataclass(slots=True)
+class _RunContext:
+    """Запуск агента в рамках запроса: запись, код подтверждения, ответ клиенту."""
+
+    deps: Deps
+    run: AgentRunStart
+    handle: AgentRun
+    code: str
+    chat_confirm: bool
+
+    async def finish(self, outcome: RunOutcome) -> None:
+        approval = None
+        if outcome.status == "awaiting_approval":
+            expires = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=self.deps.approval_ttl_seconds)
+            approval = Approval(code=self.code, expires_at=expires)
+        try:
+            await self.deps.store.finish_agent_run(self.run, outcome, approval)
+        except Exception:
+            log.exception("не удалось записать итог запуска агента %s", self.run.id)
+
+    async def finish_when_done(self) -> None:
+        await self.finish(await self.handle.outcome())
+
+    def approval_text(self, outcome: RunOutcome) -> str:
+        """Запрос подтверждения (ADR-0010, п. 7): что именно будет сделано и как ответить."""
+        lines = ["", "", "Нужно подтверждение:"]
+        for call in outcome.pending:
+            args = json.dumps(call.arguments, ensure_ascii=False)
+            if len(args) > 300:
+                args = args[:300] + "…"
+            lines.append(f"- {call.ref}({args})")
+        minutes = max(1, self.deps.approval_ttl_seconds // 60)
+        if self.chat_confirm:
+            lines.append(f"Ответьте «подтверждаю {self.code}» или «отмена». Срок {minutes} мин.")
+        else:
+            lines.append(
+                f"Подтвердите через POST /v1/agent-runs/{self.run.id}/decision. Срок {minutes} мин."
+            )
+        return "\n".join(lines)
 
 
-async def _finish_run_when_done(deps: Deps, run: AgentRunStart, handle: AgentRun) -> None:
-    await _finish_run(deps, run, await handle.outcome())
+def _approval_code() -> str:
+    return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(4))
 
 
 def _usage(outcome: RunOutcome) -> dict[str, int]:
@@ -517,20 +567,172 @@ def _chunk(base: dict[str, Any], delta: dict[str, Any], finish: str | None = Non
     return b"data: " + json.dumps(body, ensure_ascii=False).encode() + b"\n\n"
 
 
+def _completion_body(base: dict[str, Any], text: str, usage: dict[str, int]) -> dict[str, Any]:
+    return {
+        **base,
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": usage,
+    }
+
+
+def _static_reply(model: str, rid: uuid.UUID, text: str, stream: bool) -> Response:
+    """Ответ без вызова модели (решение по подтверждению)."""
+    base = {"id": f"chatcmpl-{rid.hex}", "created": int(time.time()), "model": model}
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    if not stream:
+        return JSONResponse(_completion_body(base, text, usage))
+    chunk_base = {**base, "object": "chat.completion.chunk"}
+
+    async def body() -> AsyncIterator[bytes]:
+        yield _chunk(chunk_base, {"role": "assistant", "content": text})
+        yield _chunk(chunk_base, {}, "stop")
+        yield b"data: [DONE]\n\n"
+
+    return StreamingResponse(
+        body(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}
+    )
+
+
+def _decision(prompt: str, code: str) -> str:
+    """approve, deny, wrong_code или other: решает код Platform API, а не модель."""
+    match = _APPROVE_RE.fullmatch(prompt.strip())
+    if match:
+        return "approve" if match.group(1).upper() == code.upper() else "wrong_code"
+    if _DENY_RE.fullmatch(prompt.strip()):
+        return "deny"
+    return "other"
+
+
+def _tool_session(
+    request: Request,
+    deps: Deps,
+    principal: Principal,
+    user: User,
+    agent: AgentDefinition,
+    token: str,
+) -> ToolBroker | None:
+    if not agent.tools:
+        return None
+    if deps.mcp_client is None or deps.token_exchange is None:
+        raise ApiError(
+            503, "инструменты агентов не настроены", type_="api_error", code="tools_unavailable"
+        )
+    return ToolBroker(
+        servers=deps.mcp_servers,
+        client=deps.mcp_client,
+        exchanger=deps.token_exchange,
+        policy=deps.policy,
+        audit=deps.store,
+        subject=_subject(principal, user),
+        subject_token=token,
+        user_id=user.id,
+        client_id=principal.client_id,
+        request_id=_request_id(request),
+        agent=agent.name,
+    )
+
+
 async def _agent_completion(
     request: Request, deps: Deps, principal: Principal, user: User, chat: ChatRequest
 ) -> Response:
-    """Запуск агента через фасад (ADR-0010, п. 4): ответ в формате Chat Completions."""
+    """Запуск агента через фасад (ADR-0010, п. 4): ответ в формате Chat Completions.
+
+    Если в разговоре ждёт подтверждения запуск этого агента, сообщение пользователя сначала
+    сравнивается с кодом (ADR-0010, п. 7): «подтверждаю <код>» продолжает запуск, «отмена»
+    отклоняет вызовы, неверный код и истёкший срок отменяют ожидание без вызова модели, любое
+    другое сообщение отменяет ожидание и обрабатывается как новый вопрос.
+    """
     agent = deps.agents[chat.model]
+    await authorize_agent(request, principal, user, agent)
+    history, prompt = agent_input(chat.messages)
+    external_id = _external_id(request)
+    conversation_id = await deps.store.ensure_conversation(
+        user.id, principal.client_id, external_id
+    )
+    rid = _request_id(request)
+    resume: Resume | None = None
+    parent: uuid.UUID | None = None
+    if external_id is not None:
+        pending = await deps.store.find_pending_run(user.id, conversation_id=conversation_id)
+        if pending is not None:
+            kind = _decision(prompt, pending.code)
+            expired = pending.expires_at <= dt.datetime.now(dt.UTC)
+            if expired or pending.agent != agent.name or kind in ("other", "wrong_code"):
+                status = "expired" if expired else "denied"
+                await deps.store.resolve_pending_run(
+                    pending.id, user.id, status, client_id=principal.client_id, request_id=rid
+                )
+                if kind != "other" and pending.agent == agent.name:
+                    text = (
+                        "Срок подтверждения истёк, действие не выполнено."
+                        if expired
+                        else "Код подтверждения не совпадает, действие отменено."
+                    )
+                    return _static_reply(agent.name, rid, text, chat.stream)
+            else:
+                resolved = await deps.store.resolve_pending_run(
+                    pending.id,
+                    user.id,
+                    "approved" if kind == "approve" else "denied",
+                    client_id=principal.client_id,
+                    request_id=rid,
+                )
+                if resolved is None:
+                    raise ApiError(409, "решение уже принято", code="approval_conflict")
+                resume = Resume(
+                    state=resolved.state,
+                    approved={c.call_id: kind == "approve" for c in resolved.pending},
+                    decided_by=str(user.id),
+                )
+                parent = resolved.id
+    return await _run_agent(
+        request,
+        deps,
+        principal,
+        user,
+        agent,
+        conversation_id=conversation_id,
+        history=history,
+        prompt=prompt,
+        stream=chat.stream,
+        wants_usage=chat.client_wants_usage,
+        new_messages=[m for m in chat.new_messages() if m["role"] == "user"],
+        resume=resume,
+        parent=parent,
+        chat_confirm=external_id is not None,
+    )
+
+
+async def _run_agent(
+    request: Request,
+    deps: Deps,
+    principal: Principal,
+    user: User,
+    agent: AgentDefinition,
+    *,
+    conversation_id: uuid.UUID,
+    history: list[Turn],
+    prompt: str | None,
+    stream: bool,
+    wants_usage: bool,
+    new_messages: list[dict[str, Any]],
+    resume: Resume | None,
+    parent: uuid.UUID | None,
+    chat_confirm: bool,
+) -> Response:
     if deps.runtime is None:
         raise ApiError(
             503, "агентный рантайм не запущен", type_="api_error", code="agent_unavailable"
         )
-    await authorize_agent(request, principal, user, agent)
-    history, prompt = agent_input(chat.messages)
-    conversation_id = await deps.store.ensure_conversation(
-        user.id, principal.client_id, _external_id(request)
-    )
+    token = bearer_token(request.headers.get("authorization")) or ""
+    tools = _tool_session(request, deps, principal, user, agent, token)
     run = AgentRunStart(
         id=_request_id(request),
         user_id=user.id,
@@ -538,22 +740,20 @@ async def _agent_completion(
         client_id=principal.client_id,
         agent=agent.name,
         model=agent.model,
-        stream=chat.stream,
+        stream=stream,
         # В историю то, что получил агент: системные сообщения и вызовы инструментов клиента
         # агенту не передаются (ADR-0010, п. 4).
-        new_messages=[m for m in chat.new_messages() if m["role"] == "user"],
+        new_messages=new_messages,
+        parent_run_id=parent,
     )
     await deps.store.start_agent_run(run)
-    handle = deps.runtime.start(agent, str(user.id), history, prompt)
-    base = {
-        "id": f"chatcmpl-{run.id.hex}",
-        "created": int(time.time()),
-        "model": agent.name,
-    }
+    handle = deps.runtime.start(agent, str(user.id), history, prompt, tools, resume)
+    ctx = _RunContext(deps, run, handle, _approval_code(), chat_confirm)
+    base = {"id": f"chatcmpl-{run.id.hex}", "created": int(time.time()), "model": agent.name}
     deltas = handle.deltas()
     first: str | None = None
     try:
-        if chat.stream:
+        if stream:
             # Первый фрагмент до ответа: ошибка до начала текста (бюджет, шлюз) = HTTP-ошибка.
             first = await anext(deltas, None)
         else:
@@ -562,36 +762,23 @@ async def _agent_completion(
     except BaseException:
         # Отмена запроса или сбой до ответа: запуск прерывается, итог пишется отдельной задачей.
         handle.cancel()
-        deps.spawn(_finish_run_when_done(deps, run, handle))
+        deps.spawn(ctx.finish_when_done())
         raise
-    if not chat.stream or first is None:
+    if not stream or first is None:
         outcome = await handle.outcome()
-        if outcome.status != "ok" or not chat.stream:
-            await _finish_run(deps, run, outcome)
-        if outcome.status != "ok":
+        if outcome.status == "awaiting_approval" and not stream:
+            outcome.text += ctx.approval_text(outcome)
+        if outcome.status not in _ANSWERED or not stream:
+            await ctx.finish(outcome)
+        if outcome.status not in _ANSWERED:
             raise _agent_error(outcome)
-        if not chat.stream:
-            return JSONResponse(
-                {
-                    **base,
-                    "object": "chat.completion",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {"role": "assistant", "content": outcome.text},
-                            "finish_reason": "stop",
-                        }
-                    ],
-                    "usage": _usage(outcome),
-                }
-            )
-    return _agent_stream(deps, run, handle, deltas, first, base, chat.client_wants_usage)
+        if not stream:
+            return JSONResponse(_completion_body(base, outcome.text, _usage(outcome)))
+    return _agent_stream(ctx, deltas, first, base, wants_usage)
 
 
 def _agent_stream(
-    deps: Deps,
-    run: AgentRunStart,
-    handle: AgentRun,
+    ctx: _RunContext,
     deltas: AsyncIterator[str],
     first: str | None,
     base: dict[str, Any],
@@ -600,6 +787,7 @@ def _agent_stream(
     chunk_base = {**base, "object": "chat.completion.chunk"}
     finalized = False
     completed = False
+    handle = ctx.handle
 
     def finalize() -> None:
         nonlocal finalized
@@ -610,7 +798,7 @@ def _agent_stream(
             # Клиент ушёл до конца: запуск прерывается; итог записывается, когда рантайм его
             # отдаст.
             handle.cancel()
-        deps.spawn(_finish_run_when_done(deps, run, handle))
+        ctx.deps.spawn(ctx.finish_when_done())
 
     async def body() -> AsyncIterator[bytes]:
         nonlocal completed
@@ -622,10 +810,14 @@ def _agent_stream(
                 yield _chunk(chunk_base, {"content": delta})
             outcome = await handle.outcome()
             completed = True
-            if outcome.status != "ok":
+            if outcome.status not in _ANSWERED:
                 err = _agent_error(outcome)
                 yield _sse_error(err.message, err.code or "agent_error")
                 return
+            if outcome.status == "awaiting_approval":
+                prompt = ctx.approval_text(outcome)
+                outcome.text += prompt
+                yield _chunk(chunk_base, {"content": prompt})
             yield _chunk(chunk_base, {}, "stop")
             if wants_usage:
                 usage = {**chunk_base, "choices": [], "usage": _usage(outcome)}
@@ -639,6 +831,64 @@ def _agent_stream(
         finalize,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def agent_run_decision(request: Request) -> Response:
+    """Решение по ожидающему запуску для адаптеров каналов (ADR-0010, п. 7).
+
+    `{"decision": "approve" | "deny"}` с токеном того же пользователя; продолжает запуск и
+    возвращает chat.completion. Чужой или неизвестный запуск 404, истёкший или уже решённый 409.
+    """
+    deps = _deps(request)
+    principal, user = await authenticate(request)
+    try:
+        run_id = uuid.UUID(request.path_params["run_id"])
+    except ValueError as exc:
+        raise ApiError(404, "запуск не найден", code="run_not_found") from exc
+    body = await read_json(request, 4096)
+    decision = body.get("decision") if isinstance(body, dict) else None
+    if decision not in ("approve", "deny"):
+        raise ApiError(400, "decision: approve или deny", code="invalid_request", param="decision")
+    rid = _request_id(request)
+    pending = await deps.store.find_pending_run(user.id, run_id=run_id)
+    if pending is None or pending.agent not in deps.agents:
+        raise ApiError(404, "ожидающий запуск не найден", code="run_not_found")
+    if pending.expires_at <= dt.datetime.now(dt.UTC):
+        await deps.store.resolve_pending_run(
+            pending.id, user.id, "expired", client_id=principal.client_id, request_id=rid
+        )
+        raise ApiError(409, "срок подтверждения истёк", code="approval_expired")
+    agent = deps.agents[pending.agent]
+    await authorize_agent(request, principal, user, agent)
+    resolved = await deps.store.resolve_pending_run(
+        pending.id,
+        user.id,
+        "approved" if decision == "approve" else "denied",
+        client_id=principal.client_id,
+        request_id=rid,
+    )
+    if resolved is None:
+        raise ApiError(409, "решение уже принято", code="approval_conflict")
+    return await _run_agent(
+        request,
+        deps,
+        principal,
+        user,
+        agent,
+        conversation_id=resolved.conversation_id,
+        history=[],
+        prompt=None,
+        stream=False,
+        wants_usage=False,
+        new_messages=[],
+        resume=Resume(
+            state=resolved.state,
+            approved={c.call_id: decision == "approve" for c in resolved.pending},
+            decided_by=str(user.id),
+        ),
+        parent=resolved.id,
+        chat_confirm=False,
     )
 
 
@@ -766,6 +1016,7 @@ def create_app(
 
     app.add_api_route("/v1/chat/completions", chat_completions, methods=["POST"])
     app.add_api_route("/v1/models", list_models, methods=["GET"])
+    app.add_api_route("/v1/agent-runs/{run_id}/decision", agent_run_decision, methods=["POST"])
     app.add_api_route("/healthz", healthz, methods=["GET"])
     app.add_api_route("/readyz", readyz, methods=["GET"])
     app.add_middleware(AccessLogMiddleware)

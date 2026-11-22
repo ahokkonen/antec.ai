@@ -99,12 +99,19 @@ agent_runs = Table(
     Column("state", JSONB),
     Column("started_at", DateTime(timezone=True), nullable=False, server_default=NOW),
     Column("finished_at", DateTime(timezone=True)),
+    # Подтверждение (ADR-0010, п. 7): ожидающие вызовы, код, срок, продолжение.
+    Column("pending", JSONB),
+    Column("approval_code", Text),
+    Column("approval_expires_at", DateTime(timezone=True)),
+    Column("parent_run_id", UUID(as_uuid=True), ForeignKey("agent_runs.id")),
     CheckConstraint(
-        "status in ('started', 'ok', 'error', 'cancelled', 'rejected', 'awaiting_approval')",
+        "status in ('started', 'ok', 'error', 'cancelled', 'rejected', 'awaiting_approval', "
+        "'approved', 'denied', 'expired')",
         name="status",
     ),
     Index("ix_agent_runs_user_id_started_at", "user_id", "started_at"),
     Index("ix_agent_runs_conversation_id", "conversation_id"),
+    Index("ix_agent_runs_conversation_id_status", "conversation_id", "status"),
 )
 
 model_calls = Table(

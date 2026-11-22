@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "antec_platform"
-VENDOR = ("pydantic_ai", "pydantic_graph", "openai", "httpx2", "litellm")
+VENDOR = ("pydantic_ai", "pydantic_graph", "openai", "httpx2", "litellm", "mcp_types")
 
 
 def _imports(path: Path) -> set[str]:

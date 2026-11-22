@@ -19,9 +19,18 @@ from typing import Any
 
 import httpx2
 from openai import AsyncOpenAI
-from pydantic_ai import Agent, AgentRunResultEvent
+from pydantic_ai import (
+    Agent,
+    AgentRunResultEvent,
+    DeferredToolRequests,
+    DeferredToolResults,
+    RunContext,
+    Tool,
+    ToolDenied,
+)
 from pydantic_ai.exceptions import (
     AgentRunError,
+    ApprovalRequired,
     ModelAPIError,
     ModelHTTPError,
     RunTimedOut,
@@ -29,6 +38,7 @@ from pydantic_ai.exceptions import (
 )
 from pydantic_ai.messages import (
     ModelMessage,
+    ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
     PartDeltaEvent,
@@ -39,9 +49,19 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import UsageLimits
 
-from antec_platform.agents import AgentDefinition, RunOutcome, StepRecord, Turn
+from antec_platform.agents import (
+    AgentDefinition,
+    PendingCall,
+    Resume,
+    RunOutcome,
+    StepRecord,
+    ToolSession,
+    Turn,
+)
+from antec_platform.tools import ToolDefinition, ToolError
 
 log = logging.getLogger(__name__)
 
@@ -69,9 +89,11 @@ class PydanticAIRuntime:
             base_url=gateway_url, api_key=api_key, max_retries=0, http_client=self._http
         )
         provider = OpenAIProvider(openai_client=client)
-        self._agents = {
+        self._agents: dict[str, Agent[None, str | DeferredToolRequests]] = {
             name: Agent(
                 OpenAIChatModel(spec.model, provider=provider),
+                # Вызов, ждущий подтверждения, завершает запуск результатом DeferredToolRequests.
+                output_type=[str, DeferredToolRequests],
                 instructions=spec.instructions,
                 name=name,
                 # Повтор при невалидном ответе модели тоже вызов модели: не больше одного.
@@ -81,10 +103,23 @@ class PydanticAIRuntime:
         }
 
     def start(
-        self, agent: AgentDefinition, user_id: str, history: list[Turn], prompt: str
+        self,
+        agent: AgentDefinition,
+        user_id: str,
+        history: list[Turn],
+        prompt: str | None,
+        tools: ToolSession | None = None,
+        resume: Resume | None = None,
     ) -> PydanticAIRun:
         return PydanticAIRun(
-            self._agents[agent.name], agent, user_id, history, prompt, self._timeout
+            self._agents[agent.name],
+            agent,
+            user_id,
+            history,
+            prompt,
+            self._timeout,
+            tools=tools,
+            resume=resume,
         )
 
     async def aclose(self) -> None:
@@ -146,39 +181,100 @@ def _http_error_message(exc: ModelHTTPError) -> str:
     return f"LLM-шлюз вернул HTTP {exc.status_code}"
 
 
+_DENIED = "Пользователь отклонил этот вызов инструмента; не повторяй его без новой просьбы."
+
+
+def _tool(defn: ToolDefinition, session: ToolSession, approved_by: str | None) -> Tool[None]:
+    """Инструмент MCP для модели: права, подтверждение и вызов через ToolSession.
+
+    Не read_only: без подтверждения в этом запуске вызов не выполняется (ApprovalRequired),
+    но сначала проверяется право: запрещённое подтверждать не просим.
+    """
+
+    async def run(ctx: RunContext[None], **arguments: Any) -> str:  # noqa: ANN401
+        try:
+            if not defn.read_only and not ctx.tool_call_approved:
+                if not await session.authorize(defn.ref, defn.read_only):
+                    return "доступ к инструменту запрещён политикой"
+                raise ApprovalRequired(metadata={"ref": defn.ref})
+            result = await session.call(
+                defn.ref,
+                defn.read_only,
+                arguments,
+                None if defn.read_only else approved_by,
+            )
+        except ToolError as exc:
+            return f"Ошибка инструмента: {exc}"
+        return f"Ошибка инструмента: {result.text}" if result.is_error else result.text
+
+    return Tool.from_schema(
+        run,
+        name=defn.model_name,
+        description=defn.description or defn.ref,
+        json_schema=defn.input_schema,
+        takes_ctx=True,
+    )
+
+
 class PydanticAIRun:
     def __init__(
         self,
-        agent: Agent[None, str],
+        agent: Agent[None, str | DeferredToolRequests],
         spec: AgentDefinition,
         user_id: str,
         history: list[Turn],
-        prompt: str,
+        prompt: str | None,
         timeout: float,
+        *,
+        tools: ToolSession | None,
+        resume: Resume | None,
     ) -> None:
         self._queue: asyncio.Queue[Any] = asyncio.Queue()
         self._result = RunOutcome(status="cancelled")
         self._task = asyncio.create_task(
-            self._drive(agent, spec, user_id, _history(history), prompt, timeout)
+            self._drive(agent, spec, user_id, _history(history), prompt, timeout, tools, resume)
         )
         # Конец хода при любом исходе, в том числе при отмене до первого шага задачи.
         self._task.add_done_callback(lambda _task: self._queue.put_nowait(_DONE))
 
     async def _drive(
         self,
-        agent: Agent[None, str],
+        agent: Agent[None, str | DeferredToolRequests],
         spec: AgentDefinition,
         user_id: str,
         history: list[ModelMessage],
-        prompt: str,
+        prompt: str | None,
         limit_seconds: float,
+        tools: ToolSession | None,
+        resume: Resume | None,
     ) -> None:
         text: list[str] = []
         messages: list[ModelMessage] = []
+        output: str | DeferredToolRequests | None = None
+        all_messages: list[ModelMessage] = []
+        refs: dict[str, str] = {}
         try:
+            toolsets: list[FunctionToolset[None]] = []
+            if tools is not None and spec.tools:
+                defs = await tools.definitions(spec)
+                refs = {d.model_name: d.ref for d in defs}
+                approver = resume.decided_by if resume is not None else None
+                toolsets.append(FunctionToolset([_tool(d, tools, approver) for d in defs]))
+            deferred: DeferredToolResults | None = None
+            if resume is not None:
+                history = list(ModelMessagesTypeAdapter.validate_python(resume.state["messages"]))
+                deferred = DeferredToolResults(
+                    approvals={
+                        call_id: True if ok else ToolDenied(_DENIED)
+                        for call_id, ok in resume.approved.items()
+                    }
+                )
+                prompt = None
             async with agent.run_stream_events(
                 prompt,
                 message_history=history,
+                deferred_tool_results=deferred,
+                toolsets=toolsets,
                 model_settings=OpenAIChatModelSettings(openai_user=user_id),
                 usage_limits=UsageLimits(
                     request_limit=spec.max_steps, tool_calls_limit=spec.max_tool_calls
@@ -192,10 +288,31 @@ class PydanticAIRun:
                             text.append(delta)
                             self._queue.put_nowait(delta)
                         if isinstance(event, AgentRunResultEvent):
-                            text = [event.result.output]
+                            output = event.result.output
+                            if isinstance(output, str):
+                                text = [output]
+                            all_messages = event.result.all_messages()
                 finally:
                     messages = list(events.new_messages())
-            self._result = RunOutcome(status="ok", text="".join(text), steps=_steps(messages))
+            if isinstance(output, DeferredToolRequests):
+                self._result = RunOutcome(
+                    status="awaiting_approval",
+                    text="".join(text),
+                    steps=_steps(messages),
+                    pending=[
+                        PendingCall(
+                            call_id=call.tool_call_id,
+                            ref=refs.get(call.tool_name, call.tool_name),
+                            arguments=call.args_as_dict(),
+                        )
+                        for call in output.approvals
+                    ],
+                    state={
+                        "messages": ModelMessagesTypeAdapter.dump_python(all_messages, mode="json")
+                    },
+                )
+            else:
+                self._result = RunOutcome(status="ok", text="".join(text), steps=_steps(messages))
         except asyncio.CancelledError:
             self._result = RunOutcome(
                 status="cancelled", text="".join(text), steps=_steps(messages)

@@ -41,7 +41,6 @@ def test_load_agents(tmp_path: Path) -> None:
         ({"x": 1}, "список"),
         ([SPEC, SPEC], "повторяется"),
         ([{**SPEC, "model": "chat-default"}], "PLATFORM_MODELS"),
-        ([{**SPEC, "tools": ["crm.search"]}], "инструменты"),
         ([{**SPEC, "name": "assistant"}], "некорректное"),
         ([{**SPEC, "instructions": " "}], "некорректное"),
         ([{**SPEC, "max_steps": 0}], "лимиты"),

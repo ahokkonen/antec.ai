@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from antec_platform.agents import RunOutcome
+from antec_platform.agents import PendingCall, RunOutcome
 from antec_platform.auth import Principal
 from antec_platform.db import (
     agent_runs,
@@ -75,6 +75,29 @@ class AgentRunStart:
     model: str
     stream: bool
     new_messages: list[dict[str, Any]] = field(default_factory=list)
+    # Продолжение запуска после подтверждения (ADR-0010, п. 7).
+    parent_run_id: uuid.UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Approval:
+    """Код и срок подтверждения запуска в статусе awaiting_approval."""
+
+    code: str
+    expires_at: dt.datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PendingRun:
+    """Запуск, ждущий решения человека."""
+
+    id: uuid.UUID
+    conversation_id: uuid.UUID
+    agent: str
+    code: str
+    expires_at: dt.datetime
+    state: dict[str, Any]
+    pending: list[PendingCall]
 
 
 class Store(Protocol):
@@ -107,7 +130,40 @@ class Store(Protocol):
 
     async def start_agent_run(self, run: AgentRunStart) -> None: ...
 
-    async def finish_agent_run(self, run: AgentRunStart, outcome: RunOutcome) -> None: ...
+    async def finish_agent_run(
+        self, run: AgentRunStart, outcome: RunOutcome, approval: Approval | None = None
+    ) -> None: ...
+
+    async def find_pending_run(
+        self,
+        user_id: uuid.UUID,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        run_id: uuid.UUID | None = None,
+    ) -> PendingRun | None: ...
+
+    async def resolve_pending_run(
+        self,
+        run_id: uuid.UUID,
+        user_id: uuid.UUID,
+        status: str,
+        *,
+        client_id: str,
+        request_id: uuid.UUID,
+    ) -> PendingRun | None: ...
+
+    async def record_tool_call(
+        self,
+        *,
+        request_id: uuid.UUID,
+        user_id: uuid.UUID,
+        client_id: str,
+        run_id: uuid.UUID,
+        agent: str,
+        ref: str,
+        outcome: str,
+        details: dict[str, Any],
+    ) -> None: ...
 
 
 def _audit(
@@ -473,17 +529,31 @@ class PgStore:
                     model=run.model,
                     stream=run.stream,
                     status="started",
+                    parent_run_id=run.parent_run_id,
                 )
             )
 
-    async def finish_agent_run(self, run: AgentRunStart, outcome: RunOutcome) -> None:
+    async def finish_agent_run(
+        self, run: AgentRunStart, outcome: RunOutcome, approval: Approval | None = None
+    ) -> None:
         """Итог запуска, шаги в model_calls, история и аудит в одной транзакции (ADR-0010, п. 5).
 
         Каждый шаг = строка model_calls со ссылкой agent_run_id и событие model.call; запуск
         целиком = событие agent.run. История (новые сообщения пользователя и ответ агента)
         привязана к последнему шагу; без шагов истории нет.
         """
-        ok = outcome.status in ("ok", "cancelled")
+        ok = outcome.status in ("ok", "cancelled", "awaiting_approval")
+        waiting: dict[str, Any] = {}
+        if outcome.status == "awaiting_approval" and approval is not None:
+            waiting = {
+                "state": outcome.state,
+                "pending": [
+                    {"call_id": c.call_id, "ref": c.ref, "arguments": c.arguments}
+                    for c in outcome.pending
+                ],
+                "approval_code": approval.code,
+                "approval_expires_at": approval.expires_at,
+            }
         async with self._engine.begin() as conn:
             await conn.execute(
                 update(agent_runs)
@@ -495,6 +565,7 @@ class PgStore:
                     completion_tokens=outcome.completion_tokens,
                     error=outcome.error,
                     finished_at=func.now(),
+                    **waiting,
                 )
             )
             step_ids: list[uuid.UUID] = []
@@ -587,7 +658,125 @@ class PgStore:
                             "prompt_tokens": outcome.prompt_tokens,
                             "completion_tokens": outcome.completion_tokens,
                             "error_code": outcome.error_code,
+                            "pending_tools": [c.ref for c in outcome.pending],
+                            "parent_run_id": str(run.parent_run_id) if run.parent_run_id else None,
                         },
                     )
                 )
             )
+
+    async def find_pending_run(
+        self,
+        user_id: uuid.UUID,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        run_id: uuid.UUID | None = None,
+    ) -> PendingRun | None:
+        """Последний запуск пользователя в статусе awaiting_approval (в разговоре или по id)."""
+        stmt = select(agent_runs).where(
+            agent_runs.c.user_id == user_id, agent_runs.c.status == "awaiting_approval"
+        )
+        if conversation_id is not None:
+            stmt = stmt.where(agent_runs.c.conversation_id == conversation_id)
+        if run_id is not None:
+            stmt = stmt.where(agent_runs.c.id == run_id)
+        stmt = stmt.order_by(agent_runs.c.started_at.desc()).limit(1)
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(stmt)).first()
+        return _pending(row) if row is not None else None
+
+    async def resolve_pending_run(
+        self,
+        run_id: uuid.UUID,
+        user_id: uuid.UUID,
+        status: str,
+        *,
+        client_id: str,
+        request_id: uuid.UUID,
+    ) -> PendingRun | None:
+        """Решение по ожиданию ровно один раз: UPDATE только из awaiting_approval.
+
+        Два одновременных подтверждения: выигрывает одно, второе получает None. Решение
+        записывается событием tool.approval (кто, что, по каким инструментам).
+        """
+        if status not in ("approved", "denied", "expired"):
+            raise ValueError(status)
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    update(agent_runs)
+                    .where(
+                        agent_runs.c.id == run_id,
+                        agent_runs.c.user_id == user_id,
+                        agent_runs.c.status == "awaiting_approval",
+                    )
+                    .values(status=status)
+                    .returning(*agent_runs.c)
+                )
+            ).first()
+            if row is None:
+                return None
+            pending = _pending(row)
+            await conn.execute(
+                insert(audit_events).values(
+                    _audit(
+                        action="tool.approval",
+                        outcome="allow" if status == "approved" else "deny",
+                        request_id=request_id,
+                        actor_user_id=user_id,
+                        actor_client=client_id,
+                        resource_type="agent_run",
+                        resource_id=str(run_id),
+                        details={
+                            "decision": status,
+                            "agent": pending.agent,
+                            "tools": [c.ref for c in pending.pending],
+                        },
+                    )
+                )
+            )
+        return pending
+
+    async def record_tool_call(
+        self,
+        *,
+        request_id: uuid.UUID,
+        user_id: uuid.UUID,
+        client_id: str,
+        run_id: uuid.UUID,
+        agent: str,
+        ref: str,
+        outcome: str,
+        details: dict[str, Any],
+    ) -> None:
+        """Вызов инструмента (ADR-0010, п. 6): без аргументов и результата (ADR-0012)."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(audit_events).values(
+                    _audit(
+                        action="tool.call",
+                        outcome=outcome,
+                        request_id=request_id,
+                        actor_user_id=user_id,
+                        actor_client=client_id,
+                        resource_type="tool",
+                        resource_id=ref,
+                        details={"agent": agent, "agent_run_id": str(run_id), **details},
+                    )
+                )
+            )
+
+
+def _pending(row: Any) -> PendingRun:  # noqa: ANN401 - строка SQLAlchemy
+    return PendingRun(
+        id=row.id,
+        conversation_id=row.conversation_id,
+        agent=row.agent,
+        code=row.approval_code or "",
+        expires_at=row.approval_expires_at,
+        state=row.state or {},
+        pending=[
+            PendingCall(call_id=c["call_id"], ref=c["ref"], arguments=c.get("arguments") or {})
+            for c in row.pending or []
+        ],
+    )
