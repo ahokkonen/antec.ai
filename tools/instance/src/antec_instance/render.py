@@ -63,6 +63,12 @@ def summary(manifest: Manifest) -> dict[str, Any]:
 
 
 def _write(path: Path, content: str) -> None:
+    # Без изменений файл не трогается: хэши и время изменения стенда остаются прежними.
+    try:
+        if path.read_text(encoding="utf-8") == content:
+            return
+    except FileNotFoundError:
+        pass
     # Атомарная замена: читатель (compose, LiteLLM) не увидит наполовину записанный файл.
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
