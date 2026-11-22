@@ -5,12 +5,15 @@ pgvector 0.8.7 ([ADR-0017](../../docs/adr/0017-base-layer-openbao-postgres.md)) 
 с брокером Entra ID ([ADR-0007](../../docs/adr/0007-idp-and-agent-delegation.md)), LLM-шлюз LiteLLM
 1.108.8 и веб-чат Open WebUI 0.13.3 ([ADR-0018](../../docs/adr/0018-litellm-on-base-layer.md)), Platform API
 ([ADR-0006](../../docs/adr/0006-platform-api-data-model.md), [services/platform-api](../../services/platform-api/README.md)) и
-PDP Cerbos 0.57.0 ([ADR-0009](../../docs/adr/0009-authorization-cerbos.md), политики [policies/cerbos](../../policies/cerbos)). Образы только по
+PDP Cerbos 0.57.0 ([ADR-0009](../../docs/adr/0009-authorization-cerbos.md), политики [policies/cerbos](../../policies/cerbos)). Модели, политики и
+настройки инсталляции задаёт её манифест ([ADR-0008](../../docs/adr/0008-plugin-contract-and-instance-template.md)), по умолчанию
+dev-инсталляция ядра [`instances/dev`](../../instances/dev/instance.yaml). Образы только по
 digest из [`policy/allowed-versions.yaml`](../../policy/allowed-versions.yaml) (ADR-0004).
 
 ## Требования
 
-- macOS с Docker Desktop (Compose v2 или новее); скрипты используют Связку ключей (`security`) и `python3`.
+- macOS с Docker Desktop (Compose v2 или новее); скрипты используют Связку ключей (`security`), `python3`
+  и `uv` (рендер манифеста инсталляции).
 - Около 6,5 GB свободной памяти в VM Docker (лимиты: OpenBao 256 MB, PostgreSQL 1 GB, Keycloak,
   LiteLLM и Open WebUI по 1,5 GB, Platform API 512 MB, Cerbos 256 MB; фактически около 2,8 GB).
 - Свободные порты `127.0.0.1:8080` (Keycloak) и `127.0.0.1:3000` (Open WebUI).
@@ -21,6 +24,16 @@ digest из [`policy/allowed-versions.yaml`](../../policy/allowed-versions.yaml)
 
 ```bash
 deploy/compose/scripts/up.sh
+```
+
+Инсталляция: `ANTEC_INSTANCE_DIR` (по умолчанию `instances/dev`). `up.sh` сначала проверяет её
+манифест и политики и пишет производные файлы в `<инсталляция>/.rendered/` (`tools/instance render`):
+модели LiteLLM (`include` в `litellm/config.yaml`), `PLATFORM_MODELS`, `PLATFORM_POLICY_SCOPE` и
+настройки Platform API, модели ключа `platform-api` в LiteLLM. `compose.override.yaml` инсталляции,
+если есть, подключается к `compose.yaml`. Репозиторий инсталляции с ядром в `core/`:
+
+```bash
+ANTEC_INSTANCE_DIR="$PWD" core/deploy/compose/scripts/up.sh
 ```
 
 Первый запуск инициализирует OpenBao, кладёт ключ распечатывания и root token в Связку ключей
@@ -91,10 +104,17 @@ deploy/compose/scripts/platform-smoke.sh
 ```
 
 Проверка Platform API: откроется браузер для входа (клиент `antec-smoke`), затем изнутри
-контейнера `platform-api`: модели, отказ без токена и с подделанной подписью, чат `chat-fast` с
+контейнера `platform-api`: модели (`chat-lab` разрешает только политика scope `dev`), отказ без токена и с подделанной подписью, чат `chat-fast` с
 потоком и без (с параметрами шлюза, которые фасад должен отбросить), неизвестная модель; в БД:
 статус и токены вызовов, вопрос и ответ в истории, запись аудита, конечный пользователь в учёте
 LiteLLM = пользователь Platform API. Токен передаётся только через конвейер.
+
+```bash
+deploy/compose/scripts/policies-check.sh
+```
+
+Компиляция и тесты политик Cerbos ядра и инсталляции вместе (аргумент: каталог инсталляции, по
+умолчанию `instances/dev`), тем же образом, что на стенде.
 
 Подключиться к PostgreSQL:
 
@@ -110,8 +130,8 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 | `secrets-render` | Одноразовая выгрузка секретов из OpenBao в тома сервисов (профиль `bootstrap`) | `secrets` | |
 | `postgres` | `localhost/antec/postgres:18.7-pgvector0.8.7`, БД `keycloak`, `litellm`, `openwebui`, `platform`, `dbos` | `data` (internal) | 1 GB |
 | `keycloak` | `localhost/antec/keycloak:26.8.2`, realm `antec`, брокер `entra`; `http://localhost:8080` | `data`, `egress` | 1,5 GB |
-| `litellm` | `litellm-non_root:v1.108.8`, модели `chat-default` (Claude Opus 5.5), `chat-fast` (Claude Haiku 5.5); порт 4000 только внутри | `data`, `llm` (internal), `llm-egress` | 1,5 GB |
-| `cerbos` | `cerbos:0.57.0`, политики `policies/cerbos` (только чтение); без телеметрии, Admin API и аудита | `policy` (internal) | 256 MB |
+| `litellm` | `litellm-non_root:v1.108.8`, модели из манифеста инсталляции (dev: `chat-default`, `chat-fast`, `chat-lab`); порт 4000 только внутри | `data`, `llm` (internal), `llm-egress` | 1,5 GB |
+| `cerbos` | `cerbos:0.57.0`, политики ядра `/policies/core` и инсталляции `/policies/instance` (scope, только чтение); без телеметрии, Admin API и аудита | `policy` (internal) | 256 MB |
 | `platform-migrate` | Одноразовые миграции БД `platform` ролью владельца схемы (профиль `bootstrap`) | `data` | 256 MB |
 | `platform-api` | `localhost/antec/platform-api:0.1.0`, фасад `/v1`, роль БД `platform_app`; порт 8000 только внутри | `data`, `llm`, `platform`, `policy` (internal) | 512 MB |
 | `open-webui` | `open-webui:v0.13.3`, вход через Keycloak; `http://localhost:3000` | `data`, `platform`, `ui` | 1,5 GB |
@@ -140,7 +160,8 @@ Open WebUI с Keycloak: создаёт `breakglass` в пустом Open WebUI (
 отключены (`BYPASS_MODEL_ACCESS_CONTROL`), список моделей фильтрует фасад. Роли Platform API:
 роли клиента `platform-api` в Keycloak (`platform-user` у всех по умолчанию, `platform-admin`
 явно, Clients → platform-api → Roles), в токене claim `platform_roles`. Политики меняются в
-`policies/cerbos` и применяются `up.sh` (перезапуск Cerbos по хэшу).
+`policies/cerbos` (ядро) и `policies/` инсталляции (scope = id инсталляции) и применяются `up.sh`
+(перезапуск Cerbos по хэшу).
 Сессия Open WebUI (8 часов) не длиннее SSO-сессии Keycloak: простой до 8 часов, максимум
 10 часов от начала сессии Keycloak (`ssoSessionIdleTimeout`, `ssoSessionMaxLifespan` в
 `keycloak/realm-antec.json`; `up.sh` применяет их и к существующему realm). Блокировка

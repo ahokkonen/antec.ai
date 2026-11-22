@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Запуск локального стенда: OpenBao (init/unseal), секреты, PostgreSQL, Keycloak, LiteLLM,
-# Platform API, Open WebUI. Идемпотентен.
+# Platform API, Open WebUI. Идемпотентен. Инсталляция: ANTEC_INSTANCE_DIR (по умолчанию
+# instances/dev ядра, ADR-0008).
 #   --recreate-realm   удалить realm antec и создать заново из keycloak/realm-antec.json
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -12,6 +13,9 @@ case "${1:-}" in
   --recreate-realm) recreate_realm="--recreate-realm" ;;
   *) die "использование: up.sh [--recreate-realm]" ;;
 esac
+
+log "проверка и рендер манифеста инсталляции $ANTEC_INSTANCE_DIR (ADR-0008)"
+render_instance
 
 log "запуск OpenBao"
 compose up -d openbao
@@ -141,7 +145,7 @@ log "подготовка LiteLLM: бюджет пользователей и к
 litellm_provision_inputs \
   | compose exec -T litellm /app/.venv/bin/python -c "$(cat "$COMPOSE_DIR/scripts/litellm_provision.py")"
 
-log "запуск Cerbos (политики policies/cerbos)"
+log "запуск Cerbos (политики ядра и инсталляции)"
 compose up -d --wait cerbos
 
 log "сборка Platform API и миграции БД platform"

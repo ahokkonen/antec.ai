@@ -1,13 +1,15 @@
 """Подготовка LiteLLM для клиентов стенда (ADR-0018, ADR-0006). Выполняется в контейнере litellm.
 
 Только стандартная библиотека: запускается интерпретатором образа LiteLLM из scripts/up.sh,
-секреты приходят JSON-объектом через stdin ({"master_key", "platform_api_key"}).
+секреты и модели приходят JSON-объектом через stdin ({"master_key", "platform_api_key", "models"});
+модели = логические модели манифеста инсталляции (ADR-0008).
 
 Идемпотентно создаёт:
 - бюджет `platform-user`: бюджет каждого конечного пользователя Platform API на 30 дней
   (конечный пользователь = поле `user` = id пользователя Platform API);
 - виртуальный ключ Platform API со значением из OpenBao (antec/platform-api:litellm_key):
-  только логические модели, конечные пользователи без своего бюджета получают `platform-user`.
+  только логические модели инсталляции, конечные пользователи без своего бюджета получают
+  `platform-user`.
 
 Существующие объекты приводятся к заданным: сумма и период бюджета, модели и бюджет ключа.
 Ключ `open-webui` (прямое подключение Open WebUI до Platform API, ADR-0018, п. 7) удаляется.
@@ -24,7 +26,6 @@ from typing import Any, cast
 
 BASE = "http://127.0.0.1:4000"
 PLATFORM_ALIAS = "platform-api"
-PLATFORM_MODELS = ["chat-default", "chat-fast"]
 RETIRED_ALIASES = ["open-webui"]
 END_USER_BUDGET_ID = "platform-user"
 END_USER_BUDGET_USD = 5.0
@@ -99,11 +100,11 @@ def ensure_budget(master: str) -> None:
         ok(status, payload, f"обновление бюджета {END_USER_BUDGET_ID}")
 
 
-def ensure_platform_key(master: str, key: str) -> None:
+def ensure_platform_key(master: str, key: str, models: list[str]) -> None:
     query = urllib.parse.urlencode({"key": key})
     status, info = call("GET", f"/key/info?{query}", master)
     wanted: Json = {
-        "models": PLATFORM_MODELS,
+        "models": models,
         "key_alias": PLATFORM_ALIAS,
         "metadata": {"purpose": "Platform API: служебный ключ фасада (ADR-0006)"},
         "end_user_budget_id": END_USER_BUDGET_ID,
@@ -111,7 +112,7 @@ def ensure_platform_key(master: str, key: str) -> None:
     if status == 200 and isinstance(info, dict):
         current = cast(Json, info.get("info") or {})
         same = (
-            sorted(current.get("models") or []) == sorted(PLATFORM_MODELS)
+            sorted(current.get("models") or []) == sorted(models)
             and (
                 current.get("end_user_budget_id")
                 or (current.get("metadata") or {}).get("end_user_budget_id")
@@ -157,7 +158,14 @@ def main() -> int:
         inputs = json.load(sys.stdin)
         master = cast(str, inputs["master_key"])
         ensure_budget(master)
-        ensure_platform_key(master, cast(str, inputs["platform_api_key"]))
+        models = inputs["models"]
+        if (
+            not isinstance(models, list)
+            or not models
+            or not all(isinstance(m, str) for m in models)
+        ):
+            raise ProvisionError("models: ожидается непустой список логических моделей")
+        ensure_platform_key(master, cast(str, inputs["platform_api_key"]), models)
         retire_keys(master)
     except (ProvisionError, KeyError, ValueError, OSError) as exc:
         print(f"litellm: ошибка подготовки: {exc}", file=sys.stderr)

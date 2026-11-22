@@ -51,9 +51,11 @@ def main() -> int:
     )
     status, _, body = call("GET", "/models", token)
     models = [m["id"] for m in json.loads(body).get("data", [])] if status == 200 else []
-    checks["GET /models: обе модели разрешены политикой"] = sorted(models) == [
+    # Модели dev-инсталляции (instances/dev): chat-lab разрешает только политика scope dev.
+    checks["GET /models: модели ядра и chat-lab из политики инсталляции"] = sorted(models) == [
         "chat-default",
         "chat-fast",
+        "chat-lab",
     ]
     status, headers, _ = call("GET", "/models", None)
     checks["без токена: 401 и WWW-Authenticate"] = status == 401 and "Bearer" in headers.get(
@@ -75,6 +77,11 @@ def main() -> int:
     usage = json.loads(body).get("usage") if status == 200 else None
     checks["chat-fast без потока: 200 и usage"] = isinstance(usage, dict)
     ids["completion"] = headers.get("x-request-id", "")
+
+    lab = {**question, "model": "chat-lab"}
+    checks["chat-lab (политика инсталляции): 200"] = (
+        call("POST", "/chat/completions", token, lab)[0] == 200
+    )
 
     status, headers, body = call("POST", "/chat/completions", token, {**question, "stream": True})
     events = [line for line in body.decode().splitlines() if line.startswith("data:")]

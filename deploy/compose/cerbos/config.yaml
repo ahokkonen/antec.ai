@@ -1,5 +1,6 @@
-# Cerbos PDP стенда (ADR-0009). Политики только с диска (policies/cerbos ядра, только чтение),
-# без Cerbos Hub. Изменения политик применяются перезапуском (up.sh пересоздаёт контейнер по хэшу).
+# Cerbos PDP стенда (ADR-0009, ADR-0008). Политики только с диска, только чтение, без Cerbos Hub:
+# /policies/core = policies/cerbos ядра (без scope), /policies/instance = policies/ инсталляции
+# (scope = id инсталляции). Изменения политик применяются перезапуском (up.sh пересоздаёт контейнер по хэшу).
 server:
   httpListenAddr: ":3592"
   grpcListenAddr: ":3593"
@@ -12,7 +13,9 @@ server:
     disabled: true
 engine:
   defaultPolicyVersion: "default"
-  lenientScopeSearch: false
+  # Виды ресурсов, которые инсталляция не переопределила в своём scope, решают политики ядра
+  # (ADR-0008, п. 4); scope политик инсталляции сверяет tools/instance validate.
+  lenientScopeSearch: true
 storage:
   driver: "disk"
   disk:
