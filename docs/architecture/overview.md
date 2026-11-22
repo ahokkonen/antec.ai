@@ -3,7 +3,7 @@
 Статус: черновик для MVP. Обновлено: 2026-11-22.
 Решения: [ADR-0001](../adr/0001-llm-gateway-litellm.md), [ADR-0002](../adr/0002-chat-ui-open-webui.md),
 [ADR-0003](../adr/0003-postgresql-single-datastore.md), [ADR-0004](../adr/0004-dependency-pinning-and-supply-chain.md),
-[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md).
+[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md), [ADR-0009](../adr/0009-authorization-cerbos.md).
 
 ## Главная идея
 
@@ -21,7 +21,7 @@
 | --- | --- | --- | --- |
 | Вход | Reverse proxy (Caddy или Traefik, выбрать в PoC) | TLS, единая точка входа | HTTP |
 | Безопасность | Keycloak | OIDC-провайдер, федерация с Entra ID, token exchange | OIDC/OAuth2 |
-| Безопасность | Cerbos | Политики: кто может вызывать какой агент, инструмент, модель | `PolicyClient` |
+| Безопасность | Cerbos | Политики: кто может вызывать какой агент, инструмент, модель | `PolicyClient` по AuthZEN |
 | Безопасность | OpenBao | Ключи провайдеров, секреты коннекторов | `SecretProvider`, Vault API |
 | Каналы | Open WebUI | Веб-чат, тонкий клиент | OpenAI-совместимый API к Platform API |
 | Каналы | OpenCode и др. coding-агенты | Работа разработчиков | OpenAI-совместимый API к LiteLLM, личный виртуальный ключ |
@@ -136,7 +136,7 @@ Coding-агенты ходят в LiteLLM напрямую с личным ви�
 | Управление ключами и бюджетами | Адаптер `GatewayAdmin`: create_key, revoke_key, set_budget, get_spend | LiteLLM management API | Адаптер под новый шлюз |
 | Учёт расходов | Колбэк шлюза → таблица расходов Platform API | LiteLLM callback / OTel | Любой шлюз с OTel |
 | Аутентификация | OIDC/OAuth2, token exchange | Keycloak | Authentik, другой IdP |
-| Политики | `PolicyClient.check(subject, action, resource)` | Cerbos | OPA, OpenFGA |
+| Политики | `PolicyClient.check(subject, action, resource)`, AuthZEN | Cerbos | OPA, OpenFGA |
 | Инструменты | MCP | Свои MCP-серверы | Любой MCP-сервер |
 | Агенты | `AgentSpec`, `run(ctx, input) -> stream` | Pydantic AI | LangGraph |
 | Процессы | `WorkflowEngine` | DBOS | Temporal |

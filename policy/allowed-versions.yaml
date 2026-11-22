@@ -260,10 +260,18 @@ components:
     role: policy-decision-point
     license: Apache-2.0
     image: ghcr.io/cerbos/cerbos
-    allowed: []                    # зафиксировать в PoC: линия 0.56.x
-    digest: null
+    note: "Только PDP с политиками с диска; Cerbos Hub (платный) не используется. Образ запускается от root: в compose user 65534 (ADR-0009)"
+    allowed: ["0.57.0"]            # от 2026-10-23
+    min_version: "0.57.0"          # 0.57.0: исправлены излишне разрешающие query plans и повторное использование результата условия чужого правила
+    # Индекс тега 0.57.0.
+    digest: "sha256:e5e3b150b3cb0090975605254f255164567d67e233634199fb20972e3eaff300"
+    signature:
+      method: "cosign keyless (Sigstore), identity https://github.com/cerbos/cerbos/.github/workflows/release.yaml@refs/tags/v0.57.0, issuer https://token.actions.githubusercontent.com"
+      note: "Проверено 2026-11-22 cosign verify; тег v0.57.0 = коммит 43125124efe4b50b83d894635fb2f691e980dc62 (= vcs.revision в cerbos --version); OSV по github.com/cerbos/cerbos пусто; опубликованных GHSA нет"
     sources:
-      - https://www.cerbos.dev/blog
+      - https://github.com/cerbos/cerbos/releases/tag/v0.57.0
+      - https://docs.cerbos.dev/cerbos/latest/releases/v0.57.0.html
+      - https://docs.cerbos.dev/cerbos/latest/api/index.html
 
   otel-collector:
     role: telemetry-pipeline
