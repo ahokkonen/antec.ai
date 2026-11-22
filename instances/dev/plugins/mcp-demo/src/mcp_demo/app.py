@@ -22,6 +22,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 PROTOCOL_VERSION = "2026-07-28"
+_MIN_REFRESH = 30.0
+_MAX_AGE = 600.0
 SERVER_INFO = {"name": "mcp-demo", "version": "0.1.0"}
 log = logging.getLogger("mcp_demo")
 
@@ -63,7 +65,7 @@ class Verifier:
     config: Config
     http: httpx.AsyncClient
     _keys: dict[str, Any] = field(default_factory=dict)
-    _loaded: float = 0.0
+    _loaded: float = -1e9
 
     async def _refresh(self) -> None:
         resp = await self.http.get(self.config.jwks_url, timeout=5)
@@ -78,7 +80,10 @@ class Verifier:
             kid = jwt.get_unverified_header(token).get("kid")
         except jwt.PyJWTError as exc:
             raise Unauthorized("токен не разобран") from exc
-        if kid not in self._keys or time.monotonic() - self._loaded > 600:
+        # Обновление JWKS: по сроку или на неизвестный kid, но не чаще раза в 30 с: поток
+        # токенов со случайным kid не превращается в поток запросов к Keycloak.
+        age = time.monotonic() - self._loaded
+        if (kid not in self._keys and age > _MIN_REFRESH) or age > _MAX_AGE:
             try:
                 await self._refresh()
             except httpx.HTTPError as exc:

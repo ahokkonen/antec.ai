@@ -43,11 +43,18 @@ def _token(**over: Any) -> str:  # noqa: ANN401
     return jwt.encode(claims, KEY, algorithm="RS256", headers={"kid": "k1"})
 
 
+JWKS_CALLS: list[int] = []
+
+
+def _jwks(_request: httpx.Request) -> httpx.Response:
+    JWKS_CALLS.append(1)
+    return httpx.Response(200, json={"keys": [JWK]})
+
+
 @pytest.fixture
 def app() -> FastAPI:
-    jwks = httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda _r: httpx.Response(200, json={"keys": [JWK]}))
-    )
+    JWKS_CALLS.clear()
+    jwks = httpx.AsyncClient(transport=httpx.MockTransport(_jwks))
     return create_app(Config(issuer=ISSUER, jwks_url=JWKS), jwks)
 
 
@@ -120,3 +127,11 @@ async def test_protocol_checks(client: httpx.AsyncClient) -> None:
     ).status_code == 400
     discover = (await _post(client, "server/discover")).json()["result"]
     assert discover["supportedVersions"] == ["2026-07-28"]
+
+
+async def test_unknown_kid_does_not_hammer_jwks(client: httpx.AsyncClient) -> None:
+    assert (await _post(client, "tools/list")).status_code == 200
+    for i in range(5):
+        forged = jwt.encode({"sub": "x"}, KEY, algorithm="RS256", headers={"kid": f"k{i + 10}"})
+        assert (await _post(client, "tools/list", token=forged)).status_code == 401
+    assert len(JWKS_CALLS) == 1
