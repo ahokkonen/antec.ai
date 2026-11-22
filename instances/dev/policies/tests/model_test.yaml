@@ -52,8 +52,14 @@ tests:
         resource: unknown_dev
         actions: {invoke: EFFECT_DENY}
       - principal: admin
+        resource: default_dev
+        actions: {invoke: EFFECT_ALLOW}
+      - principal: admin
         resource: unknown_dev
         actions: {invoke: EFFECT_ALLOW}
       - principal: other
         resource: default_dev
+        actions: {invoke: EFFECT_DENY}
+      - principal: other
+        resource: unknown_dev
         actions: {invoke: EFFECT_DENY}
