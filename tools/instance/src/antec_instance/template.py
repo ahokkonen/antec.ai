@@ -33,7 +33,30 @@ def init_instance(core_dir: Path, dest: Path, instance_id: str, name: str) -> No
         "__INSTANCE_NAME__": name,
         "__CORE_VERSION__": version,
     }
-    shutil.copytree(template, dest, symlinks=False, dirs_exist_ok=True)
+    created = not dest.exists()
+    try:
+        _copy(template, dest, subst)
+    except BaseException:
+        # Неудачный init не оставляет наполовину заполненный каталог.
+        _clear(dest, remove_root=created)
+        raise
+
+
+def _clear(dest: Path, *, remove_root: bool) -> None:
+    if not dest.exists():
+        return
+    if remove_root:
+        shutil.rmtree(dest)
+        return
+    for child in dest.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def _copy(template: Path, dest: Path, subst: dict[str, str]) -> None:
+    shutil.copytree(template, dest, symlinks=True, dirs_exist_ok=True)
     for path in sorted(dest.rglob("*")):
         if path.is_symlink():
             raise CoreError(f"символическая ссылка в шаблоне: {path.relative_to(dest)}")

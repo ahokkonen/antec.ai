@@ -82,3 +82,19 @@ def test_init_bad_id(core_dir: Path, tmp_path: Path) -> None:
     rc = main(["--core", str(core_dir), "init", str(tmp_path / "d"), "--id", "A.B", "--name", "A"])
     assert rc == EXIT_INVALID
     assert not (tmp_path / "d").exists()
+
+
+def test_init_failure_leaves_no_partial_dir(core_dir: Path, tmp_path: Path) -> None:
+    bad_core = tmp_path / "core"
+    (bad_core / "templates" / "instance").mkdir(parents=True)
+    (bad_core / "VERSION").write_text("0.1.0\n")
+    (bad_core / "templates" / "instance" / "instance.yaml").write_text("schema_version: 9\n")
+    new = tmp_path / "new"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    for dest in (new, empty):
+        rc = main(["--core", str(bad_core), "init", str(dest), "--id", "acme", "--name", "A"])
+        assert rc == EXIT_INVALID
+    assert not new.exists()
+    assert empty.is_dir()
+    assert not any(empty.iterdir())

@@ -64,6 +64,8 @@ def test_minimal_manifest() -> None:
         ("models.0.name", "Chat Default", "models.0.name"),
         ("core.version", "main", "core.version"),
         ("instance.name", "a\nb", "instance.name"),
+        ("instance.name", 'Acme "Oy"', "instance.name"),
+        ("instance.name", "a\\b", "instance.name"),
     ],
 )
 def test_rejected(path: str, value: object, needle: str) -> None:

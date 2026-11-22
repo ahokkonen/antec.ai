@@ -68,7 +68,10 @@ def _check_url(value: str) -> str:
 
 class InstanceInfo(_Strict):
     id: InstanceId
-    name: Annotated[str, StringConstraints(min_length=1, max_length=100, pattern=r"^[^\r\n\x00]*$")]
+    # Без кавычек и обратной косой черты: имя подставляется в YAML и Markdown шаблона.
+    name: Annotated[
+        str, StringConstraints(min_length=1, max_length=100, pattern=r'^[^\r\n\x00"\\]*$')
+    ]
 
 
 class CoreRef(_Strict):

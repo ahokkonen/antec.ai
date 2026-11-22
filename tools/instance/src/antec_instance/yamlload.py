@@ -21,8 +21,12 @@ class _StrictLoader(yaml.SafeLoader):
             if key_node.tag == "tag:yaml.org,2002:merge":
                 continue
             key = self.construct_object(key_node, deep=deep)
+            line = key_node.start_mark.line + 1
+            try:
+                hash(key)
+            except TypeError:
+                raise YamlError(f"строка {line}: ключ словаря должен быть скаляром") from None
             if key in seen:
-                line = key_node.start_mark.line + 1
                 raise YamlError(f"строка {line}: повторяющийся ключ {key!r}")
             seen.add(key)
         return super().construct_mapping(node, deep=deep)

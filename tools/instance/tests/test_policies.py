@@ -68,3 +68,24 @@ def test_symlink_rejected(tmp_path: Path) -> None:
     _write(tmp_path, "real.yaml", POLICY.format(extra=""))
     (tmp_path / "policies" / "link.yaml").symlink_to(tmp_path / "policies" / "real.yaml")
     assert any("символические" in p for p in check_policies(tmp_path, "acme"))
+
+
+def test_hidden_files_rejected(tmp_path: Path) -> None:
+    _write(tmp_path, ".x/model.yaml", POLICY.format(extra=""))
+    _write(tmp_path, ".hidden.yaml", POLICY.format(extra=""))
+    problems = check_policies(tmp_path, "acme")
+    assert len(problems) == 2
+    assert all("скрытые" in p for p in problems)
+
+
+def test_common_top_level_keys_allowed(tmp_path: Path) -> None:
+    extra = "  scope: acme\n  scopePermissions: SCOPE_PERMISSIONS_OVERRIDE_PARENT\n"
+    text = "$schema: https://api.cerbos.dev/latest/cerbos/policy/v1/Policy.schema.json\n"
+    text += "disabled: false\n" + POLICY.format(extra=extra)
+    _write(tmp_path, "model.yaml", text)
+    assert check_policies(tmp_path, "acme") == []
+
+
+def test_unhashable_key_is_error(tmp_path: Path) -> None:
+    _write(tmp_path, "bad.yaml", "? [a, b]\n: 1\n")
+    assert "скаляром" in check_policies(tmp_path, "acme")[0]

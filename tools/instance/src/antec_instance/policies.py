@@ -18,6 +18,10 @@ _SCOPED_KINDS = ("resourcePolicy", "principalPolicy")
 # Без scope: не меняют решений сами по себе, их импортируют политики того же scope.
 _SHARED_KINDS = ("derivedRoles", "exportVariables", "exportConstants")
 _POLICY_SUFFIXES = (".yaml", ".yml", ".json")
+# Общие поля верхнего уровня политики Cerbos (policy.proto), кроме самой политики.
+_COMMON_KEYS = frozenset(
+    {"apiVersion", "$schema", "description", "disabled", "metadata", "variables"}
+)
 
 
 def _is_policy_file(path: Path, root: Path) -> bool:
@@ -25,15 +29,13 @@ def _is_policy_file(path: Path, root: Path) -> bool:
         return False
     rel = path.relative_to(root)
     # Тесты и фикстуры Cerbos: *_test.yaml и каталоги testdata.
-    if path.stem.endswith("_test") or "testdata" in rel.parts[:-1]:
-        return False
-    return not any(part.startswith(".") for part in rel.parts)
+    return not (path.stem.endswith("_test") or "testdata" in rel.parts[:-1])
 
 
 def _check_document(doc: object, instance_id: str) -> str | None:
     if not isinstance(doc, dict) or doc.get("apiVersion") != "api.cerbos.dev/v1":
         return "ожидается политика Cerbos (apiVersion: api.cerbos.dev/v1)"
-    kinds = [k for k in doc if k != "apiVersion" and k != "description" and k != "metadata"]
+    kinds = [k for k in doc if k not in _COMMON_KEYS]
     if len(kinds) != 1:
         return "в документе должна быть ровно одна политика"
     kind = kinds[0]
@@ -61,8 +63,14 @@ def check_policies(instance_dir: Path, instance_id: str) -> list[str]:
         return []
     problems: list[str] = []
     for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
         if path.is_symlink():
             problems.append(f"{path.relative_to(instance_dir)}: символические ссылки запрещены")
+            continue
+        # Скрытые файлы и каталоги запрещены, а не пропускаются: что из них прочитает Cerbos,
+        # валидатор не решает (ADR-0008, п. 4).
+        if path.is_file() and any(part.startswith(".") for part in rel.parts):
+            problems.append(f"{path.relative_to(instance_dir)}: скрытые файлы и каталоги запрещены")
             continue
         if not _is_policy_file(path, root):
             continue
