@@ -9,8 +9,12 @@ import yaml
 from antec_instance.cli import EXIT_INVALID, EXIT_OK, EXIT_USAGE, main
 
 
-def test_validate_dev(core_dir: Path, dev_instance: Path) -> None:
+def test_validate_dev(
+    core_dir: Path, dev_instance: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_OK
+    # agent-lab нарочно получает инструмент выше допуска модели (проверка ADR-0011 на стенде).
+    assert "agent-lab: инструмент mcp-demo.create_note (confidential)" in capsys.readouterr().err
 
 
 def test_render_dev(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
@@ -37,10 +41,11 @@ def test_render_dev(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
     assert env == {
         "PLATFORM_MODELS": "chat-default,chat-fast,chat-lab",
         "PLATFORM_POLICY_SCOPE": "dev",
+        "PLATFORM_DEFAULT_DATA_CLASS": "internal",
         "PLATFORM_ALLOWED_CLIENTS": "open-webui,antec-smoke",
     }
     agents = json.loads((out / "platform-api" / "agents.json").read_text())
-    assert [a["name"] for a in agents] == ["agent-assistant", "agent-notes"]
+    assert [a["name"] for a in agents] == ["agent-assistant", "agent-notes", "agent-lab"]
     assert agents[1]["tools"] == ["mcp-demo.get_time", "mcp-demo.create_note"]
     servers = json.loads((out / "platform-api" / "mcp_servers.json").read_text())
     assert servers == [
@@ -50,14 +55,20 @@ def test_render_dev(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
             "audience": "mcp-demo",
             "protocol_version": "2026-07-28",
             "tools": [
-                {"name": "get_time", "read_only": True},
-                {"name": "create_note", "read_only": False},
+                {"name": "get_time", "read_only": True, "data_class": "public"},
+                {"name": "create_note", "read_only": False, "data_class": "confidential"},
             ],
         }
     ]
     assert agents[0]["model"] == "chat-fast"
     assert "dev-инсталляции" in agents[0]["instructions"]
     assert agents[0]["max_steps"] == 5
+    clearances = json.loads((out / "platform-api" / "models.json").read_text())
+    assert {c["name"]: c["max_data_class"] for c in clearances} == {
+        "chat-default": "restricted",
+        "chat-fast": "restricted",
+        "chat-lab": "internal",
+    }
     summary = json.loads((out / "instance.json").read_text())
     assert summary["id"] == "dev"
     assert summary["mcp_audiences"] == ["mcp-demo"]

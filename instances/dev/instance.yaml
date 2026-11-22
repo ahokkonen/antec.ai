@@ -1,5 +1,5 @@
 # Dev-инсталляция ядра (ADR-0008, п. 7): локальный стенд deploy/compose и CI.
-schema_version: 2
+schema_version: 3
 instance:
   id: dev
   name: "antec.ai dev"
@@ -21,6 +21,8 @@ models:
   # (policies/model.yaml). Проверяется scripts/platform-smoke.sh.
   - name: chat-lab
     description: "Модель dev-инсталляции: Claude Haiku 5.5"
+    # Допуск ниже, чем у остальных: проверка классов данных (ADR-0011) на стенде.
+    max_data_class: internal
     litellm:
       model: anthropic/claude-haiku-5-5
       api_key: os.environ/ANTHROPIC_API_KEY
@@ -33,8 +35,9 @@ mcp_servers:
     audience: mcp-demo
     protocol_version: "2026-07-28"
     tools:
-      - {name: get_time, read_only: true}
-      - {name: create_note}
+      - {name: get_time, read_only: true, data_class: public}
+      # Заметки = confidential: агенту на chat-lab (допуск internal) недоступны.
+      - {name: create_note, data_class: confidential}
 
 # Агенты (ADR-0010): видны в /v1/models рядом с моделями, имя начинается с agent-.
 agents:
@@ -50,6 +53,19 @@ agents:
     tools: [mcp-demo.get_time, mcp-demo.create_note]
     max_steps: 6
     max_tool_calls: 4
+  # Агент на модели с допуском internal: create_note (confidential) отклоняется до вызова
+  # (ADR-0011, п. 3). Проверяется scripts/platform-smoke.sh.
+  - name: agent-lab
+    description: "Проверка классов данных: заметки выше допуска модели"
+    model: chat-lab
+    instructions_file: agents/notes.md
+    tools: [mcp-demo.create_note]
+    max_steps: 4
+    max_tool_calls: 2
+
+# Классы данных (ADR-0011): класс ввода пользователя.
+data:
+  default_class: internal
 
 settings:
   # antec-smoke: только стенд (scripts/platform-smoke.sh).

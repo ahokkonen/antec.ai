@@ -1,6 +1,7 @@
-"""Схема манифеста инсталляции `instance.yaml` (ADR-0008, п. 2), версии 1 и 2.
+"""Схема манифеста инсталляции `instance.yaml` (ADR-0008, п. 2), версии 1-3.
 
-Версия 2 добавляет раздел `agents` (ADR-0010, п. 3); манифест версии 1 остаётся валидным.
+Версия 2 добавляет раздел `agents` (ADR-0010, п. 3), версия 3 классы данных: `data`,
+`max_data_class` моделей и `data_class` инструментов (ADR-0011). Прежние версии валидны.
 
 Неизвестные поля = ошибка: опечатка в манифесте не должна молча менять поведение инсталляции.
 """
@@ -24,7 +25,10 @@ from pydantic import (
 
 from antec_instance.yamlload import YamlError, load_mapping
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+# Классы данных ядра по возрастанию (ADR-0011, п. 1).
+DATA_CLASSES = ("public", "internal", "confidential", "restricted")
+DataClass = Literal["public", "internal", "confidential", "restricted"]
 AGENT_PREFIX = "agent-"
 # Инструкции агента: в agents.json и в каждый запрос к модели, поэтому размер ограничен.
 MAX_INSTRUCTIONS_BYTES = 32 * 1024
@@ -116,10 +120,16 @@ class LiteLLMParams(_Strict):
         return None if value is None else _check_url(value)
 
 
+def class_rank(value: str) -> int:
+    return DATA_CLASSES.index(value)
+
+
 class Model(_Strict):
     name: ModelName
     description: Text = ""
     litellm: LiteLLMParams
+    # Верхний допуск модели (ADR-0011, п. 2); в v1 облачным моделям разрешено всё.
+    max_data_class: DataClass = "restricted"
 
     @field_validator("name")
     @classmethod
@@ -168,6 +178,8 @@ class McpTool(_Strict):
     # Только манифест решает, что инструмент без подтверждения: подсказкам сервера
     # (readOnlyHint, destructiveHint) не доверяем (ADR-0008, п. 2).
     read_only: bool = False
+    # Класс данных, которые инструмент возвращает модели; пусто = data.default_class.
+    data_class: DataClass | None = None
 
 
 # Аудитория MCP-сервера = клиент Keycloak, созданный для обмена токена (ADR-0010, п. 6).
@@ -217,21 +229,80 @@ class Settings(_Strict):
         return value
 
 
+class DataSettings(_Strict):
+    """Классы данных инсталляции (ADR-0011, п. 2)."""
+
+    # Класс всего, что вводит пользователь (до классификатора содержимого).
+    default_class: DataClass = "internal"
+
+
+def _v3_fields(data: dict[str, Any]) -> list[str]:
+    found = ["data"] if "data" in data else []
+    for i, model in enumerate(data.get("models") or []):
+        if isinstance(model, dict) and "max_data_class" in model:
+            found.append(f"models.{i}.max_data_class")
+    for i, server in enumerate(data.get("mcp_servers") or []):
+        for j, tool in enumerate(
+            (server or {}).get("tools") or [] if isinstance(server, dict) else []
+        ):
+            if isinstance(tool, dict) and "data_class" in tool:
+                found.append(f"mcp_servers.{i}.tools.{j}.data_class")
+    return found
+
+
 class Manifest(_Strict):
-    schema_version: Literal[1, 2]
+    schema_version: Literal[1, 2, 3]
     instance: InstanceInfo
     core: CoreRef
     models: Annotated[list[Model], Field(min_length=1)]
     mcp_servers: list[McpServer] = []
     agents: list[Agent] = []
+    data: DataSettings = DataSettings()
     settings: Settings = Settings()
 
     @model_validator(mode="before")
     @classmethod
-    def _agents_need_v2(cls, data: Any) -> Any:  # noqa: ANN401 - сырые данные до проверки
-        if isinstance(data, dict) and "agents" in data and data.get("schema_version") == 1:
-            raise ValueError("раздел agents есть только в schema_version: 2 (ADR-0010)")
+    def _version_fields(cls, data: Any) -> Any:  # noqa: ANN401 - сырые данные до проверки
+        if not isinstance(data, dict):
+            return data
+        version = data.get("schema_version")
+        if "agents" in data and version == 1:
+            raise ValueError("раздел agents есть только в schema_version: 2 и выше (ADR-0010)")
+        if version in (1, 2) and (fields := _v3_fields(data)):
+            raise ValueError(
+                f"классы данных ({', '.join(fields)}) есть только в schema_version: 3 (ADR-0011)"
+            )
         return data
+
+    def tool_class(self, server: str, tool: str) -> str:
+        for s in self.mcp_servers:
+            for t in s.tools:
+                if s.name == server and t.name == tool:
+                    return t.data_class or self.data.default_class
+        raise KeyError(f"{server}.{tool}")
+
+    def class_warnings(self) -> list[str]:
+        """Что заведомо не будет работать по классам данных (ADR-0011, п. 3)."""
+        models = {m.name: m for m in self.models}
+        out = []
+        default_rank = class_rank(self.data.default_class)
+        for m in self.models:
+            if class_rank(m.max_data_class) < default_rank:
+                out.append(
+                    f"модель {m.name} (допуск {m.max_data_class}) недоступна при "
+                    f"data.default_class {self.data.default_class}"
+                )
+        for a in self.agents:
+            limit = models[a.model].max_data_class
+            for ref in a.tools:
+                server, _, tool = ref.partition(".")
+                cls = self.tool_class(server, tool)
+                if class_rank(cls) > class_rank(limit):
+                    out.append(
+                        f"агент {a.name}: инструмент {ref} ({cls}) выше допуска модели "
+                        f"{a.model} ({limit}) и будет отклоняться"
+                    )
+        return out
 
     @model_validator(mode="after")
     def _agent_refs(self) -> Manifest:
