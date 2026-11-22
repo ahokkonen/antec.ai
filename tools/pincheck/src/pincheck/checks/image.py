@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pincheck.checks import CheckContext
 from pincheck.imageref import ImageRefError, parse_image_ref
 from pincheck.report import Code, Finding, error, warning
 from pincheck.versions import TagKind, Version, classify_tag_version
 
+if TYPE_CHECKING:
+    from pincheck.policy import Component
 
-def _fmt_allowed(prefix: str, allowed: list[str]) -> str:
-    return ", ".join(f"{prefix}{a}" for a in allowed)
+
+def _fmt_allowed(comp: Component) -> str:
+    return ", ".join(comp.tag_for(a) for a in comp.allowed)
 
 
 def check_image(raw: str, path: str, line: int | None, ctx: CheckContext) -> list[Finding]:
@@ -116,8 +121,7 @@ def check_image(raw: str, path: str, line: int | None, ctx: CheckContext) -> lis
                 path,
                 line,
                 f"тег {ref.tag!r} компонента {name!r} в denylist",
-                "используйте версию из allowed: "
-                + _fmt_allowed(comp.image_tag_prefix, comp.allowed),
+                "используйте версию из allowed: " + _fmt_allowed(comp),
             )
         )
         return out
@@ -135,7 +139,8 @@ def check_image(raw: str, path: str, line: int | None, ctx: CheckContext) -> lis
         return out
 
     prefix = comp.image_tag_prefix
-    expected = _fmt_allowed(prefix, comp.allowed)
+    suffix = comp.image_tag_suffix
+    expected = _fmt_allowed(comp)
     if prefix and not ref.tag.startswith(prefix):
         out.append(
             error(
@@ -147,7 +152,18 @@ def check_image(raw: str, path: str, line: int | None, ctx: CheckContext) -> lis
             )
         )
         return out
-    info = classify_tag_version(ref.tag[len(prefix) :])
+    if suffix and (not ref.tag.endswith(suffix) or len(ref.tag) <= len(prefix) + len(suffix)):
+        out.append(
+            error(
+                Code.IMAGE_VERSION_NOT_ALLOWED,
+                path,
+                line,
+                f"тег {ref.tag!r} компонента {name!r} должен заканчиваться вариантом {suffix!r}",
+                f"используйте тег из allowed: {expected}",
+            )
+        )
+        return out
+    info = classify_tag_version(ref.tag[len(prefix) : len(ref.tag) - len(suffix)])
     if info.kind is TagKind.PRERELEASE:
         out.append(
             error(
@@ -167,7 +183,7 @@ def check_image(raw: str, path: str, line: int | None, ctx: CheckContext) -> lis
                 path,
                 line,
                 f"тег {ref.tag!r} компонента {name!r} не поддерживается ({what})",
-                f"используйте тег вида {prefix}X.Y.Z из allowed: {expected}",
+                f"используйте тег вида {prefix}X.Y.Z{suffix} из allowed: {expected}",
             )
         )
         return out

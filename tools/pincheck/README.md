@@ -18,7 +18,8 @@ CI-проверка закрепления версий: не даёт разв�
 4. `uv.lock`: `python_forbidden`, `python_denylist`, `python_min_versions`.
 
 Правила для образа: `name:tag@sha256:digest` (без digest всегда ошибка); образ есть в реестре;
-тег = `image_tag_prefix` + версия из `allowed`, не ниже `min_version`; плавающие теги и пре-релизы
+тег = `image_tag_prefix` + версия из `allowed` + `image_tag_suffix` (вариант образа, например
+`-slim-trixie`), не ниже `min_version`; плавающие теги и пре-релизы
 запрещены; тег и digest не в denylist (digest из denylist ловится для любого образа, усечённые
 digest из `image_digest_prefixes` сверяются по префиксу); если digest
 в реестре зафиксирован, он совпадает. `digest: null` в реестре даёт предупреждение, с

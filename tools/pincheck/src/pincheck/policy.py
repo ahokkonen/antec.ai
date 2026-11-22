@@ -21,7 +21,14 @@ from pydantic import (
 
 from pincheck.imageref import DIGEST_RE, ImageRefError, normalize_registry_image
 from pincheck.report import Code, Finding, error
-from pincheck.versions import PyVersion, Version, VersionError, canonical_py_version
+from pincheck.versions import (
+    PyVersion,
+    TagKind,
+    Version,
+    VersionError,
+    canonical_py_version,
+    classify_tag_version,
+)
 from pincheck.yamlload import LoadedYaml, YamlLoadError, load_yaml
 
 _PY_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
@@ -178,6 +185,7 @@ class Component(_Model):
     note: NonEmptyStr | None = None
     allowed: list[VersionStr]
     image_tag_prefix: StrictStr = ""
+    image_tag_suffix: StrictStr = ""
     candidate: Candidate | None = None
     min_version: VersionStr | None = None
     digest: DigestStr | None = None
@@ -190,6 +198,10 @@ class Component(_Model):
     @property
     def repository(self) -> str | None:
         return normalize_registry_image(self.image) if self.image is not None else None
+
+    def tag_for(self, version: str) -> str:
+        """Тег образа для версии: префикс + версия + суффикс варианта."""
+        return f"{self.image_tag_prefix}{version}{self.image_tag_suffix}"
 
 
 class Policy(_Model):
@@ -351,6 +363,18 @@ class _SemanticChecker:
                 f"{name}: image_tag_prefix {comp.image_tag_prefix!r} должен состоять из 1-8 букв",
                 'обычно это "v" или пустая строка',
             )
+        if comp.image_tag_suffix and (
+            not re.fullmatch(r"(-[a-z][a-z0-9]*){1,3}", comp.image_tag_suffix)
+            or len(comp.image_tag_suffix) > 32
+            or classify_tag_version(f"1{comp.image_tag_suffix}").kind is TagKind.PRERELEASE
+        ):
+            self._err(
+                Code.POLICY_SCHEMA,
+                (*base, "image_tag_suffix"),
+                f"{name}: image_tag_suffix {comp.image_tag_suffix!r} должен быть вариантом образа "
+                "вида -slim-trixie (до 3 частей, до 32 символов, не пре-релиз)",
+                'например "-slim-trixie" или пустая строка',
+            )
         minimum = Version.parse(comp.min_version) if comp.min_version else None
         denied_versions = {canonical_py_version(v) for v in comp.denied.pypi}
         denied_tags = set(comp.denied.image_tags)
@@ -364,9 +388,7 @@ class _SemanticChecker:
                     f"{name}: разрешённая версия {ver} ниже min_version {minimum}",
                     "удалите версию из allowed или пересмотрите min_version",
                 )
-            if canonical_py_version(text) in denied_versions or (
-                f"{comp.image_tag_prefix}{text}" in denied_tags
-            ):
+            if canonical_py_version(text) in denied_versions or (comp.tag_for(text) in denied_tags):
                 self._err(
                     Code.POLICY_VERSION,
                     loc,
@@ -415,7 +437,7 @@ class _SemanticChecker:
                 "выберите другого кандидата",
             )
         if canonical_py_version(cand.version) in denied_versions or (
-            f"{comp.image_tag_prefix}{cand.version}" in denied_tags
+            comp.tag_for(cand.version) in denied_tags
         ):
             self._err(
                 Code.POLICY_VERSION,

@@ -30,6 +30,8 @@ COMPOSE = FIXTURES / "compose"
         pytest.param("variable", ["PIN020"], id="variable-in-image"),
         pytest.param("missing_prefix", ["PIN014"], id="missing-tag-prefix"),
         pytest.param("variant_suffix", ["PIN014"], id="variant-suffix"),
+        pytest.param("suffix_missing", ["PIN014"], id="tag-without-required-suffix"),
+        pytest.param("suffix_wrong", ["PIN014"], id="tag-with-other-suffix"),
         pytest.param("no_tag", ["PIN021"], id="digest-without-tag"),
         pytest.param("bad_digest", ["PIN020"], id="malformed-digest"),
         pytest.param("broken", ["PIN040"], id="broken-compose-yaml"),
@@ -50,6 +52,12 @@ def test_valid_compose_passes(pincheck: Runner) -> None:
     assert result.errors == []
     assert result.warnings == []
     assert "Ошибок: 0" in result.output
+
+
+def test_tag_with_registered_suffix_passes(pincheck: Runner) -> None:
+    result = pincheck(COMPOSE / "suffix_valid")
+    assert result.exit_code == 0, result.output
+    assert result.errors == []
 
 
 def test_message_points_to_file_and_line(pincheck: Runner) -> None:

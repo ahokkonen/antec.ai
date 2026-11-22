@@ -7,6 +7,7 @@
 #   allowed       версии, разрешённые к развёртыванию (первая = текущая), без префикса:
 #                 только числа через точку, например "1.108.7"
 #   image_tag_prefix  префикс тега образа перед версией (например "v": тег v1.108.7)
+#   image_tag_suffix  вариант образа после версии (например "-slim-trixie": тег 3.14.10-slim-trixie)
 #   candidate     следующая версия: проходит карантин и ревью, пока НЕ разрешена
 #   min_version   ниже этой версии запрещено (CVE, смена ключа подписи и т.п.)
 #   image         репозиторий образа без тега и digest; null, если образа нет
@@ -29,7 +30,7 @@
 # Даты в ISO 8601. Каждое изменение файла только через PR с ревью.
 
 schema_version: 1
-reviewed_at: 2026-11-21
+reviewed_at: 2026-11-22
 quarantine_days: 7            # не-security релизы не ставим раньше, чем через 7 дней
 defaults:
   floating_tags_forbidden: [latest, main, main-latest, main-stable, dev, nightly, edge]
@@ -223,6 +224,37 @@ components:
     sources:
       - https://openbao.org/community/release-notes/2-7-0/
       - https://github.com/openbao/openbao/releases/tag/v2.7.2
+
+  python:
+    role: runtime-base
+    license: PSF-2.0
+    image: docker.io/library/python
+    note: "Только как FROM в собственных образах (localhost/antec/platform-api, ADR-0006). Вариант slim на Debian 13"
+    allowed: ["3.14.10"]           # от 2026-11-05 (сборка docker-library)
+    image_tag_suffix: "-slim-trixie"
+    # Индекс тега 3.14.10-slim-trixie (8 платформ, сборки 2026-11-05..07).
+    digest: "sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f"
+    signature:
+      method: "cosign-подписи нет; проверен BuildKit provenance (неподписанный)"
+      note: "provenance: docker-library/python@01dcc3d31fcd879f9af36e097bd96328a457f4bd:3.14/slim-trixie, совпадает с GitCommit тега 3.14.10-slim-trixie в docker-library/official-images (library/python); проверено 2026-11-22"
+    sources:
+      - https://github.com/docker-library/official-images/blob/master/library/python
+      - https://www.python.org/downloads/
+
+  uv:
+    role: build-tool
+    license: "Apache-2.0 OR MIT"
+    image: ghcr.io/astral-sh/uv
+    note: "Только стадия сборки (COPY --from) собственных образов; в итоговый образ не попадает. Та же версия, что в CI (UV_VERSION)"
+    allowed: ["0.13.8"]            # от 2026-11-12
+    # Индекс тега 0.13.8 (linux/amd64, linux/arm64).
+    digest: "sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85"
+    signature:
+      method: "GitHub artifact attestation (Sigstore): gh attestation verify oci://ghcr.io/astral-sh/uv:0.13.8 --owner astral-sh"
+      note: "Проверено 2026-11-22: identity https://github.com/astral-sh/uv/.github/workflows/publish-docker-image.yml, коммит 3d97a6aad5ad989c1b4fc89406d54f0dce370b72 = тег 0.13.8; subject = digest индекса"
+    sources:
+      - https://github.com/astral-sh/uv/releases/tag/0.13.8
+      - https://docs.astral.sh/uv/guides/integration/docker/
 
   cerbos:
     role: policy-decision-point
