@@ -17,8 +17,8 @@ USER = Subject(id="u1", roles=("platform-user",), attrs={"idp": "entra"})
 MODELS = [Resource("model", "chat-default"), Resource("model", "chat-fast")]
 
 
-def _client(handler: httpx.MockTransport) -> AuthZenPolicyClient:
-    client = AuthZenPolicyClient("http://cerbos:3592", 3)
+def _client(handler: httpx.MockTransport, scope: str | None = None) -> AuthZenPolicyClient:
+    client = AuthZenPolicyClient("http://cerbos:3592", 3, scope)
     client._client = httpx.AsyncClient(base_url="http://cerbos:3592/", transport=handler)
     return client
 
@@ -46,6 +46,28 @@ async def test_request_shape_and_decisions() -> None:
                 {"resource": {"type": "model", "id": "chat-fast"}},
             ],
         }
+    ]
+
+
+async def test_scope_in_every_resource() -> None:
+    """Scope инсталляции (ADR-0008): плоское свойство cerbos.scope у каждого ресурса."""
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"evaluations": [{"decision": True}] * 2})
+
+    client = _client(httpx.MockTransport(handler), scope="acme")
+    assert await client.check(USER, "invoke", MODELS) == [True, True]
+    assert seen[0]["evaluations"] == [
+        {
+            "resource": {
+                "type": "model",
+                "id": "chat-default",
+                "properties": {"cerbos.scope": "acme"},
+            }
+        },
+        {"resource": {"type": "model", "id": "chat-fast", "properties": {"cerbos.scope": "acme"}}},
     ]
 
 
@@ -126,3 +148,29 @@ async def test_real_cerbos_with_repo_policies() -> None:
         assert await client.check(admin, "invoke", [unknown]) == [True]
     finally:
         await client.aclose()
+
+
+@pytest.mark.cerbos
+@pytest.mark.skipif(not CERBOS_URL, reason="PLATFORM_TEST_CERBOS_URL не задан")
+async def test_real_cerbos_with_instance_scope() -> None:
+    """Политики ядра и dev-инсталляции (instances/dev/policies, scope dev) в одном Cerbos."""
+    lab = Resource("model", "chat-lab")
+    unknown = Resource("model", "gpt-unknown")
+    scoped = AuthZenPolicyClient(CERBOS_URL or "", 3, "dev")
+    unscoped = AuthZenPolicyClient(CERBOS_URL or "", 3)
+    # Scope без политик инсталляции: решают политики ядра (lenientScopeSearch).
+    absent = AuthZenPolicyClient(CERBOS_URL or "", 3, "no-such-instance")
+    try:
+        assert await scoped.check(USER, "invoke", [*MODELS, lab, unknown]) == [
+            True,
+            True,
+            True,
+            False,
+        ]
+        assert await unscoped.check(USER, "invoke", [lab]) == [False]
+        assert await absent.check(USER, "invoke", [*MODELS, lab]) == [True, True, False]
+        admin = Subject(id="a1", roles=("platform-admin",))
+        assert await scoped.check(admin, "invoke", [unknown]) == [True]
+    finally:
+        for c in (scoped, unscoped, absent):
+            await c.aclose()

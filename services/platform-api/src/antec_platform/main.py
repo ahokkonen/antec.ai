@@ -35,7 +35,9 @@ def build_app(settings: Settings) -> FastAPI:
                 leeway=settings.jwt_leeway_seconds,
             ),
             jwks=jwks,
-            policy=AuthZenPolicyClient(settings.policy_url, settings.policy_timeout_seconds),
+            policy=AuthZenPolicyClient(
+                settings.policy_url, settings.policy_timeout_seconds, settings.policy_scope
+            ),
             models=settings.models,
             max_request_bytes=settings.max_request_bytes,
         )
