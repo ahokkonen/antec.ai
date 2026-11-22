@@ -1,0 +1,91 @@
+# Platform API (ADR-0006): ruff, mypy strict, pytest (включая тесты на PostgreSQL), сборка образа.
+# Actions и uv закреплены как в pincheck.yml; образ PostgreSQL по digest из реестра
+# (components.postgresql).
+name: platform-api
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: platform-api-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Та же версия и checksum, что в pincheck.yml (components.uv в реестре).
+  UV_VERSION: "0.13.8"
+  UV_CHECKSUM: "5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91"
+
+jobs:
+  test:
+    name: "platform-api: ruff, mypy, pytest"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: services/platform-api
+    services:
+      postgres:
+        image: docker.io/library/postgres:18.7@sha256:eb63372c1e05c755f55fa30cbd07aecc443676fc6c0fa90b9002d01537841e1a
+        env:
+          # Одноразовая БД CI без пароля (AGENTS.md, п. 5: паролей в репозитории нет); порт
+          # открыт только на 127.0.0.1 раннера.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          checksum: ${{ env.UV_CHECKSUM }}
+          python-version: "3.14"
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run --locked ruff format --check .
+      - run: uv run --locked ruff check --output-format=github .
+      - run: uv run --locked mypy
+      - name: pytest (с PostgreSQL)
+        env:
+          PLATFORM_TEST_DATABASE_URL: postgresql+asyncpg://postgres@127.0.0.1:5432/postgres
+        run: uv run --locked pytest
+      - name: Тесты на PostgreSQL не пропущены
+        env:
+          PLATFORM_TEST_DATABASE_URL: postgresql+asyncpg://postgres@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          out="$(uv run --locked pytest -m db -q)"
+          echo "$out" | tail -3
+          if grep -q skipped <<<"$out"; then echo "тесты db пропущены" >&2; exit 1; fi
+
+  image:
+    name: "platform-api: сборка образа"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Сборка localhost/antec/platform-api
+        run: docker build --tag localhost/antec/platform-api:ci services/platform-api
+      - name: Образ без root, пакет и миграции на месте
+        run: |
+          set -euo pipefail
+          test "$(docker run --rm --entrypoint id localhost/antec/platform-api:ci -u)" = 65534
+          docker run --rm --entrypoint python localhost/antec/platform-api:ci -c \
+            "import importlib.resources as r; assert (r.files('antec_platform') / 'migrations' / 'versions' / '0001_initial.py').is_file()"
+          docker run --rm localhost/antec/platform-api:ci --help

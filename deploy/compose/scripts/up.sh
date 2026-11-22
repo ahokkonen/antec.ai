@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Запуск локального стенда: OpenBao (init/unseal), секреты, PostgreSQL, Keycloak. Идемпотентен.
+# Запуск локального стенда: OpenBao (init/unseal), секреты, PostgreSQL, Keycloak, LiteLLM,
+# Platform API, Open WebUI. Идемпотентен.
 #   --recreate-realm   удалить realm antec и создать заново из keycloak/realm-antec.json
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -54,7 +55,8 @@ if ! bao_exec secrets list -format=json | python3 -c 'import json,sys; sys.exit(
   bao_exec secrets enable -path=antec -version=2 kv >/dev/null
 fi
 
-for policy in render-postgres render-keycloak render-litellm render-open-webui; do
+for policy in render-postgres render-keycloak render-litellm render-open-webui \
+    render-platform-api render-platform-migrate; do
   compose exec -T -e BAO_TOKEN openbao bao policy write "$policy" - \
     < "$COMPOSE_DIR/openbao/policies/$policy.hcl" >/dev/null
 done
@@ -63,10 +65,13 @@ if ! bao_exec kv get -mount=antec postgres >/dev/null 2>&1; then
   log "генерация паролей PostgreSQL в OpenBao (antec/postgres)"
   python3 - <<'PY' | compose exec -T -e BAO_TOKEN openbao bao kv put -mount=antec postgres - >/dev/null
 import json, secrets
-keys = ["superuser", "keycloak", "litellm", "openwebui", "platform", "dbos"]
+keys = ["superuser", "keycloak", "litellm", "openwebui", "platform", "dbos", "platform_app"]
 print(json.dumps({k: secrets.token_urlsafe(32) for k in keys}))
 PY
 fi
+
+# Роль сервиса Platform API (ADR-0006, п. 9) появилась позже первых установок: дополняется.
+ensure_generated_secrets postgres platform_app
 
 # Секреты сервисов в OpenBao. Недостающие ключи дополняются, существующие не меняются;
 # ошибка чтения прерывает запуск (bao_kv_json). Пароль роли БД копируется из antec/postgres,
@@ -78,11 +83,16 @@ copy_db_password keycloak keycloak
 # учётные данные в БД LiteLLM и не должен меняться после первого запуска.
 ensure_generated_secrets litellm master_key:sk- salt_key
 copy_db_password litellm litellm
-# Open WebUI (ADR-0002, ADR-0018): секрет сессий, виртуальный ключ LiteLLM; секрет клиента
-# open-webui берётся из antec/keycloak, где его задаёт realm как код.
-ensure_generated_secrets open-webui webui_secret_key litellm_key:sk-
+# Open WebUI (ADR-0002, ADR-0018): секрет сессий; секрет клиента open-webui берётся из
+# antec/keycloak, где его задаёт realm как код. Ключа LiteLLM у Open WebUI нет (ADR-0006).
+ensure_generated_secrets open-webui webui_secret_key
 copy_db_password openwebui open-webui
 copy_secret_field keycloak open_webui_client_secret open-webui oauth_client_secret
+# Platform API (ADR-0006, п. 10): ключ LiteLLM и пароль роли platform_app у сервиса, пароль
+# владельца схемы platform только у одноразовых миграций.
+ensure_generated_secrets platform-api litellm_key:sk-
+copy_db_password platform_app platform-api
+copy_db_password platform platform-migrate
 
 # Сервисы, работавшие до этого запуска: их нужно перезапустить, если изменились их секреты
 # (обёртки и Keycloak читают файлы секретов только при старте процесса).
@@ -113,9 +123,12 @@ render postgres
 render keycloak
 render litellm
 render open-webui
+render platform-api
+render platform-migrate
 
 log "сборка и запуск PostgreSQL"
 compose up -d --build --wait postgres
+ensure_platform_app_role
 log "сборка и запуск Keycloak (первый запуск около минуты)"
 start_service keycloak --build
 
@@ -124,9 +137,15 @@ keycloak_inputs | python3 "$COMPOSE_DIR/scripts/keycloak.py" apply $recreate_rea
 
 log "запуск LiteLLM (миграции БД при первом запуске, около минуты)"
 start_service litellm
-log "подготовка LiteLLM: бюджет пользователей и ключ Open WebUI"
+log "подготовка LiteLLM: бюджет пользователей и ключ Platform API"
 litellm_provision_inputs \
   | compose exec -T litellm /app/.venv/bin/python -c "$(cat "$COMPOSE_DIR/scripts/litellm_provision.py")"
+
+log "сборка Platform API и миграции БД platform"
+compose build platform-api
+compose --profile bootstrap run --rm -T platform-migrate
+log "запуск Platform API"
+start_service platform-api
 
 log "запуск Open WebUI (миграции БД при первом запуске)"
 start_service open-webui

@@ -150,17 +150,36 @@ print("ok" if need <= have else "неполные: нет " + ", ".join(sorted(n
 kc_keys="$(service_secrets keycloak db_password bootstrap_client_secret automation_client_secret \
   admin_password breakglass_password platform_api_client_secret open_webui_client_secret)"
 llm_keys="$(service_secrets litellm db_password master_key salt_key)"
-owui_keys="$(service_secrets open-webui db_password webui_secret_key oauth_client_secret litellm_key)"
+owui_keys="$(service_secrets open-webui db_password webui_secret_key oauth_client_secret)"
+papi_keys="$(service_secrets platform-api db_password litellm_key)"
+pmig_keys="$(service_secrets platform-migrate db_password)"
 unset BAO_TOKEN
-keys="$(printf '%s' "$secrets_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["data"]))')"
-[[ "$keys" == "6" ]] || die "в восстановленном OpenBao неполные секреты antec/postgres ($keys из 6)"
+# Роли PostgreSQL и их БД: роль на каждую БД и роль сервиса Platform API (ADR-0006, п. 9).
+# Бэкапы установок до ADR-0006 роли platform_app не содержат: она проверяется, если есть в OpenBao.
+ROLES=("${DATABASES[@]}")
+role_db() { if [[ "$1" == platform_app ]]; then echo platform; else echo "$1"; fi; }
+if printf '%s' "$secrets_json" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["data"]["data"].get("platform_app") else 1)'; then
+  ROLES+=(platform_app)
+fi
+keys="$(printf '%s' "$secrets_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)["data"]["data"]
+need = ["superuser", *sys.argv[1:]]
+missing = [k for k in need if not data.get(k)]
+print(len(need) - len(missing))
+if missing:
+    sys.exit("нет: " + ", ".join(missing))' "${ROLES[@]}")" || die "в восстановленном OpenBao неполные секреты antec/postgres: $keys"
+# Строки данных сервиса в БД. В platform служебная схема antec_ops (канарейка бэкапа) есть до
+# появления Platform API, поэтому считаются только таблицы сервиса (схема public).
 db_rows() { # БД
   python3 -c '
 import json, sys
 counts = json.load(open(sys.argv[1]))["row_counts"].get(sys.argv[2]) or {}
-print(sum(counts.values()))' "$dir/manifest.json" "$1"
+skip = ("antec_ops.",) if sys.argv[2] == "platform" else ()
+print(sum(v for k, v in counts.items() if not k.startswith(skip)))' "$dir/manifest.json" "$1"
 }
-for entry in "keycloak:keycloak:$kc_keys" "litellm:litellm:$llm_keys" "open-webui:openwebui:$owui_keys"; do
+for entry in "keycloak:keycloak:$kc_keys" "litellm:litellm:$llm_keys" "open-webui:openwebui:$owui_keys" \
+    "platform-api:platform:$papi_keys" "platform-migrate:platform:$pmig_keys"; do
   path="${entry%%:*}"; rest="${entry#*:}"; db="${rest%%:*}"; state="${rest#*:}"
   rows="$(db_rows "$db")"
   if [[ "$state" == "нет" && "$rows" != "0" ]]; then
@@ -168,7 +187,7 @@ for entry in "keycloak:keycloak:$kc_keys" "litellm:litellm:$llm_keys" "open-webu
   fi
   [[ "$state" == "ok" || "$state" == "нет" ]] || die "в восстановленном OpenBao antec/$path $state"
 done
-log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей, antec/keycloak: $kc_keys, antec/litellm: $llm_keys, antec/open-webui: $owui_keys"
+log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей, antec/keycloak: $kc_keys, antec/litellm: $llm_keys, antec/open-webui: $owui_keys, antec/platform-api: $papi_keys, antec/platform-migrate: $pmig_keys"
 
 # --- Роли: пароли из восстановленного OpenBao и вход каждой роли в свою БД по SCRAM ---
 # Бэкап ролей снят без паролей; источник истины паролей OpenBao. SQL с паролями идёт через stdin.
@@ -178,15 +197,16 @@ data = json.load(sys.stdin)["data"]["data"]
 for role in sys.argv[1:]:
     pw = data[role].replace("\x27", "\x27\x27")
     print(f"ALTER ROLE \"{role}\" PASSWORD \x27{pw}\x27;")
-' "${DATABASES[@]}" | rx psql -q -v ON_ERROR_STOP=1 -d postgres >/dev/null
-for db in "${DATABASES[@]}"; do
-  PGPASSWORD="$(printf '%s' "$secrets_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["data"][sys.argv[1]])' "$db")"
+' "${ROLES[@]}" | rx psql -q -v ON_ERROR_STOP=1 -d postgres >/dev/null
+for role in "${ROLES[@]}"; do
+  db="$(role_db "$role")"
+  PGPASSWORD="$(printf '%s' "$secrets_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["data"][sys.argv[1]])' "$role")"
   export PGPASSWORD
-  who="$(docker exec -i -e PGPASSWORD "$name" psql -h 127.0.0.1 -U "$db" -d "$db" -At -c 'select system_user' 2>&1)" \
-    || die "роль $db не входит в восстановленную БД $db: $who"
+  who="$(docker exec -i -e PGPASSWORD "$name" psql -h 127.0.0.1 -U "$role" -d "$db" -At -c 'select system_user' 2>&1)" \
+    || die "роль $role не входит в восстановленную БД $db: $who"
   unset PGPASSWORD
-  [[ "$who" == "scram-sha-256:$db" ]] || die "роль $db вошла не по SCRAM: $who"
+  [[ "$who" == "scram-sha-256:$role" ]] || die "роль $role вошла не по SCRAM: $who"
 done
 unset secrets_json
-log "  роли: пароли из OpenBao назначены, вход по SCRAM в свою БД: ок (${DATABASES[*]})"
+log "  роли: пароли из OpenBao назначены, вход по SCRAM в свою БД: ок (${ROLES[*]})"
 log "восстановление проверено: $dir"

@@ -1,14 +1,16 @@
-"""Подготовка LiteLLM для клиентов стенда (ADR-0018). Выполняется ВНУТРИ контейнера litellm.
+"""Подготовка LiteLLM для клиентов стенда (ADR-0018, ADR-0006). Выполняется в контейнере litellm.
 
 Только стандартная библиотека: запускается интерпретатором образа LiteLLM из scripts/up.sh,
-секреты приходят JSON-объектом через stdin ({"master_key", "open_webui_key"}).
+секреты приходят JSON-объектом через stdin ({"master_key", "platform_api_key"}).
 
 Идемпотентно создаёт:
-- бюджет `open-webui-user`: бюджет каждого конечного пользователя Open WebUI на 30 дней;
-- виртуальный ключ Open WebUI со значением из OpenBao (antec/open-webui:litellm_key):
-  только логические модели, конечные пользователи без своего бюджета получают `open-webui-user`.
+- бюджет `platform-user`: бюджет каждого конечного пользователя Platform API на 30 дней
+  (конечный пользователь = поле `user` = id пользователя Platform API);
+- виртуальный ключ Platform API со значением из OpenBao (antec/platform-api:litellm_key):
+  только логические модели, конечные пользователи без своего бюджета получают `platform-user`.
 
 Существующие объекты приводятся к заданным: сумма и период бюджета, модели и бюджет ключа.
+Ключ `open-webui` (прямое подключение Open WebUI до Platform API, ADR-0018, п. 7) удаляется.
 """
 
 from __future__ import annotations
@@ -21,9 +23,10 @@ import urllib.request
 from typing import Any, cast
 
 BASE = "http://127.0.0.1:4000"
-OPEN_WEBUI_ALIAS = "open-webui"
-OPEN_WEBUI_MODELS = ["chat-default", "chat-fast"]
-END_USER_BUDGET_ID = "open-webui-user"
+PLATFORM_ALIAS = "platform-api"
+PLATFORM_MODELS = ["chat-default", "chat-fast"]
+RETIRED_ALIASES = ["open-webui"]
+END_USER_BUDGET_ID = "platform-user"
 END_USER_BUDGET_USD = 5.0
 END_USER_BUDGET_DURATION = "30d"
 
@@ -96,19 +99,19 @@ def ensure_budget(master: str) -> None:
         ok(status, payload, f"обновление бюджета {END_USER_BUDGET_ID}")
 
 
-def ensure_open_webui_key(master: str, key: str) -> None:
+def ensure_platform_key(master: str, key: str) -> None:
     query = urllib.parse.urlencode({"key": key})
     status, info = call("GET", f"/key/info?{query}", master)
     wanted: Json = {
-        "models": OPEN_WEBUI_MODELS,
-        "key_alias": OPEN_WEBUI_ALIAS,
-        "metadata": {"purpose": "Open WebUI на стенде до Platform API (ADR-0018)"},
+        "models": PLATFORM_MODELS,
+        "key_alias": PLATFORM_ALIAS,
+        "metadata": {"purpose": "Platform API: служебный ключ фасада (ADR-0006)"},
         "end_user_budget_id": END_USER_BUDGET_ID,
     }
     if status == 200 and isinstance(info, dict):
         current = cast(Json, info.get("info") or {})
         same = (
-            sorted(current.get("models") or []) == sorted(OPEN_WEBUI_MODELS)
+            sorted(current.get("models") or []) == sorted(PLATFORM_MODELS)
             and (
                 current.get("end_user_budget_id")
                 or (current.get("metadata") or {}).get("end_user_budget_id")
@@ -116,15 +119,37 @@ def ensure_open_webui_key(master: str, key: str) -> None:
             == END_USER_BUDGET_ID
         )
         if not same:
-            log("ключ Open WebUI: модели и бюджет пользователей приведены к заданным")
+            log("ключ Platform API: модели и бюджет пользователей приведены к заданным")
             status, payload = call("POST", "/key/update", master, {"key": key, **wanted})
-            ok(status, payload, "обновление ключа Open WebUI")
+            ok(status, payload, "обновление ключа Platform API")
         return
     if status not in (400, 401, 404):
-        raise ProvisionError(f"проверка ключа Open WebUI: HTTP {status}: {info}")
-    log("создание виртуального ключа Open WebUI (значение из OpenBao)")
+        raise ProvisionError(f"проверка ключа Platform API: HTTP {status}: {info}")
+    log("создание виртуального ключа Platform API (значение из OpenBao)")
     status, payload = call("POST", "/key/generate", master, {"key": key, **wanted})
-    ok(status, payload, "создание ключа Open WebUI")
+    ok(status, payload, "создание ключа Platform API")
+
+
+def retire_keys(master: str) -> None:
+    """Удаляет ключи клиентов, которые больше не ходят в LiteLLM напрямую."""
+    query = urllib.parse.urlencode(
+        {"key_alias": ",".join(RETIRED_ALIASES), "return_full_object": "true"}
+    )
+    status, info = call("GET", f"/key/list?{query}", master)
+    if status != 200 or not isinstance(info, dict):
+        raise ProvisionError(f"список ключей: HTTP {status}: {info}")
+    found = [
+        k
+        for k in cast(list[Any], info.get("keys") or [])
+        if isinstance(k, dict) and k.get("key_alias") in RETIRED_ALIASES
+    ]
+    if not found:
+        return
+    log(f"удаление ключей: {', '.join(sorted({str(k['key_alias']) for k in found}))}")
+    status, payload = call(
+        "POST", "/key/delete", master, {"keys": [str(k["token"]) for k in found]}
+    )
+    ok(status, payload, "удаление прежних ключей")
 
 
 def main() -> int:
@@ -132,7 +157,8 @@ def main() -> int:
         inputs = json.load(sys.stdin)
         master = cast(str, inputs["master_key"])
         ensure_budget(master)
-        ensure_open_webui_key(master, cast(str, inputs["open_webui_key"]))
+        ensure_platform_key(master, cast(str, inputs["platform_api_key"]))
+        retire_keys(master)
     except (ProvisionError, KeyError, ValueError, OSError) as exc:
         print(f"litellm: ошибка подготовки: {exc}", file=sys.stderr)
         return 1

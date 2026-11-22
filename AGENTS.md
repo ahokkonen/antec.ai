@@ -28,7 +28,8 @@ Claude Code состоит из одной строки `@AGENTS.md` (импор
 | `docs/security/` | Лицензии и политика безопасности |
 | `policy/allowed-versions.yaml` | Разрешённые и запрещённые версии всех компонентов |
 | `tools/pincheck/` | CI-проверка соответствия реестру версий (ADR-0016) |
-| `deploy/compose/` | Локальный стенд: базовый слой OpenBao + PostgreSQL (ADR-0017) |
+| `services/platform-api/` | Platform API: OpenAI-совместимый фасад, пользователи, история, аудит (ADR-0006) |
+| `deploy/compose/` | Локальный стенд: OpenBao, PostgreSQL, Keycloak, LiteLLM, Platform API, Open WebUI |
 
 ## Обязательные правила
 

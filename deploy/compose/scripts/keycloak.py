@@ -7,6 +7,7 @@
     keycloak.py apply [--recreate-realm]   идемпотентная настройка master и realm antec
     keycloak.py open-webui-identities      администраторы и antec_uid для сверки Open WebUI
     keycloak.py smoke                      вход через браузер и обмен токенов (RFC 8693)
+    keycloak.py user-token                 вход через браузер, access token на stdout
 
 Realm как код: deploy/compose/keycloak/realm-antec.json создаётся, если realm нет.
 Существующие объекты realm файл не меняет (недостающие создаются): локально realm пересоздаётся
@@ -49,6 +50,9 @@ DEFAULT_SA_SCOPES = ("service_account", "web-origins", "acr", "profile", "roles"
 PROFILE_ATTRIBUTES = ("entra_oid", "entra_tid", "antec_uid")
 UID_ATTRIBUTE = "antec_uid"
 OPEN_WEBUI_CLIENT = "open-webui"
+# Срок access token клиента open-webui, секунды. Open WebUI обновляет токен, когда до истечения
+# меньше 5 минут: при сроке realm в 5 минут обновление шло бы перед каждым запросом (ADR-0006).
+OPEN_WEBUI_ACCESS_LIFESPAN = "900"
 # Роли клиента open-webui: user (доступ, есть у всех через роли по умолчанию), admin (администратор
 # Open WebUI, назначается явно). Open WebUI берёт их из claim roles (ENABLE_OAUTH_ROLE_MANAGEMENT).
 OPEN_WEBUI_ROLES = ("user", "admin")
@@ -433,13 +437,19 @@ def ensure_open_webui_access(admin: Admin) -> None:
 
     - роли клиента user и admin; user входит в роли realm по умолчанию: доступ к Open WebUI есть
       у каждого, кто вошёл в realm (доступ к realm ограничивает Entra, «Assignment required»);
-    - claim roles (роли клиента open-webui) и antec_uid в токенах и userinfo клиента open-webui.
+    - claim roles (роли клиента open-webui) и antec_uid в токенах и userinfo клиента open-webui;
+    - срок access token клиента 15 минут (OPEN_WEBUI_ACCESS_LIFESPAN).
     Администратор Open WebUI определяется ролью admin при каждом входе, а не порядком входа.
     """
     client = admin.find_client(REALM, OPEN_WEBUI_CLIENT)
     if client is None:
         raise KeycloakError(f"в realm {REALM} нет клиента {OPEN_WEBUI_CLIENT}")
     cid = client["id"]
+    attrs = cast(Json, client.get("attributes") or {})
+    if attrs.get("access.token.lifespan") != OPEN_WEBUI_ACCESS_LIFESPAN:
+        log(f"срок access token клиента {OPEN_WEBUI_CLIENT}: {OPEN_WEBUI_ACCESS_LIFESPAN} с")
+        client["attributes"] = {**attrs, "access.token.lifespan": OPEN_WEBUI_ACCESS_LIFESPAN}
+        admin.call("PUT", f"/{REALM}/clients/{cid}", client)
     have_roles = {r["name"] for r in admin.call("GET", f"/{REALM}/clients/{cid}/roles")}
     for role in OPEN_WEBUI_ROLES:
         if role not in have_roles:
@@ -765,6 +775,18 @@ def cmd_smoke(secrets_in: Json, open_browser: bool) -> None:
         raise KeycloakError("проверка обмена токенов не пройдена")
 
 
+def cmd_user_token(open_browser: bool) -> None:
+    """Access token пользователя (клиент antec-smoke) на stdout для scripts/platform-smoke.sh.
+
+    Токен живёт 5 минут и годится только для Platform API на стенде (aud platform-api,
+    azp antec-smoke); в терминал он не печатается, скрипт передаёт его через конвейер.
+    """
+    token = _browser_login(open_browser)
+    if sys.stdout.isatty():
+        raise KeycloakError("user-token печатает токен только в конвейер, не в терминал")
+    sys.stdout.write(token)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -775,6 +797,8 @@ def main() -> int:
     smoke_p.add_argument(
         "--no-open", action="store_true", help="не открывать браузер, только напечатать URL"
     )
+    token_p = sub.add_parser("user-token", help="вход через браузер, access token на stdout")
+    token_p.add_argument("--no-open", action="store_true", help="только напечатать URL")
     args = parser.parse_args()
     try:
         secrets_in = json.load(sys.stdin)
@@ -784,6 +808,8 @@ def main() -> int:
             cmd_apply(secrets_in, args.recreate_realm)
         elif args.cmd == "open-webui-identities":
             cmd_open_webui_identities(secrets_in)
+        elif args.cmd == "user-token":
+            cmd_user_token(not args.no_open)
         else:
             cmd_smoke(secrets_in, not args.no_open)
     except (KeycloakError, ValueError, OSError) as exc:

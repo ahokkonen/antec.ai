@@ -14,7 +14,7 @@ case "${1:-} ${2:-}" in
 esac
 
 if [[ "$mode" == "stop" ]]; then
-  compose down --remove-orphans
+  compose --profile bootstrap down --remove-orphans
   log "стенд остановлен, данные сохранены"
   exit 0
 fi
@@ -34,7 +34,8 @@ fi
 read -r -p "Введите '$confirm' для подтверждения: " answer
 [[ "$answer" == "$confirm" ]] || die "отменено"
 
-compose down --volumes --remove-orphans
+# --profile bootstrap: тома одноразовых сервисов (platform-migrate) тоже удаляются.
+compose --profile bootstrap down --volumes --remove-orphans
 kc_delete "$KC_INSTALLATION"
 if [[ "$mode" == "forget" && -n "$installation" ]]; then
   kc_delete "$(kc_unseal_name "$installation")"

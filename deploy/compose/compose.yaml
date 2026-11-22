@@ -1,5 +1,5 @@
-# Локальный стенд antec.ai: базовый слой OpenBao + PostgreSQL (ADR-0003, ADR-0017)
-# и Keycloak (ADR-0007).
+# Локальный стенд antec.ai: базовый слой OpenBao + PostgreSQL (ADR-0003, ADR-0017),
+# Keycloak (ADR-0007), LiteLLM и Open WebUI (ADR-0018), Platform API (ADR-0006).
 # Образы только по digest из policy/allowed-versions.yaml (ADR-0004).
 # Запуск только через scripts/up.sh: он распечатывает OpenBao, выгружает секреты
 # (secrets-render) и только потом запускает PostgreSQL и Keycloak.
@@ -60,6 +60,8 @@ services:
       - keycloak-secrets:/out/keycloak
       - litellm-secrets:/out/litellm
       - open-webui-secrets:/out/open-webui
+      - platform-api-secrets:/out/platform-api
+      - platform-migrate-secrets:/out/platform-migrate
     networks: [secrets]
     depends_on:
       openbao:
@@ -166,7 +168,7 @@ services:
       - ./litellm/config.yaml:/antec/config.yaml:ro
       - ./common/env-from-files.sh:/antec/env-from-files.sh:ro
       - litellm-secrets:/run/antec-secrets:ro
-    # data: PostgreSQL; llm: клиенты шлюза (Platform API, Open WebUI); llm-egress: API провайдеров.
+    # data: PostgreSQL; llm: клиенты шлюза (Platform API); llm-egress: API провайдеров.
     networks: [data, llm, llm-egress]
     mem_limit: 1536m
     healthcheck:
@@ -184,8 +186,67 @@ services:
       postgres:
         condition: service_healthy
 
-  # Веб-чат (ADR-0002). На стенде до Platform API ходит в LiteLLM своим виртуальным ключом
-  # (временное отклонение от ADR-0002, п. 1; ADR-0018).
+  # Миграции БД platform ролью владельца схемы (ADR-0006, п. 9); одноразовый, запускается
+  # только из scripts/up.sh (`compose run --rm platform-migrate`).
+  platform-migrate:
+    profiles: [bootstrap]
+    build:
+      context: ../../services/platform-api
+    image: localhost/antec/platform-api:0.1.0
+    pull_policy: build
+    command: ["migrate"]
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    environment:
+      PLATFORM_DATABASE_USER: platform
+      PLATFORM_APP_ROLE: platform_app
+    volumes:
+      - platform-migrate-secrets:/run/antec-secrets:ro
+    networks: [data]
+    mem_limit: 256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Platform API (ADR-0006): OpenAI-совместимый фасад, пользователи, история, аудит.
+  # Порт на хост не публикуется: клиенты (Open WebUI) ходят по сети platform.
+  platform-api:
+    <<: *hardening
+    build:
+      context: ../../services/platform-api
+    image: localhost/antec/platform-api:0.1.0
+    pull_policy: build
+    environment:
+      PLATFORM_DATABASE_USER: platform_app
+      # iss в токенах = публичный адрес Keycloak (hostname), JWKS по внутреннему адресу.
+      PLATFORM_OIDC_ISSUER: http://localhost:8080/realms/antec
+      PLATFORM_OIDC_JWKS_URL: http://keycloak:8080/realms/antec/protocol/openid-connect/certs
+      PLATFORM_OIDC_AUDIENCE: platform-api
+      # antec-smoke: только стенд (scripts/platform-smoke.sh); в инсталляциях только open-webui.
+      PLATFORM_ALLOWED_CLIENTS: open-webui,antec-smoke
+      PLATFORM_GATEWAY_URL: http://litellm:4000/v1
+      PLATFORM_MODELS: chat-default,chat-fast
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,uid=65534,gid=65534
+    volumes:
+      - platform-api-secrets:/run/antec-secrets:ro
+    # data: PostgreSQL и JWKS Keycloak; llm: LiteLLM; platform: клиенты фасада.
+    networks: [data, llm, platform]
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+
+  # Веб-чат (ADR-0002): единственное подключение = фасад Platform API с токеном пользователя
+  # из Keycloak (auth_type system_oauth, ADR-0006, п. 3).
   open-webui:
     <<: *hardening
     image: ghcr.io/open-webui/open-webui:v0.13.3@sha256:46b59158e6558eeb980bc828e0f1b30238ad24d82ed84d5e5eda1dab2a082f14
@@ -238,12 +299,19 @@ services:
       # Администратор не читает чаты пользователей.
       ENABLE_ADMIN_CHAT_ACCESS: "False"
       WEBUI_SESSION_COOKIE_SECURE: "False"
-      # Единственное подключение: LiteLLM (до Platform API); ключ OPENAI_API_KEYS из OpenBao.
+      # Единственное подключение: фасад Platform API. Вместо ключа в Authorization идёт access
+      # token пользователя из OAuth-сессии Keycloak (обновляется refresh-токеном).
       ENABLE_OLLAMA_API: "False"
       ENABLE_OPENAI_API: "True"
-      OPENAI_API_BASE_URLS: http://litellm:4000/v1
+      OPENAI_API_BASE_URLS: http://platform-api:8000/v1
+      OPENAI_API_KEYS: ""
+      OPENAI_API_CONFIGS: '{"0": {"auth_type": "system_oauth"}}'
       ENABLE_DIRECT_CONNECTIONS: "False"
-      # Пользователь в заголовке X-OpenWebUI-User-Id: учёт и бюджет в LiteLLM.
+      # Доступ к моделям решает Platform API (список /v1/models для пользователя, позже Cerbos,
+      # ADR-0009), а не права моделей в БД Open WebUI: без этого роль user не видит ни одной модели.
+      BYPASS_MODEL_ACCESS_CONTROL: "True"
+      # Ради X-OpenWebUI-Chat-Id (разговор в истории Platform API). Заголовки X-OpenWebUI-User-*
+      # идут вместе с ним, но Platform API их игнорирует: пользователь берётся из токена.
       ENABLE_FORWARD_USER_INFO_HEADERS: "True"
       # Ничего не исполняется на сервере UI (ADR-0002, п. 4).
       ENABLE_PLUGINS: "False"
@@ -284,8 +352,8 @@ services:
     volumes:
       - ./common/env-from-files.sh:/antec/env-from-files.sh:ro
       - open-webui-secrets:/run/antec-secrets:ro
-    # data: PostgreSQL; llm: LiteLLM; ui: Keycloak и публикация порта на 127.0.0.1 хоста.
-    networks: [data, llm, ui]
+    # data: PostgreSQL; platform: Platform API; ui: Keycloak и публикация порта на 127.0.0.1 хоста.
+    networks: [data, platform, ui]
     ports:
       - "127.0.0.1:3000:8080"
     mem_limit: 1536m
@@ -302,7 +370,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      litellm:
+      platform-api:
         condition: service_healthy
       keycloak:
         condition: service_healthy
@@ -319,6 +387,9 @@ networks:
   # Клиенты LLM-шлюза; без выхода наружу.
   llm:
     internal: true
+  # Клиенты фасада Platform API (Open WebUI); без выхода наружу.
+  platform:
+    internal: true
   # Выход LiteLLM к API провайдеров. Ограничение по доменам: открытый вопрос ADR-0018.
   llm-egress: {}
   # Браузер пользователя -> Open WebUI (порт на 127.0.0.1) и Open WebUI -> Keycloak.
@@ -332,3 +403,5 @@ volumes:
   keycloak-secrets:
   litellm-secrets:
   open-webui-secrets:
+  platform-api-secrets:
+  platform-migrate-secrets:
