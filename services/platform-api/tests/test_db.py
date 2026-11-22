@@ -544,3 +544,48 @@ async def test_pending_run_lifecycle_and_tool_audit(app_engine: AsyncEngine) -> 
         ("tool.call", "allow"),
     ]
     assert audit[1].resource_id == "mcp-demo.create_note"
+
+
+async def test_expire_pending_runs(app_engine: AsyncEngine) -> None:
+    store = PgStore(app_engine)
+    principal = _principal(f"expire-{uuid.uuid4()}")
+    user = await store.resolve_user(principal, uuid.uuid7())
+    conv = await store.ensure_conversation(user.id, "open-webui", None)
+    run = AgentRunStart(
+        id=uuid.uuid7(),
+        user_id=user.id,
+        conversation_id=conv,
+        client_id="open-webui",
+        agent="agent-notes",
+        model="chat-fast",
+        stream=False,
+    )
+    await store.start_agent_run(run)
+    outcome = RunOutcome(
+        status="awaiting_approval",
+        steps=[StepRecord(status="ok")],
+        pending=[PendingCall("c1", "mcp-demo.create_note", {})],
+        state={},
+    )
+    past = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=1)
+    await store.finish_agent_run(run, outcome, Approval(code="AAAA", expires_at=past))
+    rid = uuid.uuid7()
+    assert await store.expire_pending_runs(user.id, client_id="open-webui", request_id=rid) == 1
+    assert await store.expire_pending_runs(user.id, client_id="open-webui", request_id=rid) == 0
+    async with app_engine.connect() as conn:
+        status = (
+            await conn.execute(select(agent_runs.c.status).where(agent_runs.c.id == run.id))
+        ).scalar_one()
+        decisions = (
+            (
+                await conn.execute(
+                    select(audit_events.c.details).where(
+                        audit_events.c.request_id == rid, audit_events.c.action == "tool.approval"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert status == "expired"
+    assert [d["decision"] for d in decisions] == ["expired"]

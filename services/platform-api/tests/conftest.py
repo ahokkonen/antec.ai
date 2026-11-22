@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime as dt
 import os
 import time
 import uuid
@@ -261,6 +262,20 @@ class FakeStore:
         del self.pending[run_id]
         self.resolved.append((run_id, status))
         return item[1]
+
+    async def expire_pending_runs(
+        self, user_id: uuid.UUID, *, client_id: str, request_id: uuid.UUID
+    ) -> int:
+        now = dt.datetime.now(dt.UTC)
+        stale = [
+            k
+            for k, (owner, run) in self.pending.items()
+            if owner == user_id and run.expires_at <= now
+        ]
+        for key in stale:
+            del self.pending[key]
+            self.resolved.append((key, "expired"))
+        return len(stale)
 
     async def record_tool_call(
         self,

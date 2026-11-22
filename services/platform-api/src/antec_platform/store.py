@@ -165,6 +165,10 @@ class Store(Protocol):
         details: dict[str, Any],
     ) -> None: ...
 
+    async def expire_pending_runs(
+        self, user_id: uuid.UUID, *, client_id: str, request_id: uuid.UUID
+    ) -> int: ...
+
 
 def _audit(
     *,
@@ -765,6 +769,49 @@ class PgStore:
                     )
                 )
             )
+
+    async def expire_pending_runs(
+        self, user_id: uuid.UUID, *, client_id: str, request_id: uuid.UUID
+    ) -> int:
+        """Истёкшие ожидания пользователя = expired (ADR-0010, п. 7), во всех разговорах.
+
+        Вызывается при каждом запросе пользователя к агенту: ожидание, на которое никто не
+        ответил, не остаётся awaiting_approval навсегда. Каждое решение = событие
+        tool.approval. Очистка состояния по сроку хранения: ADR-0012.
+        """
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    update(agent_runs)
+                    .where(
+                        agent_runs.c.user_id == user_id,
+                        agent_runs.c.status == "awaiting_approval",
+                        agent_runs.c.approval_expires_at <= func.now(),
+                    )
+                    .values(status="expired")
+                    .returning(agent_runs.c.id, agent_runs.c.agent, agent_runs.c.pending)
+                )
+            ).all()
+            for row in rows:
+                await conn.execute(
+                    insert(audit_events).values(
+                        _audit(
+                            action="tool.approval",
+                            outcome="deny",
+                            request_id=request_id,
+                            actor_user_id=user_id,
+                            actor_client=client_id,
+                            resource_type="agent_run",
+                            resource_id=str(row.id),
+                            details={
+                                "decision": "expired",
+                                "agent": row.agent,
+                                "tools": [c["ref"] for c in row.pending or []],
+                            },
+                        )
+                    )
+                )
+        return len(rows)
 
 
 def _pending(row: Any) -> PendingRun:  # noqa: ANN401 - строка SQLAlchemy

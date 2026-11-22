@@ -692,6 +692,8 @@ async def _agent_completion(
                     decided_by=str(user.id),
                 )
                 parent = resolved.id
+    # Остальные истёкшие ожидания пользователя (другие разговоры, без ответа) = expired.
+    await deps.store.expire_pending_runs(user.id, client_id=principal.client_id, request_id=rid)
     return await _run_agent(
         request,
         deps,

@@ -205,3 +205,21 @@ async def test_pending_of_other_agent_is_superseded(
     )
     assert harness.store.resolved[-1][1] == "denied"
     assert harness.runtime.resumes[-1] is None
+
+
+async def test_stale_pending_in_other_conversation_expires(
+    harness: Harness, make_token: TokenFactory
+) -> None:
+    token = make_token()
+    await _pause(harness, token)
+    ((run_id, (owner, pending)),) = harness.store.pending.items()
+    past = dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)
+    harness.store.pending[run_id] = (owner, replace(pending, expires_at=past))
+    harness.runtime.result = RunOutcome(status="ok", text="ok", steps=[])
+    await harness.client.post(
+        "/v1/chat/completions",
+        json=_ask("Привет"),
+        headers={"Authorization": f"Bearer {token}", "X-OpenWebUI-Chat-Id": "other-chat"},
+    )
+    assert (run_id, "expired") in harness.store.resolved
+    assert harness.store.pending == {}

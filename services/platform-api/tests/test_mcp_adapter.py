@@ -142,3 +142,22 @@ async def test_old_protocol_refused() -> None:
             await client.list_tools(old, "tok")
     finally:
         await client.aclose()
+
+
+async def test_response_size_limited() -> None:
+    from antec_platform.adapters.mcp import MAX_RESPONSE_BYTES
+
+    big = b'{"jsonrpc":"2.0","id":"x","result":{"pad":"' + b"a" * (MAX_RESPONSE_BYTES + 10) + b'"}}'
+    client = HttpMcpClient(
+        5,
+        transport=httpx.MockTransport(
+            lambda _r: httpx.Response(
+                200, content=big, headers={"content-type": "application/json"}
+            )
+        ),
+    )
+    try:
+        with pytest.raises(ToolError, match="больше"):
+            await client.call_tool(SERVER, "tok", "get_time", {})
+    finally:
+        await client.aclose()

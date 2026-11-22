@@ -30,6 +30,8 @@ from antec_platform.tools import McpServerSpec, RemoteTool, ToolCallResult, Tool
 PROTOCOL_VERSION = "2026-07-28"
 CLIENT_INFO = {"name": "antec-platform-api", "version": "0.1.0"}
 _RESULT_LIMIT = 32 * 1024
+# Тело ответа MCP-сервера читается потоком с ограничением: больше = ошибка инструмента.
+MAX_RESPONSE_BYTES = 1024 * 1024
 _MAX_PAGES = 10
 
 
@@ -81,19 +83,26 @@ class HttpMcpClient:
                 raise ToolError("имя инструмента не ASCII")
             headers["Mcp-Name"] = name
         try:
-            resp = await self._http.post(server.url, json=body, headers=headers)
+            async with self._http.stream("POST", server.url, json=body, headers=headers) as resp:
+                status = resp.status_code
+                ctype = resp.headers.get("content-type", "").split(";")[0].strip()
+                if status in (401, 403):
+                    raise ToolError(f"MCP-сервер отклонил токен: HTTP {status}")
+                content = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    content += chunk
+                    if len(content) > MAX_RESPONSE_BYTES:
+                        raise ToolError(f"ответ MCP-сервера больше {MAX_RESPONSE_BYTES} байт")
         except httpx.TimeoutException as exc:
             raise ToolError("MCP-сервер не ответил вовремя") from exc
         except httpx.HTTPError as exc:
             raise ToolError(f"MCP-сервер недоступен: {type(exc).__name__}") from exc
-        if resp.status_code in (401, 403):
-            raise ToolError(f"MCP-сервер отклонил токен: HTTP {resp.status_code}")
-        message = _response_message(resp, rid)
+        message = _response_message(bytes(content), ctype, status, rid)
         if "error" in message:
             err = message["error"] if isinstance(message["error"], dict) else {}
             raise ToolError(f"MCP-ошибка {err.get('code')}: {str(err.get('message'))[:200]}")
-        if resp.status_code != 200:
-            raise ToolError(f"MCP-сервер вернул HTTP {resp.status_code}")
+        if status != 200:
+            raise ToolError(f"MCP-сервер вернул HTTP {status}")
         result = message.get("result")
         if not isinstance(result, dict):
             raise ToolError("MCP-ответ без result")
@@ -144,12 +153,11 @@ class HttpMcpClient:
         return ToolCallResult(text=text, is_error=bool(result.is_error))
 
 
-def _response_message(resp: httpx.Response, rid: str) -> dict[str, Any]:
+def _response_message(content: bytes, ctype: str, status: int, rid: str) -> dict[str, Any]:
     """JSON-RPC ответ на запрос rid из JSON или SSE."""
-    ctype = resp.headers.get("content-type", "").split(";")[0].strip()
     try:
         if ctype == "text/event-stream":
-            for event in resp.text.split("\n\n"):
+            for event in content.decode("utf-8").split("\n\n"):
                 data = "\n".join(
                     line[5:].lstrip() for line in event.splitlines() if line.startswith("data:")
                 )
@@ -159,9 +167,9 @@ def _response_message(resp: httpx.Response, rid: str) -> dict[str, Any]:
                 if isinstance(msg, dict) and msg.get("id") == rid:
                     return msg
             raise ToolError("в потоке SSE нет ответа на запрос")
-        msg = resp.json()
+        msg = json.loads(content)
     except ValueError as exc:
-        raise ToolError(f"MCP-ответ не JSON (HTTP {resp.status_code})") from exc
+        raise ToolError(f"MCP-ответ не JSON (HTTP {status})") from exc
     if not isinstance(msg, dict):
         raise ToolError("MCP-ответ не объект JSON-RPC")
     return msg
