@@ -138,7 +138,7 @@ if [[ -n "$tool_time" ]]; then
                 and a.action in ('tool.call', 'tool.approval')))
   from json_each_text(:'ids'::json) as k(kind, id)
   where k.kind in ('tool_time', 'pause_deny', 'resume_deny', 'pause_ok', 'resume_ok',
-                   'pause_api', 'resume_api')"
+                   'pause_api', 'resume_api', 'class_lab')"
   tools="$(pg_exec psql -X -q -v ON_ERROR_STOP=1 -At -d platform -v ids="$ids" <<<"$tools_sql")"
   notes_after="$(compose logs mcp-demo 2>/dev/null | grep -c 'note created owner=' || true)"
   notes=$(( ${notes_after:-0} - ${notes_before:-0} ))
@@ -166,8 +166,15 @@ checks = {
     "решение через API: tool.call create_note allow": (
         "tool.call:allow:mcp-demo.create_note" in audit["resume_api"]
     ),
+    # Отказ виден, только если модель попыталась вызвать инструмент; без попытки проверка
+    # не падает (инвариант детерминированно проверяет «класс разговора»).
+    "классы данных: agent-lab create_note не выполнен (ADR-0011)": (
+        "tool.call:allow:mcp-demo.create_note" not in audit.get("class_lab", [])
+    ),
     "mcp-demo: созданы 2 подтверждённые заметки (токен обмена принят)": notes >= 2,
 }
+if "tool.call:deny:mcp-demo.create_note" not in audit.get("class_lab", []):
+    print("  [skip] agent-lab: модель не пыталась вызвать create_note", file=sys.stderr)
 for name, ok in checks.items():
     print(f"  [{'ok' if ok else 'FAIL'}] {name}", file=sys.stderr)
 sys.exit(0 if all(checks.values()) else 1)

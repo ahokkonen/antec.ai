@@ -21,11 +21,14 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from antec_platform.agents import AgentDefinition
+from antec_platform.data_classes import DATA_CLASS_REASON, allows, rank
 from antec_platform.policy import PolicyClient, PolicyUnavailable, Resource, Subject
 
 log = logging.getLogger(__name__)
 
 TOOL_KIND = "tool"
+# Текст модели при отказе (права или класс данных): причина только в аудите.
+DENIED_TEXT = "вызов инструмента запрещён (права пользователя или класс данных)"
 CALL = "call"
 _MODEL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
 
@@ -42,6 +45,8 @@ class ToolError(Exception):
 class McpToolSpec:
     name: str
     read_only: bool
+    # Класс данных результата (ADR-0011); None = класс по умолчанию инсталляции.
+    data_class: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +117,17 @@ class ToolAudit(Protocol):
         details: dict[str, Any],
     ) -> None: ...
 
+    async def raise_conversation_class(
+        self, conversation_id: uuid.UUID, data_class: str
+    ) -> None: ...
+
+
+def _data_class(value: object) -> str | None:
+    if value is None:
+        return None
+    rank(str(value))
+    return str(value)
+
 
 def model_tool_name(server: str, tool: str) -> str:
     """Имя для модели: только [A-Za-z0-9_-], не длиннее 64 (ограничение API провайдеров)."""
@@ -133,7 +149,11 @@ def load_mcp_servers(
                     audience=str(item["audience"]),
                     protocol_version=str(item["protocol_version"]),
                     tools=tuple(
-                        McpToolSpec(name=str(t["name"]), read_only=bool(t["read_only"]))
+                        McpToolSpec(
+                            name=str(t["name"]),
+                            read_only=bool(t["read_only"]),
+                            data_class=_data_class(t.get("data_class")),
+                        )
                         for t in item["tools"]
                     ),
                 )
@@ -171,7 +191,13 @@ class ToolBroker:
         client_id: str,
         request_id: uuid.UUID,
         agent: str,
+        clearance: str = "restricted",
+        default_class: str = "internal",
+        conversation_id: uuid.UUID | None = None,
     ) -> None:
+        self._conversation_id = conversation_id
+        self._clearance = clearance
+        self._default_class = default_class
         self._servers = servers
         self._client = client
         self._exchanger = exchanger
@@ -225,18 +251,36 @@ class ToolBroker:
                 )
         return out
 
+    def data_class(self, ref: str) -> str:
+        server, _, tool = ref.partition(".")
+        spec = self._servers[server].tool(tool)
+        return (spec.data_class if spec else None) or self._default_class
+
     async def authorize(self, ref: str, read_only: bool) -> bool:
-        """Право call на инструмент (до запроса подтверждения и перед вызовом)."""
+        """Право call на инструмент (до запроса подтверждения и перед вызовом).
+
+        Сначала инвариант класса данных (ADR-0011, п. 3): данные выше допуска модели агента не
+        запрашиваются вовсе; затем политика (атрибут data_class для ужесточения).
+        """
+        data_class = self.data_class(ref)
+        details: dict[str, Any] = {"read_only": read_only, "data_class": data_class}
+        if not allows(self._clearance, data_class):
+            await self._record(
+                ref,
+                "deny",
+                {**details, "reason": DATA_CLASS_REASON, "model_clearance": self._clearance},
+            )
+            return False
         try:
             (allowed,) = await self._policy.check(
                 self._subject,
                 CALL,
-                [Resource(TOOL_KIND, ref)],
+                [Resource(TOOL_KIND, ref, {"data_class": data_class})],
             )
         except PolicyUnavailable as exc:
             raise ToolError("проверка прав временно недоступна") from exc
         if not allowed:
-            await self._record(ref, "deny", {"reason": "policy", "read_only": read_only})
+            await self._record(ref, "deny", {**details, "reason": "policy"})
         return allowed
 
     async def call(
@@ -244,11 +288,15 @@ class ToolBroker:
     ) -> ToolCallResult:
         """Вызов инструмента; запрет политики и ошибки = результат с is_error для модели."""
         if not await self.authorize(ref, read_only):
-            return ToolCallResult("доступ к инструменту запрещён политикой", is_error=True)
+            return ToolCallResult(DENIED_TEXT, is_error=True)
         server_name, _, tool = ref.partition(".")
         server = self._servers[server_name]
         started = time.monotonic()
-        details: dict[str, Any] = {"read_only": read_only, "approved_by": approved_by}
+        details: dict[str, Any] = {
+            "read_only": read_only,
+            "approved_by": approved_by,
+            "data_class": self.data_class(ref),
+        }
         try:
             result = await self._client.call_tool(
                 server, await self._token(server), tool, arguments
@@ -259,6 +307,12 @@ class ToolBroker:
             return ToolCallResult(f"инструмент недоступен: {exc}", is_error=True)
         details |= {"is_error": result.is_error, "duration_ms": _ms(started)}
         await self._record(ref, "error" if result.is_error else "allow", details)
+        # Данные инструмента теперь в разговоре: его класс не ниже класса инструмента
+        # (ADR-0011): следующая модель в этом разговоре должна быть допущена к нему.
+        if self._conversation_id is not None and rank(details["data_class"]) > rank(
+            self._default_class
+        ):
+            await self._audit.raise_conversation_class(self._conversation_id, details["data_class"])
         return result
 
     async def _record(self, ref: str, outcome: str, details: dict[str, Any]) -> None:

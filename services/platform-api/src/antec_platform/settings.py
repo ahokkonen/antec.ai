@@ -15,6 +15,8 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import URL
 
+from antec_platform.data_classes import CLASSES
+
 DEFAULT_SECRETS_DIR = Path("/run/antec-secrets")
 
 _CLIENT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -100,6 +102,9 @@ class Settings(DatabaseSettings):
     oidc_client_id: str = "platform-api"
     # Секрет клиента platform-api для token exchange: файл platform_oidc_client_secret.
     oidc_client_secret: SecretStr | None = None
+    # Классы данных (ADR-0011): допуски моделей (models.json рендера) и класс ввода.
+    models_file: Path | None = None
+    default_data_class: str = "internal"
     # Срок ожидания подтверждения человеком (ADR-0010, п. 7).
     approval_ttl_seconds: Annotated[int, Field(ge=60, le=3600)] = 900
     # Scope политик инсталляции (ADR-0008, п. 4); пусто = только базовые политики ядра.
@@ -133,7 +138,16 @@ class Settings(DatabaseSettings):
                 raise ValueError(f"недопустимое имя модели: {item!r}")
         return value
 
-    @field_validator("agents_file", "mcp_servers_file", "oidc_token_url", mode="before")
+    @field_validator("default_data_class")
+    @classmethod
+    def _data_class(cls, value: str) -> str:
+        if value not in CLASSES:
+            raise ValueError(f"неизвестный класс данных: {value!r}")
+        return value
+
+    @field_validator(
+        "agents_file", "mcp_servers_file", "oidc_token_url", "models_file", mode="before"
+    )
     @classmethod
     def _empty_is_none(cls, value: object) -> object:
         return None if value == "" else value

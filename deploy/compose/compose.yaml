@@ -274,6 +274,8 @@ services:
       PLATFORM_AGENTS_FILE: /antec/instance/agents.json
       # Инструменты агентов (ADR-0010): MCP-серверы манифеста и обмен токена в Keycloak.
       PLATFORM_MCP_SERVERS_FILE: /antec/instance/mcp_servers.json
+      # Допуски моделей по классам данных (ADR-0011).
+      PLATFORM_MODELS_FILE: /antec/instance/models.json
       PLATFORM_OIDC_TOKEN_URL: http://keycloak:8080/realms/antec/protocol/openid-connect/token
     read_only: true
     tmpfs:

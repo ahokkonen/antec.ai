@@ -168,9 +168,32 @@ async def test_real_cerbos_with_instance_scope() -> None:
             False,
         ]
         assert await unscoped.check(USER, "invoke", [lab]) == [False]
+        # Атрибут data_class (ADR-0011) не мешает решению базовых политик.
+        classed = Resource("model", "chat-lab", {"data_class": "internal"})
+        assert await scoped.check(USER, "invoke", [classed]) == [True]
         assert await absent.check(USER, "invoke", [*MODELS, lab]) == [True, True, False]
         admin = Subject(id="a1", roles=("platform-admin",))
         assert await scoped.check(admin, "invoke", [unknown]) == [True]
     finally:
         for c in (scoped, unscoped, absent):
             await c.aclose()
+
+
+async def test_resource_attrs_and_scope_in_properties() -> None:
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"evaluations": [{"decision": True}]})
+
+    client = _client(httpx.MockTransport(handler), scope="dev")
+    await client.check(USER, "invoke", [Resource("model", "chat-fast", {"data_class": "internal"})])
+    assert seen[0]["evaluations"] == [
+        {
+            "resource": {
+                "type": "model",
+                "id": "chat-fast",
+                "properties": {"data_class": "internal", "cerbos.scope": "dev"},
+            }
+        }
+    ]

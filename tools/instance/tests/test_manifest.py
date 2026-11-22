@@ -53,7 +53,7 @@ def test_minimal_manifest() -> None:
 @pytest.mark.parametrize(
     ("path", "value", "needle"),
     [
-        ("schema_version", 3, "schema_version"),
+        ("schema_version", 4, "schema_version"),
         ("instance.id", "Acme", "instance.id"),
         ("instance.id", "a.b", "instance.id"),
         ("models.0.litellm.api_key", "sk-plain-secret", "os.environ"),
@@ -169,3 +169,49 @@ def test_agent_tool_refs_and_unique() -> None:
 
 def test_model_name_agent_prefix_reserved() -> None:
     assert "agent-" in _problems(_with("models.0.name", "agent-x"))
+
+
+def test_data_classes_v3() -> None:
+    data = {
+        **BASE,
+        "schema_version": 3,
+        "data": {"default_class": "confidential"},
+        "models": [{**BASE["models"][0], "max_data_class": "internal"}],
+    }
+    m = parse_manifest(data)
+    assert m.data.default_class == "confidential"
+    assert m.models[0].max_data_class == "internal"
+    assert any("недоступна" in w for w in m.class_warnings())
+    assert parse_manifest({**BASE, "schema_version": 3}).models[0].max_data_class == "restricted"
+
+
+def test_data_classes_need_v3() -> None:
+    assert "schema_version: 3" in _problems({**BASE, "schema_version": 2, "data": {}})
+    model = {**BASE["models"][0], "max_data_class": "public"}
+    assert "max_data_class" in _problems({**BASE, "models": [model]})
+    assert "default_class" in _problems(
+        {**BASE, "schema_version": 3, "data": {"default_class": "secret"}}
+    )
+
+
+def test_data_classes_match_platform_api() -> None:
+    """Один набор классов (ADR-0011): схема манифеста = data_classes.CLASSES Platform API."""
+    import ast
+    from pathlib import Path
+    from typing import get_args
+
+    from antec_instance.manifest import DATA_CLASSES, DataClass
+
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "services/platform-api/src/antec_platform/data_classes.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    (value,) = [
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "CLASSES" for t in node.targets)
+    ]
+    assert tuple(ast.literal_eval(value)) == DATA_CLASSES
+    assert get_args(DataClass) == DATA_CLASSES

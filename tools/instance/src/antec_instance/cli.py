@@ -83,6 +83,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"инсталляция {args.id} создана в {args.dest}")
             return EXIT_OK
         manifest = _validate(core_dir, args.instance)
+        for warning in manifest.class_warnings():
+            print(f"предупреждение: {warning}", file=sys.stderr)
         if args.command == "render":
             for path in render(manifest, args.instance, args.out):
                 print(path)

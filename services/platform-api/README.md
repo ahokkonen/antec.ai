@@ -39,6 +39,11 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 `PLATFORM_APPROVAL_TTL_SECONDS`; решение пишется событием `tool.approval`, запуск продолжается
 от сохранённого состояния (`agent_runs.state`).
 
+Классы данных ([ADR-0011](../../docs/adr/0011-data-classes-and-model-routing.md)): допуски моделей
+`PLATFORM_MODELS_FILE`, класс ввода `PLATFORM_DEFAULT_DATA_CLASS`; класс разговора растёт с
+каждым выполненным вызовом инструмента выше класса ввода. Модель, агент или инструмент выше
+допуска отклоняются до вызова (403 `data_class_forbidden`, аудит с причиной `data_class`).
+
 ## Код
 
 | Модуль | Роль |
@@ -50,7 +55,8 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 | `db.py`, `migrations/` | Схема (SQLAlchemy Core) и миграции Alembic |
 | `policy.py` | Контракт `PolicyClient`: субъект, действие, ресурсы |
 | `agents.py` | Контракт `AgentRuntime`, описания агентов из `agents.json`, вход агента из сообщений |
-| `tools.py` | MCP-серверы манифеста, `ToolBroker`: белый список, права, обмен токена, аудит |
+| `tools.py` | MCP-серверы манифеста, `ToolBroker`: белый список, права, класс данных, обмен токена, аудит |
+| `data_classes.py` | Классы данных и допуски моделей (ADR-0011) |
 | `adapters/` | Контракт шлюза `ChatGateway`, адаптер LiteLLM и `PolicyClient` по AuthZEN (HTTP, без SDK), `AgentRuntime` на Pydantic AI |
 | `settings.py` | Настройки: несекретные из `PLATFORM_*`, секреты из файлов `/run/antec-secrets` |
 

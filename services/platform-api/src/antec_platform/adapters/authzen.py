@@ -51,8 +51,11 @@ class AuthZenPolicyClient:
 
     def _resource(self, resource: Resource) -> dict[str, Any]:
         out: dict[str, Any] = {"type": resource.kind, "id": resource.id}
+        properties: dict[str, Any] = dict(resource.attrs)
         if self._scope:
-            out["properties"] = {"cerbos.scope": self._scope}
+            properties["cerbos.scope"] = self._scope
+        if properties:
+            out["properties"] = properties
         return out
 
     async def check(self, subject: Subject, action: str, resources: list[Resource]) -> list[bool]:

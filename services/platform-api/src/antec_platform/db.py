@@ -77,6 +77,11 @@ conversations = Table(
     Column("external_id", Text),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=NOW),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=NOW),
+    # Наибольший класс данных в разговоре (ADR-0011); пусто = класс по умолчанию.
+    Column("data_class", Text),
+    CheckConstraint(
+        "data_class in ('public', 'internal', 'confidential', 'restricted')", name="data_class"
+    ),
     UniqueConstraint("user_id", "client_id", "external_id"),
     Index("ix_conversations_user_id_updated_at", "user_id", "updated_at"),
 )

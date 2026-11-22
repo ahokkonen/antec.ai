@@ -22,6 +22,7 @@ from antec_instance.manifest import Manifest
 LITELLM_MODELS = "litellm/models.yaml"
 AGENTS = "platform-api/agents.json"
 MCP_SERVERS = "platform-api/mcp_servers.json"
+MODELS = "platform-api/models.json"
 PLATFORM_ENV = "platform-api.env"
 SUMMARY = "instance.json"
 # Прежняя раскладка (до подкаталогов): удаляется, чтобы не осталось устаревших копий.
@@ -47,6 +48,7 @@ def platform_env(manifest: Manifest) -> dict[str, str]:
     env = {
         "PLATFORM_MODELS": ",".join(m.name for m in manifest.models),
         "PLATFORM_POLICY_SCOPE": manifest.instance.id,
+        "PLATFORM_DEFAULT_DATA_CLASS": manifest.data.default_class,
     }
     s = manifest.settings
     if s.allowed_clients is not None:
@@ -79,10 +81,22 @@ def mcp_servers(manifest: Manifest) -> list[dict[str, Any]]:
             "url": s.url,
             "audience": s.audience,
             "protocol_version": s.protocol_version,
-            "tools": [{"name": t.name, "read_only": t.read_only} for t in s.tools],
+            "tools": [
+                {
+                    "name": t.name,
+                    "read_only": t.read_only,
+                    "data_class": t.data_class or manifest.data.default_class,
+                }
+                for t in s.tools
+            ],
         }
         for s in manifest.mcp_servers
     ]
+
+
+def model_clearances(manifest: Manifest) -> list[dict[str, Any]]:
+    """Допуски логических моделей для Platform API (ADR-0011, п. 2)."""
+    return [{"name": m.name, "max_data_class": m.max_data_class} for m in manifest.models]
 
 
 def _write(path: Path, content: str) -> None:
@@ -115,6 +129,7 @@ def render(manifest: Manifest, instance_dir: Path, out_dir: Path) -> list[Path]:
         # Всегда, даже пустой: Platform API читает файл при старте.
         AGENTS: json.dumps(agents, ensure_ascii=False, indent=2) + "\n",
         MCP_SERVERS: json.dumps(mcp_servers(manifest), ensure_ascii=False, indent=2) + "\n",
+        MODELS: json.dumps(model_clearances(manifest), ensure_ascii=False, indent=2) + "\n",
     }
     for legacy in _LEGACY:
         (out_dir / legacy).unlink(missing_ok=True)
