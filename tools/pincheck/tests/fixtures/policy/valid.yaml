@@ -61,6 +61,14 @@ components:
     allowed: []
     digest: null
 
+  python:
+    role: runtime-base
+    license: PSF-2.0
+    image: docker.io/library/python
+    allowed: ["3.14.10"]
+    image_tag_suffix: "-slim-trixie"
+    digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
   openbao:
     role: secrets
     license: MPL-2.0

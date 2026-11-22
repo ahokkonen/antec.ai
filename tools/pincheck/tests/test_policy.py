@@ -88,6 +88,20 @@ def test_broken_registry_stops_file_checks(pincheck: Runner, policy_variant: Var
             'allowed: ["1.108.7"]', 'allowed: ["v1.108.7"]', "PIN002", None, id="prefix-in-allowed"
         ),
         pytest.param(
+            'image_tag_suffix: "-slim-trixie"',
+            'image_tag_suffix: "-rc1"',
+            "PIN002",
+            None,
+            id="prerelease-suffix",
+        ),
+        pytest.param(
+            'image_tag_suffix: "-slim-trixie"',
+            'image_tag_suffix: "slim"',
+            "PIN002",
+            None,
+            id="suffix-without-dash",
+        ),
+        pytest.param(
             'allowed: ["1.108.7"]',
             'allowed: ["1.108.7-rc1"]',
             "PIN002",
