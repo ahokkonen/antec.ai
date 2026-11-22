@@ -39,6 +39,7 @@ from antec_platform.chat import (
     usage_tokens,
 )
 from antec_platform.errors import ApiError, error_body, forbidden, unauthorized
+from antec_platform.policy import PolicyClient, PolicyUnavailable, Resource, Subject
 from antec_platform.store import CallResult, CallStart, Store, User
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class Deps:
     gateway: ChatGateway
     verifier: TokenVerifier
     jwks: JwksCache
+    policy: PolicyClient
     models: list[str]
     max_request_bytes: int
     # Фоновые записи итогов вызова: переживают отмену запроса клиентом, ждутся при остановке.
@@ -107,6 +109,43 @@ async def authenticate(request: Request) -> tuple[Principal, User]:
         raise forbidden("пользователь заблокирован", code="user_disabled")
     request.state.user_id = user.id
     return principal, user
+
+
+MODEL_KIND = "model"
+INVOKE = "invoke"
+
+
+def _subject(principal: Principal, user: User) -> Subject:
+    attrs = {"client_id": principal.client_id}
+    if principal.idp:
+        attrs["idp"] = principal.idp
+    return Subject(id=str(user.id), roles=principal.roles, attrs=attrs)
+
+
+async def _check(
+    deps: Deps, subject: Subject, action: str, resources: list[Resource]
+) -> list[bool]:
+    """Решения PDP; сбой PDP = 503, а не разрешение (ADR-0009, п. 5)."""
+    try:
+        return await deps.policy.check(subject, action, resources)
+    except PolicyUnavailable as exc:
+        log.error("проверка прав невозможна: %s", exc)
+        raise ApiError(
+            503, "проверка прав временно недоступна", type_="api_error", code="policy_unavailable"
+        ) from exc
+
+
+async def authorize_model(request: Request, principal: Principal, user: User, model: str) -> None:
+    deps = _deps(request)
+    (allowed,) = await _check(
+        deps, _subject(principal, user), INVOKE, [Resource(MODEL_KIND, model)]
+    )
+    if not allowed:
+        await deps.store.record_policy_deny(
+            principal, user.id, INVOKE, MODEL_KIND, model, _request_id(request)
+        )
+        log.info("политика: нет права invoke на модель %s", model)
+        raise forbidden(f"нет доступа к модели {model!r}", code="model_forbidden")
 
 
 async def read_json(request: Request, limit: int) -> object:
@@ -170,6 +209,7 @@ async def chat_completions(request: Request) -> Response:
     chat = parse_chat_request(
         await read_json(request, deps.max_request_bytes), frozenset(deps.models)
     )
+    await authorize_model(request, principal, user, chat.model)
     conversation_id = await deps.store.ensure_conversation(
         user.id, principal.client_id, _external_id(request)
     )
@@ -355,13 +395,19 @@ async def _close_and_finish(
 
 
 async def list_models(request: Request) -> Response:
-    await authenticate(request)
+    """Только модели, на которые у пользователя есть право invoke (одна пакетная проверка)."""
+    principal, user = await authenticate(request)
     deps = _deps(request)
+    decisions = await _check(
+        deps, _subject(principal, user), INVOKE, [Resource(MODEL_KIND, m) for m in deps.models]
+    )
     return JSONResponse(
         {
             "object": "list",
             "data": [
-                {"id": m, "object": "model", "created": 0, "owned_by": "antec"} for m in deps.models
+                {"id": m, "object": "model", "created": 0, "owned_by": "antec"}
+                for m, ok in zip(deps.models, decisions, strict=True)
+                if ok
             ],
         }
     )
@@ -378,6 +424,10 @@ async def readyz(request: Request) -> Response:
         await asyncio.wait_for(deps.store.ping(), timeout=3)
     except Exception as exc:
         problems.append(f"db: {type(exc).__name__}")
+    try:
+        await deps.policy.ping()
+    except PolicyUnavailable as exc:
+        problems.append(f"policy: {exc}")
     if not deps.jwks.loaded:
         try:
             await deps.jwks.refresh()

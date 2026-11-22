@@ -296,3 +296,24 @@ async def _sub_of(engine: AsyncEngine, user_id: uuid.UUID) -> str:
                 )
             ).scalar_one()
         )
+
+
+async def test_policy_deny_audited(app_engine: AsyncEngine) -> None:
+    store = PgStore(app_engine)
+    principal = replace(_principal(f"deny-{uuid.uuid4()}"), roles=("open-webui-user",))
+    user = await store.resolve_user(principal, uuid.uuid7())
+    rid = uuid.uuid7()
+    await store.record_policy_deny(principal, user.id, "invoke", "model", "chat-default", rid)
+    async with app_engine.connect() as conn:
+        row = (
+            await conn.execute(
+                select(
+                    audit_events.c.action,
+                    audit_events.c.outcome,
+                    audit_events.c.resource_id,
+                    audit_events.c.details,
+                ).where(audit_events.c.request_id == rid)
+            )
+        ).one()
+    assert (row.action, row.outcome, row.resource_id) == ("policy.deny", "deny", "chat-default")
+    assert row.details == {"action": "invoke", "roles": ["open-webui-user"]}

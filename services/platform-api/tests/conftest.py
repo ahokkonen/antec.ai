@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from antec_platform.adapters.gateway import GatewayMeta, GatewayResponse, GatewayUnavailable
 from antec_platform.app import Deps, create_app
 from antec_platform.auth import JwksCache, Principal, TokenVerifier
+from antec_platform.policy import PolicyUnavailable, Resource, Subject
 from antec_platform.store import CallResult, CallStart, User
 
 ISSUER = "http://localhost:8080/realms/antec"
@@ -89,6 +90,7 @@ def make_token(keys: Keys) -> TokenFactory:
             "idp": "entra",
             "entra_tid": "tid-1",
             "entra_oid": f"oid-{sub}",
+            "platform_roles": ["platform-user"],
             **extra,
         }
         return jwt.encode(
@@ -140,6 +142,7 @@ class FakeStore:
     denied: list[tuple[str, str]] = field(default_factory=list)
     conversations: dict[tuple[uuid.UUID, str, str | None], uuid.UUID] = field(default_factory=dict)
     started: list[CallStart] = field(default_factory=list)
+    policy_denied: list[tuple[str, str, str]] = field(default_factory=list)
     finished: list[tuple[CallStart, CallResult]] = field(default_factory=list)
     disabled: set[str] = field(default_factory=set)
 
@@ -157,6 +160,17 @@ class FakeStore:
     async def record_denied(self, principal: Principal, reason: str, request_id: uuid.UUID) -> None:
         self.denied.append((principal.subject, reason))
 
+    async def record_policy_deny(
+        self,
+        principal: Principal,
+        user_id: uuid.UUID,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        request_id: uuid.UUID,
+    ) -> None:
+        self.policy_denied.append((action, resource_type, resource_id))
+
     async def ensure_conversation(
         self, user_id: uuid.UUID, client_id: str, external_id: str | None
     ) -> uuid.UUID:
@@ -169,6 +183,33 @@ class FakeStore:
 
     async def finish_call(self, call: CallStart, result: CallResult) -> None:
         self.finished.append((call, result))
+
+
+@dataclass
+class FakePolicy:
+    """PDP для тестов: разрешено (роль, модель) из allowed; down = PDP недоступен."""
+
+    allowed: set[tuple[str, str]] = field(
+        default_factory=lambda: {("platform-user", "chat-default"), ("platform-user", "chat-fast")}
+    )
+    down: bool = False
+    calls: list[tuple[Subject, str, list[Resource]]] = field(default_factory=list)
+
+    async def check(self, subject: Subject, action: str, resources: list[Resource]) -> list[bool]:
+        self.calls.append((subject, action, resources))
+        if self.down:
+            raise PolicyUnavailable("PDP недоступен")
+        return [
+            action == "invoke" and any((role, r.id) in self.allowed for role in subject.roles)
+            for r in resources
+        ]
+
+    async def ping(self) -> None:
+        if self.down:
+            raise PolicyUnavailable("PDP недоступен")
+
+    async def aclose(self) -> None:
+        return None
 
 
 @dataclass
@@ -229,6 +270,7 @@ class Harness:
     client: httpx.AsyncClient
     store: FakeStore
     gateway: FakeGateway
+    policy: FakePolicy
     deps: Deps
 
 
@@ -236,11 +278,13 @@ class Harness:
 async def harness(verifier: TokenVerifier, jwks: JwksCache) -> AsyncIterator[Harness]:
     store = FakeStore()
     gateway = FakeGateway()
+    policy = FakePolicy()
     deps = Deps(
         store=store,
         gateway=gateway,
         verifier=verifier,
         jwks=jwks,
+        policy=policy,
         models=["chat-default", "chat-fast"],
         max_request_bytes=64 * 1024,
     )
@@ -252,7 +296,7 @@ async def harness(verifier: TokenVerifier, jwks: JwksCache) -> AsyncIterator[Har
     app.state.deps = deps  # ASGITransport не выполняет lifespan
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://platform-api") as client:
-        yield Harness(client=client, store=store, gateway=gateway, deps=deps)
+        yield Harness(client=client, store=store, gateway=gateway, policy=policy, deps=deps)
 
 
 @pytest.fixture

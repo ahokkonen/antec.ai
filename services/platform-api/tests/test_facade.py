@@ -311,3 +311,50 @@ async def test_stream_unexpected_error_is_recorded_as_error(
     )
     await _settle(harness)
     assert harness.store.finished[0][1].status == "error"
+
+
+async def test_model_forbidden_by_policy(harness: Harness, make_token: TokenFactory) -> None:
+    harness.policy.allowed = {("platform-user", "chat-fast")}
+    resp = await harness.client.post(
+        "/v1/chat/completions", json=_chat(), headers=_auth(make_token())
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "model_forbidden"
+    assert harness.store.policy_denied == [("invoke", "model", "chat-default")]
+    assert harness.gateway.payloads == []
+    assert harness.store.started == []
+
+
+async def test_no_platform_roles_means_no_access(
+    harness: Harness, make_token: TokenFactory
+) -> None:
+    token = make_token(platform_roles=[])
+    resp = await harness.client.get("/v1/models", headers=_auth(token))
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+    resp = await harness.client.post("/v1/chat/completions", json=_chat(), headers=_auth(token))
+    assert resp.status_code == 403
+
+
+async def test_models_filtered_by_policy(harness: Harness, make_token: TokenFactory) -> None:
+    harness.policy.allowed = {("platform-user", "chat-fast")}
+    resp = await harness.client.get("/v1/models", headers=_auth(make_token()))
+    assert [m["id"] for m in resp.json()["data"]] == ["chat-fast"]
+    ((subject, action, resources),) = harness.policy.calls
+    assert action == "invoke"
+    assert subject.roles == ("platform-user",)
+    assert subject.attrs == {"client_id": "open-webui", "idp": "entra"}
+    assert [r.id for r in resources] == ["chat-default", "chat-fast"]
+
+
+async def test_policy_down_fails_closed(harness: Harness, make_token: TokenFactory) -> None:
+    harness.policy.down = True
+    harness.gateway.response = GatewayResponse(meta=ok_meta(), body=COMPLETION)
+    chat = await harness.client.post(
+        "/v1/chat/completions", json=_chat(), headers=_auth(make_token())
+    )
+    models = await harness.client.get("/v1/models", headers=_auth(make_token()))
+    ready = await harness.client.get("/readyz")
+    assert (chat.status_code, models.status_code, ready.status_code) == (503, 503, 503)
+    assert chat.json()["error"]["code"] == "policy_unavailable"
+    assert harness.gateway.payloads == []

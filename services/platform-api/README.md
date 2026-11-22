@@ -13,7 +13,9 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 | `GET` | `/readyz` | БД и JWKS доступны |
 
 Аутентификация: `Authorization: Bearer <access token Keycloak>` с `aud: platform-api` и `azp` из
-`PLATFORM_ALLOWED_CLIENTS`. Ошибки в формате OpenAI, у каждого ответа заголовок `x-request-id`
+`PLATFORM_ALLOWED_CLIENTS`. Права ([ADR-0009](../../docs/adr/0009-authorization-cerbos.md)):
+`invoke` на `model` проверяется в Cerbos по AuthZEN (`PLATFORM_POLICY_URL`) с ролями из claim
+`platform_roles`; `/v1/models` отдаёт только разрешённые модели; отказ PDP = 503. Ошибки в формате OpenAI, у каждого ответа заголовок `x-request-id`
 (он же id вызова в `model_calls` и `audit_events`).
 
 ## Код
@@ -25,7 +27,8 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 | `chat.py` | Белый список параметров, новые сообщения, разбор событий SSE |
 | `store.py` | Пользователи, разговоры, вызовы, аудит (PostgreSQL) |
 | `db.py`, `migrations/` | Схема (SQLAlchemy Core) и миграции Alembic |
-| `adapters/` | Контракт шлюза `ChatGateway` и адаптер LiteLLM (HTTP, без SDK) |
+| `policy.py` | Контракт `PolicyClient`: субъект, действие, ресурсы |
+| `adapters/` | Контракт шлюза `ChatGateway`, адаптер LiteLLM и `PolicyClient` по AuthZEN (HTTP, без SDK) |
 | `settings.py` | Настройки: несекретные из `PLATFORM_*`, секреты из файлов `/run/antec-secrets` |
 
 Секреты (файлы в `/run/antec-secrets`, имя = переменная в нижнем регистре):
@@ -47,6 +50,9 @@ uv run --locked ruff format --check . && uv run --locked ruff check . && uv run 
 ```bash
 uv run --locked pytest
 ```
+
+Тест с настоящим Cerbos и политиками `policies/cerbos` (маркер `cerbos`) запускается, если задан
+`PLATFORM_TEST_CERBOS_URL` (CI поднимает Cerbos по digest из реестра).
 
 Тесты на PostgreSQL (маркер `db`) запускаются, если задан `PLATFORM_TEST_DATABASE_URL` с
 суперпользователем; тест создаёт и удаляет свои роли и БД. Например, с одноразовым контейнером
