@@ -1,0 +1,32 @@
+# Тесты политики agent (ADR-0010): `cerbos compile policies/cerbos` в CI.
+name: AgentPolicy
+principals:
+  user:
+    id: user-1
+    roles: [platform-user]
+  admin:
+    id: admin-1
+    roles: [platform-admin]
+  other:
+    id: other-1
+    roles: [open-webui-user]
+resources:
+  assistant:
+    kind: agent
+    id: agent-assistant
+tests:
+  - name: Пользователь и администратор вызывают агента, другие роли нет
+    input:
+      principals: [user, admin, other]
+      resources: [assistant]
+      actions: [invoke, delete]
+    expected:
+      - principal: user
+        resource: assistant
+        actions: {invoke: EFFECT_ALLOW, delete: EFFECT_DENY}
+      - principal: admin
+        resource: assistant
+        actions: {invoke: EFFECT_ALLOW, delete: EFFECT_DENY}
+      - principal: other
+        resource: assistant
+        actions: {invoke: EFFECT_DENY, delete: EFFECT_DENY}

@@ -1,0 +1,16 @@
+# Агенты: кто может вызывать агента инсталляции (ADR-0010, п. 4). id ресурса = имя агента
+# (agent-<имя>). Вызов агента дополнительно требует invoke на его модель (политика model).
+# Базовая политика: platform-user вызывает любого агента; сужает инсталляция в своём scope.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: agent
+  rules:
+    - name: platform-user-agents
+      actions: [invoke]
+      effect: EFFECT_ALLOW
+      roles: [platform-user]
+    - name: platform-admin-agents
+      actions: [invoke]
+      effect: EFFECT_ALLOW
+      roles: [platform-admin]
