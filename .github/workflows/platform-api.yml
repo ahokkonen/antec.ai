@@ -33,8 +33,9 @@ jobs:
       postgres:
         image: docker.io/library/postgres:18.7@sha256:eb63372c1e05c755f55fa30cbd07aecc443676fc6c0fa90b9002d01537841e1a
         env:
-          # Одноразовая БД только для тестов в CI, не секрет.
-          POSTGRES_PASSWORD: ci-only-test-password
+          # Одноразовая БД CI без пароля (AGENTS.md, п. 5: паролей в репозитории нет); порт
+          # открыт только на 127.0.0.1 раннера.
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 127.0.0.1:5432:5432
         options: >-
@@ -58,11 +59,11 @@ jobs:
       - run: uv run --locked mypy
       - name: pytest (с PostgreSQL)
         env:
-          PLATFORM_TEST_DATABASE_URL: postgresql+asyncpg://postgres:ci-only-test-password@127.0.0.1:5432/postgres
+          PLATFORM_TEST_DATABASE_URL: postgresql+asyncpg://postgres@127.0.0.1:5432/postgres
         run: uv run --locked pytest
       - name: Тесты на PostgreSQL не пропущены
         env:
-          PLATFORM_TEST_DATABASE_URL: postgresql+asyncpg://postgres:ci-only-test-password@127.0.0.1:5432/postgres
+          PLATFORM_TEST_DATABASE_URL: postgresql+asyncpg://postgres@127.0.0.1:5432/postgres
         run: |
           set -euo pipefail
           out="$(uv run --locked pytest -m db -q)"
