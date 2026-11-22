@@ -14,6 +14,9 @@ case "${1:-}" in
   *) die "использование: platform-smoke.sh [--no-open]" ;;
 esac
 
+# Заметки mcp-demo до прогона: журнал контейнера копится между прогонами, считается прирост.
+notes_before="$(compose logs mcp-demo 2>/dev/null | grep -c 'note created owner=' || true)"
+
 log "вход пользователя через браузер (клиент antec-smoke)"
 # Токен идёт только через конвейер: в argv, окружение и терминал он не попадает.
 ids="$(echo '{}' | python3 "$COMPOSE_DIR/scripts/keycloak.py" user-token ${open_flag[@]+"${open_flag[@]}"} \
@@ -137,7 +140,8 @@ if [[ -n "$tool_time" ]]; then
   where k.kind in ('tool_time', 'pause_deny', 'resume_deny', 'pause_ok', 'resume_ok',
                    'pause_api', 'resume_api')"
   tools="$(pg_exec psql -X -q -v ON_ERROR_STOP=1 -At -d platform -v ids="$ids" <<<"$tools_sql")"
-  notes="$(compose logs mcp-demo 2>/dev/null | grep -c 'note created owner=' || true)"
+  notes_after="$(compose logs mcp-demo 2>/dev/null | grep -c 'note created owner=' || true)"
+  notes=$(( ${notes_after:-0} - ${notes_before:-0} ))
   python3 - "$tools" "$notes" <<'PY'
 import json
 import sys
