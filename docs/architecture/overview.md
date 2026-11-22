@@ -3,7 +3,7 @@
 Статус: черновик для MVP. Обновлено: 2026-11-22.
 Решения: [ADR-0001](../adr/0001-llm-gateway-litellm.md), [ADR-0002](../adr/0002-chat-ui-open-webui.md),
 [ADR-0003](../adr/0003-postgresql-single-datastore.md), [ADR-0004](../adr/0004-dependency-pinning-and-supply-chain.md),
-[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md), [ADR-0009](../adr/0009-authorization-cerbos.md).
+[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md), [ADR-0009](../adr/0009-authorization-cerbos.md), [ADR-0008](../adr/0008-plugin-contract-and-instance-template.md).
 
 ## Главная идея
 
@@ -14,6 +14,8 @@
 
 Документ описывает ядро и стандартный профиль инсталляции. Конкретная инсталляция (Mtech, клиент)
 выбирает компоненты в своём репозитории (ADR-0005): например, адаптер Teams вместо Open WebUI.
+Контракт инсталляции (ADR-0008): манифест `instance.yaml` (модели, MCP-серверы, настройки),
+политики Cerbos в scope инсталляции, плагины только вне процесса Platform API.
 
 ## Компоненты v1
 
