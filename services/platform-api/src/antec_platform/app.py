@@ -539,7 +539,9 @@ async def _agent_completion(
         agent=agent.name,
         model=agent.model,
         stream=chat.stream,
-        new_messages=chat.new_messages(),
+        # В историю то, что получил агент: системные сообщения и вызовы инструментов клиента
+        # агенту не передаются (ADR-0010, п. 4).
+        new_messages=[m for m in chat.new_messages() if m["role"] == "user"],
     )
     await deps.store.start_agent_run(run)
     handle = deps.runtime.start(agent, str(user.id), history, prompt)

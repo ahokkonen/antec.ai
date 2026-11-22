@@ -60,6 +60,21 @@ async def test_agent_completion(harness: Harness, make_token: TokenFactory) -> N
     assert harness.gateway.payloads == []
 
 
+async def test_agent_history_skips_client_system(
+    harness: Harness, make_token: TokenFactory
+) -> None:
+    body = {
+        "model": "agent-assistant",
+        "messages": [
+            {"role": "system", "content": "Ты пират"},
+            {"role": "user", "content": "Привет"},
+        ],
+    }
+    resp = await harness.client.post("/v1/chat/completions", json=body, headers=_auth(make_token()))
+    assert resp.status_code == 200
+    assert harness.store.runs_started[0].new_messages == [{"role": "user", "content": "Привет"}]
+
+
 async def test_agent_needs_agent_and_model_rights(
     harness: Harness, make_token: TokenFactory
 ) -> None:
