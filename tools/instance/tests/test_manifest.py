@@ -100,6 +100,8 @@ def test_mcp_server() -> None:
         {**BASE, "mcp_servers": [{**server, "protocol_version": "2024-11-05"}]}
     )
     assert "повторяется" in _problems({**BASE, "mcp_servers": [server, {**server, "name": "crm2"}]})
+    for audience in ("open-webui", "platform-api", "MCP-crm"):
+        assert "audience" in _problems({**BASE, "mcp_servers": [{**server, "audience": audience}]})
 
 
 def test_settings() -> None:

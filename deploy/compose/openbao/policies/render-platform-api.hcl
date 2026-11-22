@@ -1,5 +1,6 @@
 # Токен secrets-render для Platform API: только чтение antec/platform-api (пароль роли
-# platform_app и ключ LiteLLM platform-api). Пароль роли копируется скриптом up.sh.
+# platform_app, ключ LiteLLM platform-api, секрет клиента platform-api в Keycloak для обмена
+# токена). Пароль роли и секрет клиента копируются скриптом up.sh.
 path "antec/data/platform-api" {
   capabilities = ["read"]
 }

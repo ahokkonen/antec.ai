@@ -24,7 +24,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from antec_platform.agents import RunOutcome, StepRecord
+from antec_platform.agents import PendingCall, RunOutcome, StepRecord
 from antec_platform.auth import Principal
 from antec_platform.db import (
     agent_runs,
@@ -36,7 +36,7 @@ from antec_platform.db import (
 )
 from antec_platform.migrate import upgrade
 from antec_platform.settings import DatabaseSettings
-from antec_platform.store import AgentRunStart, CallResult, CallStart, PgStore
+from antec_platform.store import AgentRunStart, Approval, CallResult, CallStart, PgStore
 
 pytestmark = [pytest.mark.db, pytest.mark.anyio]
 
@@ -471,3 +471,121 @@ async def test_agent_run_failed_without_steps(app_engine: AsyncEngine) -> None:
     assert status == "rejected"
     assert n_messages == 0
     assert sorted(outcomes) == ["error", "error"]
+
+
+async def test_pending_run_lifecycle_and_tool_audit(app_engine: AsyncEngine) -> None:
+    """Ожидание подтверждения (ADR-0010, п. 7): запись, поиск, решение ровно один раз."""
+    store = PgStore(app_engine)
+    principal = _principal(f"approve-{uuid.uuid4()}")
+    user = await store.resolve_user(principal, uuid.uuid7())
+    conv = await store.ensure_conversation(user.id, "open-webui", "chat-approve")
+    run = AgentRunStart(
+        id=uuid.uuid7(),
+        user_id=user.id,
+        conversation_id=conv,
+        client_id="open-webui",
+        agent="agent-notes",
+        model="chat-fast",
+        stream=False,
+        new_messages=[{"role": "user", "content": "Сохрани"}],
+    )
+    await store.start_agent_run(run)
+    expires = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=15)
+    outcome = RunOutcome(
+        status="awaiting_approval",
+        text="Нужно подтверждение",
+        steps=[StepRecord(status="ok", http_status=200, prompt_tokens=5, completion_tokens=1)],
+        pending=[PendingCall("c1", "mcp-demo.create_note", {"text": "хлеб"})],
+        state={"messages": [{"kind": "request"}]},
+    )
+    await store.finish_agent_run(run, outcome, Approval(code="K7Q2", expires_at=expires))
+    found = await store.find_pending_run(user.id, conversation_id=conv)
+    assert found is not None
+    assert (found.id, found.code, found.agent) == (run.id, "K7Q2", "agent-notes")
+    assert found.pending == [PendingCall("c1", "mcp-demo.create_note", {"text": "хлеб"})]
+    assert found.state == {"messages": [{"kind": "request"}]}
+    assert await store.find_pending_run(uuid.uuid7(), run_id=run.id) is None
+
+    rid = uuid.uuid7()
+    first = await store.resolve_pending_run(
+        run.id, user.id, "approved", client_id="open-webui", request_id=rid
+    )
+    second = await store.resolve_pending_run(
+        run.id, user.id, "denied", client_id="open-webui", request_id=uuid.uuid7()
+    )
+    assert first is not None
+    assert second is None
+    assert await store.find_pending_run(user.id, conversation_id=conv) is None
+
+    await store.record_tool_call(
+        request_id=rid,
+        user_id=user.id,
+        client_id="open-webui",
+        run_id=rid,
+        agent="agent-notes",
+        ref="mcp-demo.create_note",
+        outcome="allow",
+        details={"approved_by": str(user.id), "duration_ms": 3},
+    )
+    async with app_engine.connect() as conn:
+        status = (
+            await conn.execute(select(agent_runs.c.status).where(agent_runs.c.id == run.id))
+        ).scalar_one()
+        audit = (
+            await conn.execute(
+                select(audit_events.c.action, audit_events.c.outcome, audit_events.c.resource_id)
+                .where(audit_events.c.request_id == rid)
+                .order_by(audit_events.c.id)
+            )
+        ).all()
+    assert status == "approved"
+    assert [(a.action, a.outcome) for a in audit] == [
+        ("tool.approval", "allow"),
+        ("tool.call", "allow"),
+    ]
+    assert audit[1].resource_id == "mcp-demo.create_note"
+
+
+async def test_expire_pending_runs(app_engine: AsyncEngine) -> None:
+    store = PgStore(app_engine)
+    principal = _principal(f"expire-{uuid.uuid4()}")
+    user = await store.resolve_user(principal, uuid.uuid7())
+    conv = await store.ensure_conversation(user.id, "open-webui", None)
+    run = AgentRunStart(
+        id=uuid.uuid7(),
+        user_id=user.id,
+        conversation_id=conv,
+        client_id="open-webui",
+        agent="agent-notes",
+        model="chat-fast",
+        stream=False,
+    )
+    await store.start_agent_run(run)
+    outcome = RunOutcome(
+        status="awaiting_approval",
+        steps=[StepRecord(status="ok")],
+        pending=[PendingCall("c1", "mcp-demo.create_note", {})],
+        state={},
+    )
+    past = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=1)
+    await store.finish_agent_run(run, outcome, Approval(code="AAAA", expires_at=past))
+    rid = uuid.uuid7()
+    assert await store.expire_pending_runs(user.id, client_id="open-webui", request_id=rid) == 1
+    assert await store.expire_pending_runs(user.id, client_id="open-webui", request_id=rid) == 0
+    async with app_engine.connect() as conn:
+        status = (
+            await conn.execute(select(agent_runs.c.status).where(agent_runs.c.id == run.id))
+        ).scalar_one()
+        decisions = (
+            (
+                await conn.execute(
+                    select(audit_events.c.details).where(
+                        audit_events.c.request_id == rid, audit_events.c.action == "tool.approval"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert status == "expired"
+    assert [d["decision"] for d in decisions] == ["expired"]

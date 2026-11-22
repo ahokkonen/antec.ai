@@ -9,6 +9,7 @@ scope = id инсталляции ([ADR-0008](../../docs/adr/0008-plugin-contrac
 | --- | --- | --- |
 | `model` (id = логическое имя модели) | `invoke` | `platform-user`: `chat-default`, `chat-fast`; `platform-admin`: любая |
 | `agent` (id = `agent-<имя>`, ADR-0010) | `invoke` | `platform-user`, `platform-admin`: любой; вызов агента требует ещё `invoke` на его модель |
+| `tool` (id = `<server>.<tool>` манифеста, ADR-0010) | `call` | `platform-user`, `platform-admin`: инструменты из белого списка манифеста; необратимые ещё ждут подтверждения |
 
 Роли: роли клиента `platform-api` в Keycloak, в токене claim `platform_roles`. Роль `user` не
 использовать: её Cerbos подставляет субъекту без ролей (значение `subject.type` в AuthZEN).

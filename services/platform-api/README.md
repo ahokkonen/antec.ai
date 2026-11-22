@@ -10,6 +10,7 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 | --- | --- | --- |
 | `GET` | `/v1/models` | Логические модели (`PLATFORM_MODELS`) и агенты (`PLATFORM_AGENTS_FILE`) |
 | `POST` | `/v1/chat/completions` | Чат с потоком SSE и без; в LiteLLM уходят только параметры OpenAI из белого списка, `user` = id пользователя Platform API |
+| `POST` | `/v1/agent-runs/{id}/decision` | Решение по запуску агента, ждущему подтверждения (`approve` или `deny`), для адаптеров каналов |
 | `GET` | `/healthz` | Процесс жив |
 | `GET` | `/readyz` | БД и JWKS доступны |
 
@@ -29,6 +30,15 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 (событие `model.call`). Рантайм: Pydantic AI только в `adapters/pydantic_ai.py` за контрактом
 `AgentRuntime` (`agents.py`); граница импорта проверяется тестом `test_boundaries.py`.
 
+Инструменты агентов (MCP-серверы манифеста, `PLATFORM_MCP_SERVERS_FILE`): свой MCP-клиент
+2026-07-28 (`adapters/mcp.py`, типы `mcp-types`), перед вызовом `call` на `tool` в Cerbos, токен
+пользователя меняется в Keycloak на токен с аудиторией сервера (`adapters/keycloak.py`,
+`PLATFORM_OIDC_TOKEN_URL`, секрет `platform_oidc_client_secret`); аудит `tool.call` без
+аргументов и результата. Всё, что не `read_only` в манифесте, только после подтверждения:
+агент отвечает «подтверждаю <код>» или «отмена» (тот же разговор, `X-OpenWebUI-Chat-Id`), срок
+`PLATFORM_APPROVAL_TTL_SECONDS`; решение пишется событием `tool.approval`, запуск продолжается
+от сохранённого состояния (`agent_runs.state`).
+
 ## Код
 
 | Модуль | Роль |
@@ -40,11 +50,12 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 | `db.py`, `migrations/` | Схема (SQLAlchemy Core) и миграции Alembic |
 | `policy.py` | Контракт `PolicyClient`: субъект, действие, ресурсы |
 | `agents.py` | Контракт `AgentRuntime`, описания агентов из `agents.json`, вход агента из сообщений |
+| `tools.py` | MCP-серверы манифеста, `ToolBroker`: белый список, права, обмен токена, аудит |
 | `adapters/` | Контракт шлюза `ChatGateway`, адаптер LiteLLM и `PolicyClient` по AuthZEN (HTTP, без SDK), `AgentRuntime` на Pydantic AI |
 | `settings.py` | Настройки: несекретные из `PLATFORM_*`, секреты из файлов `/run/antec-secrets` |
 
 Секреты (файлы в `/run/antec-secrets`, имя = переменная в нижнем регистре):
-`platform_database_password`, `platform_gateway_api_key`. На стенде их выгружает `secrets-render`
+`platform_database_password`, `platform_gateway_api_key`, `platform_oidc_client_secret`. На стенде их выгружает `secrets-render`
 из OpenBao (`antec/platform-api`, `antec/platform-migrate`).
 
 ## Разработка

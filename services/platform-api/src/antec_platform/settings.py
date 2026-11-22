@@ -93,6 +93,15 @@ class Settings(DatabaseSettings):
     policy_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 3.0
     # Агенты инсталляции (agents.json рендера манифеста, ADR-0010); пусто = агентов нет.
     agents_file: Path | None = None
+    # Инструменты агентов (ADR-0010, п. 6): MCP-серверы манифеста и обмен токена в Keycloak.
+    mcp_servers_file: Path | None = None
+    mcp_timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 30.0
+    oidc_token_url: str | None = None
+    oidc_client_id: str = "platform-api"
+    # Секрет клиента platform-api для token exchange: файл platform_oidc_client_secret.
+    oidc_client_secret: SecretStr | None = None
+    # Срок ожидания подтверждения человеком (ADR-0010, п. 7).
+    approval_ttl_seconds: Annotated[int, Field(ge=60, le=3600)] = 900
     # Scope политик инсталляции (ADR-0008, п. 4); пусто = только базовые политики ядра.
     policy_scope: str | None = None
 
@@ -124,9 +133,9 @@ class Settings(DatabaseSettings):
                 raise ValueError(f"недопустимое имя модели: {item!r}")
         return value
 
-    @field_validator("agents_file", mode="before")
+    @field_validator("agents_file", "mcp_servers_file", "oidc_token_url", mode="before")
     @classmethod
-    def _agents_file(cls, value: object) -> object:
+    def _empty_is_none(cls, value: object) -> object:
         return None if value == "" else value
 
     @field_validator("policy_scope", mode="before")

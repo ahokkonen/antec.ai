@@ -30,3 +30,8 @@ services:
     build: https://github.com/example/repo.git
     image: localhost/antec/x:1.0
     pull_policy: build
+  var_without_default:
+    build:
+      context: ${PLUGIN_DIR}
+    image: localhost/antec/plugin:0.1.0
+    pull_policy: build

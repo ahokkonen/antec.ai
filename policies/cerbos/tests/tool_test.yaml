@@ -1,0 +1,32 @@
+# Тесты политики tool (ADR-0010): `cerbos compile policies/cerbos` в CI.
+name: ToolPolicy
+principals:
+  user:
+    id: user-1
+    roles: [platform-user]
+  admin:
+    id: admin-1
+    roles: [platform-admin]
+  other:
+    id: other-1
+    roles: [open-webui-user]
+resources:
+  note:
+    kind: tool
+    id: mcp-demo.create_note
+tests:
+  - name: Пользователь и администратор вызывают инструмент, другие роли нет
+    input:
+      principals: [user, admin, other]
+      resources: [note]
+      actions: [call, invoke]
+    expected:
+      - principal: user
+        resource: note
+        actions: {call: EFFECT_ALLOW, invoke: EFFECT_DENY}
+      - principal: admin
+        resource: note
+        actions: {call: EFFECT_ALLOW, invoke: EFFECT_DENY}
+      - principal: other
+        resource: note
+        actions: {call: EFFECT_DENY, invoke: EFFECT_DENY}

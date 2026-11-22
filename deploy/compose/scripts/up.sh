@@ -97,6 +97,8 @@ copy_secret_field keycloak open_webui_client_secret open-webui oauth_client_secr
 # владельца схемы platform только у одноразовых миграций.
 ensure_generated_secrets platform-api litellm_key:sk-
 copy_db_password platform_app platform-api
+# Обмен токена для MCP-серверов (ADR-0010): секрет клиента platform-api задаёт realm как код.
+copy_secret_field keycloak platform_api_client_secret platform-api oidc_client_secret
 copy_db_password platform platform-migrate
 
 # Сервисы, работавшие до этого запуска: их нужно перезапустить, если изменились их секреты
@@ -139,6 +141,13 @@ start_service keycloak --build
 
 log "настройка Keycloak: master, realm antec, брокер Entra"
 keycloak_inputs | python3 "$COMPOSE_DIR/scripts/keycloak.py" apply $recreate_realm
+
+plugins="$(instance_services | tr '\n' ' ')"
+if [[ -n "${plugins// /}" ]]; then
+  log "сборка и запуск плагинов инсталляции: $plugins"
+  # shellcheck disable=SC2086
+  compose up -d --build --wait $plugins
+fi
 
 log "запуск LiteLLM (миграции БД при первом запуске, около минуты)"
 start_service litellm

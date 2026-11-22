@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime as dt
 import os
 import time
 import uuid
@@ -19,11 +20,25 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from antec_platform.adapters.gateway import GatewayMeta, GatewayResponse, GatewayUnavailable
-from antec_platform.agents import AgentDefinition, RunOutcome, StepRecord, Turn
+from antec_platform.agents import (
+    AgentDefinition,
+    Resume,
+    RunOutcome,
+    StepRecord,
+    ToolSession,
+    Turn,
+)
 from antec_platform.app import Deps, create_app
 from antec_platform.auth import JwksCache, Principal, TokenVerifier
 from antec_platform.policy import PolicyUnavailable, Resource, Subject
-from antec_platform.store import AgentRunStart, CallResult, CallStart, User
+from antec_platform.store import (
+    AgentRunStart,
+    Approval,
+    CallResult,
+    CallStart,
+    PendingRun,
+    User,
+)
 
 ISSUER = "http://localhost:8080/realms/antec"
 JWKS_URL = "http://keycloak:8080/realms/antec/protocol/openid-connect/certs"
@@ -149,6 +164,10 @@ class FakeStore:
     disabled: set[str] = field(default_factory=set)
     runs_started: list[AgentRunStart] = field(default_factory=list)
     runs_finished: list[tuple[AgentRunStart, RunOutcome]] = field(default_factory=list)
+    approvals: list[Approval | None] = field(default_factory=list)
+    pending: dict[uuid.UUID, tuple[uuid.UUID, PendingRun]] = field(default_factory=dict)
+    resolved: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    tool_calls: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list)
 
     async def ping(self) -> None:
         return None
@@ -192,8 +211,85 @@ class FakeStore:
     async def start_agent_run(self, run: AgentRunStart) -> None:
         self.runs_started.append(run)
 
-    async def finish_agent_run(self, run: AgentRunStart, outcome: RunOutcome) -> None:
+    async def finish_agent_run(
+        self, run: AgentRunStart, outcome: RunOutcome, approval: Approval | None = None
+    ) -> None:
         self.runs_finished.append((run, outcome))
+        self.approvals.append(approval)
+        if outcome.status == "awaiting_approval" and approval is not None:
+            self.pending[run.id] = (
+                run.user_id,
+                PendingRun(
+                    id=run.id,
+                    conversation_id=run.conversation_id,
+                    agent=run.agent,
+                    code=approval.code,
+                    expires_at=approval.expires_at,
+                    state=outcome.state or {},
+                    pending=list(outcome.pending),
+                ),
+            )
+
+    async def find_pending_run(
+        self,
+        user_id: uuid.UUID,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        run_id: uuid.UUID | None = None,
+    ) -> PendingRun | None:
+        for owner, run in reversed(self.pending.values()):
+            if owner != user_id:
+                continue
+            if conversation_id is not None and run.conversation_id != conversation_id:
+                continue
+            if run_id is not None and run.id != run_id:
+                continue
+            return run
+        return None
+
+    async def resolve_pending_run(
+        self,
+        run_id: uuid.UUID,
+        user_id: uuid.UUID,
+        status: str,
+        *,
+        client_id: str,
+        request_id: uuid.UUID,
+    ) -> PendingRun | None:
+        item = self.pending.get(run_id)
+        if item is None or item[0] != user_id:
+            return None
+        del self.pending[run_id]
+        self.resolved.append((run_id, status))
+        return item[1]
+
+    async def expire_pending_runs(
+        self, user_id: uuid.UUID, *, client_id: str, request_id: uuid.UUID
+    ) -> int:
+        now = dt.datetime.now(dt.UTC)
+        stale = [
+            k
+            for k, (owner, run) in self.pending.items()
+            if owner == user_id and run.expires_at <= now
+        ]
+        for key in stale:
+            del self.pending[key]
+            self.resolved.append((key, "expired"))
+        return len(stale)
+
+    async def record_tool_call(
+        self,
+        *,
+        request_id: uuid.UUID,
+        user_id: uuid.UUID,
+        client_id: str,
+        run_id: uuid.UUID,
+        agent: str,
+        ref: str,
+        outcome: str,
+        details: dict[str, Any],
+    ) -> None:
+        self.tool_calls.append((ref, outcome, details))
 
 
 @dataclass
@@ -233,13 +329,23 @@ class FakeRuntime:
         )
     )
     hold: asyncio.Event | None = None
-    started: list[tuple[AgentDefinition, str, list[Turn], str]] = field(default_factory=list)
+    started: list[tuple[AgentDefinition, str, list[Turn], str | None]] = field(default_factory=list)
     runs: list[FakeRun] = field(default_factory=list)
+    resumes: list[Resume | None] = field(default_factory=list)
+    sessions: list[ToolSession | None] = field(default_factory=list)
 
     def start(
-        self, agent: AgentDefinition, user_id: str, history: list[Turn], prompt: str
+        self,
+        agent: AgentDefinition,
+        user_id: str,
+        history: list[Turn],
+        prompt: str | None,
+        tools: ToolSession | None = None,
+        resume: Resume | None = None,
     ) -> FakeRun:
         self.started.append((agent, user_id, history, prompt))
+        self.resumes.append(resume)
+        self.sessions.append(tools)
         run = FakeRun(list(self.deltas), self.result, self.hold)
         self.runs.append(run)
         return run

@@ -170,10 +170,15 @@ class McpTool(_Strict):
     read_only: bool = False
 
 
+# Аудитория MCP-сервера = клиент Keycloak, созданный для обмена токена (ADR-0010, п. 6).
+# Префикс mcp- не даёт выбрать аудиторией клиента ядра (open-webui, platform-api и др.).
+McpAudience = Annotated[str, StringConstraints(pattern=r"^mcp-[a-z0-9][a-z0-9-]{0,59}$")]
+
+
 class McpServer(_Strict):
     name: Slug
     url: str
-    audience: ClientId
+    audience: McpAudience
     protocol_version: Literal["2025-11-25", "2026-07-28"]
     tools: Annotated[list[McpTool], Field(min_length=1)]
     secrets: list[Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,63}$")]] = []

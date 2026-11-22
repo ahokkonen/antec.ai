@@ -14,6 +14,9 @@ case "${1:-}" in
   *) die "использование: platform-smoke.sh [--no-open]" ;;
 esac
 
+# Заметки mcp-demo до прогона: журнал контейнера копится между прогонами, считается прирост.
+notes_before="$(compose logs mcp-demo 2>/dev/null | grep -c 'note created owner=' || true)"
+
 log "вход пользователя через браузер (клиент antec-smoke)"
 # Токен идёт только через конвейер: в argv, окружение и терминал он не попадает.
 ids="$(echo '{}' | python3 "$COMPOSE_DIR/scripts/keycloak.py" user-token ${open_flag[@]+"${open_flag[@]}"} \
@@ -117,6 +120,54 @@ for kind in ("agent", "agent_stream"):
     checks[f"{kind}: аудит model.call по шагам и agent.run"] = (
         audit[-1:] == ["agent.run:allow"] and audit.count("model.call:allow") == r.get("steps")
     )
+for name, ok in checks.items():
+    print(f"  [{'ok' if ok else 'FAIL'}] {name}", file=sys.stderr)
+sys.exit(0 if all(checks.values()) else 1)
+PY
+fi
+tool_time="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("tool_time", ""))' "$ids")"
+if [[ -n "$tool_time" ]]; then
+  log "инструменты и подтверждения в БД platform и в mcp-demo (ADR-0010)"
+  tools_sql="select json_build_object(
+    'kind', k.kind,
+    'run_status', (select r.status from agent_runs r where r.id = k.id::uuid),
+    'parent', (select r.parent_run_id from agent_runs r where r.id = k.id::uuid),
+    'audit', (select json_agg(a.action || ':' || a.outcome || ':' || coalesce(a.resource_id, '')
+                order by a.occurred_at, a.id)
+              from audit_events a where a.request_id = k.id::uuid
+                and a.action in ('tool.call', 'tool.approval')))
+  from json_each_text(:'ids'::json) as k(kind, id)
+  where k.kind in ('tool_time', 'pause_deny', 'resume_deny', 'pause_ok', 'resume_ok',
+                   'pause_api', 'resume_api')"
+  tools="$(pg_exec psql -X -q -v ON_ERROR_STOP=1 -At -d platform -v ids="$ids" <<<"$tools_sql")"
+  notes_after="$(compose logs mcp-demo 2>/dev/null | grep -c 'note created owner=' || true)"
+  notes=$(( ${notes_after:-0} - ${notes_before:-0} ))
+  python3 - "$tools" "$notes" <<'PY'
+import json
+import sys
+
+rows = {r["kind"]: r for r in map(json.loads, filter(str.strip, sys.argv[1].splitlines()))}
+notes = int(sys.argv[2] or 0)
+audit = {k: r.get("audit") or [] for k, r in rows.items()}
+checks = {
+    "tool.call get_time allow в аудите": "tool.call:allow:mcp-demo.get_time" in audit["tool_time"],
+    "пауза: статус denied после «отмена»": rows["pause_deny"]["run_status"] == "denied",
+    "«отмена»: tool.approval deny, инструмент не вызван": (
+        any(a.startswith("tool.approval:deny") for a in audit["resume_deny"])
+        and not any(a.startswith("tool.call") for a in audit["resume_deny"])
+    ),
+    "подтверждение: статус approved, продолжение ссылается на паузу": (
+        rows["pause_ok"]["run_status"] == "approved" and rows["resume_ok"]["parent"] is not None
+    ),
+    "подтверждение: tool.approval allow и tool.call create_note allow": (
+        any(a.startswith("tool.approval:allow") for a in audit["resume_ok"])
+        and "tool.call:allow:mcp-demo.create_note" in audit["resume_ok"]
+    ),
+    "решение через API: tool.call create_note allow": (
+        "tool.call:allow:mcp-demo.create_note" in audit["resume_api"]
+    ),
+    "mcp-demo: созданы 2 подтверждённые заметки (токен обмена принят)": notes >= 2,
+}
 for name, ok in checks.items():
     print(f"  [{'ok' if ok else 'FAIL'}] {name}", file=sys.stderr)
 sys.exit(0 if all(checks.values()) else 1)

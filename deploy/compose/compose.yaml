@@ -124,7 +124,8 @@ services:
       - /opt/keycloak/data:size=64m,uid=1000,gid=0,mode=0700
     volumes:
       - keycloak-secrets:/run/antec-secrets:ro
-    networks: [data, egress, ui]
+    # mcp: JWKS для MCP-серверов инсталляции (проверка токена после обмена, ADR-0010).
+    networks: [data, egress, ui, mcp]
     ports:
       - "127.0.0.1:8080:8080"
     mem_limit: 1536m
@@ -271,6 +272,9 @@ services:
       PLATFORM_GATEWAY_URL: http://litellm:4000/v1
       PLATFORM_POLICY_URL: http://cerbos:3592
       PLATFORM_AGENTS_FILE: /antec/instance/agents.json
+      # Инструменты агентов (ADR-0010): MCP-серверы манифеста и обмен токена в Keycloak.
+      PLATFORM_MCP_SERVERS_FILE: /antec/instance/mcp_servers.json
+      PLATFORM_OIDC_TOKEN_URL: http://keycloak:8080/realms/antec/protocol/openid-connect/token
     read_only: true
     tmpfs:
       - /tmp:size=64m,uid=65534,gid=65534
@@ -279,8 +283,9 @@ services:
       # Агенты инсталляции (ADR-0010): только подкаталог Platform API. Каталог, а не файл (рендер
       # заменяет файлы атомарно).
       - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered/platform-api:/antec/instance:ro
-    # data: PostgreSQL и JWKS Keycloak; llm: LiteLLM; platform: клиенты фасада; policy: Cerbos.
-    networks: [data, llm, platform, policy]
+    # data: PostgreSQL и JWKS Keycloak; llm: LiteLLM; platform: клиенты фасада; policy: Cerbos;
+    # mcp: MCP-серверы инсталляции (ADR-0010).
+    networks: [data, llm, platform, policy, mcp]
     mem_limit: 512m
     depends_on:
       postgres:
@@ -441,6 +446,10 @@ networks:
     internal: true
   # Platform API -> Cerbos; без выхода наружу (ADR-0009).
   policy:
+    internal: true
+  # Platform API -> MCP-серверы инсталляции, MCP-серверы -> JWKS Keycloak; без выхода наружу
+  # (ADR-0010). Сервисы плагинов из compose.override.yaml инсталляции подключаются сюда.
+  mcp:
     internal: true
   # Выход LiteLLM к API провайдеров. Ограничение по доменам: открытый вопрос ADR-0018.
   llm-egress: {}

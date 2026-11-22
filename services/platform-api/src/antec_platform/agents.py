@@ -11,9 +11,12 @@ import json
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from antec_platform.errors import ApiError
+
+if TYPE_CHECKING:
+    from antec_platform.tools import ToolCallResult, ToolDefinition
 
 AGENT_PREFIX = "agent-"
 AGENT_KIND = "agent"
@@ -57,17 +60,32 @@ class StepRecord:
     finished_at: dt.datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PendingCall:
+    """Вызов инструмента, ждущий подтверждения человеком (ADR-0010, п. 7)."""
+
+    call_id: str
+    ref: str
+    arguments: dict[str, Any]
+
+
 @dataclass(slots=True)
 class RunOutcome:
-    """Итог запуска: статус для agent_runs, текст ответа, шаги, ошибка для клиента."""
+    """Итог запуска: статус для agent_runs, текст ответа, шаги, ошибка для клиента.
 
-    status: str  # ok, error, rejected, cancelled
+    awaiting_approval: запуск остановлен до решения человека; `pending` = ожидающие вызовы,
+    `state` = внутреннее состояние рантайма для продолжения (JSON, только для того же рантайма).
+    """
+
+    status: str  # ok, error, rejected, cancelled, awaiting_approval
     text: str = ""
     steps: list[StepRecord] = field(default_factory=list)
     error: str | None = None
     # Ошибка для клиента (HTTP-статус и код OpenAI), если запуск не удался.
     http_status: int | None = None
     error_code: str | None = None
+    pending: list[PendingCall] = field(default_factory=list)
+    state: dict[str, Any] | None = None
 
     @property
     def prompt_tokens(self) -> int | None:
@@ -96,9 +114,36 @@ class AgentRun(Protocol):
         """Прервать запуск (клиент ушёл); итог получит статус cancelled."""
 
 
+class ToolSession(Protocol):
+    """Инструменты запуска от имени пользователя запроса (реализация: tools.ToolBroker)."""
+
+    async def definitions(self, agent: AgentDefinition) -> list[ToolDefinition]: ...
+
+    async def authorize(self, ref: str, read_only: bool) -> bool: ...
+
+    async def call(
+        self, ref: str, read_only: bool, arguments: dict[str, Any], approved_by: str | None
+    ) -> ToolCallResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class Resume:
+    """Продолжение запуска после решения человека: состояние и решения по вызовам."""
+
+    state: dict[str, Any]
+    approved: dict[str, bool]
+    decided_by: str
+
+
 class AgentRuntime(Protocol):
     def start(
-        self, agent: AgentDefinition, user_id: str, history: list[Turn], prompt: str
+        self,
+        agent: AgentDefinition,
+        user_id: str,
+        history: list[Turn],
+        prompt: str | None,
+        tools: ToolSession | None = None,
+        resume: Resume | None = None,
     ) -> AgentRun: ...
 
     async def aclose(self) -> None: ...
@@ -123,11 +168,6 @@ def load_agents(path: Path | None, models: Iterable[str]) -> dict[str, AgentDefi
         if agent.model not in known:
             raise AgentConfigError(
                 f"агент {agent.name}: модели {agent.model} нет в PLATFORM_MODELS"
-            )
-        if agent.tools:
-            # Инструменты агентов исполняются MCP-клиентом (ADR-0010, п. 6), его ещё нет.
-            raise AgentConfigError(
-                f"агент {agent.name}: инструменты агентов пока не поддерживаются (ADR-0010, п. 8)"
             )
         agents[agent.name] = agent
     return agents

@@ -1,0 +1,25 @@
+# Сервисы плагинов dev-инсталляции поверх compose ядра (ADR-0008, п. 6).
+# Пути относительно deploy/compose (каталог проекта compose).
+services:
+  # Тестовый MCP-сервер (plugins/mcp-demo, ADR-0010): токен проверяется по JWKS Keycloak,
+  # iss = публичный адрес Keycloak, aud = mcp-demo. Только сеть mcp, наружу не выходит.
+  mcp-demo:
+    build:
+      context: ${ANTEC_INSTANCE_DIR:-../../instances/dev}/plugins/mcp-demo
+    image: localhost/antec/mcp-demo:0.1.0
+    pull_policy: build
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    environment:
+      MCP_DEMO_ISSUER: http://localhost:8080/realms/antec
+      MCP_DEMO_JWKS_URL: http://keycloak:8080/realms/antec/protocol/openid-connect/certs
+      MCP_DEMO_AUDIENCE: mcp-demo
+      MCP_DEMO_AUTHORIZED_PARTY: platform-api
+    networks: [mcp]
+    mem_limit: 128m
+    depends_on:
+      keycloak:
+        condition: service_healthy

@@ -78,7 +78,7 @@ uv run --locked pytest
 | PIN019 | Компонент с пустым allowed |
 | PIN020 | Ссылку на образ нельзя проверить (переменная, некорректный формат) |
 | PIN021 | Образ без тега |
-| PIN022 | Сервис с `build:`: image вне `localhost/antec/`, с digest, плавающий тег или пре-релиз, нет `pull_policy: build`, удалённый контекст или `additional_contexts`, Dockerfile сборки не читается |
+| PIN022 | Сервис с `build:`: image вне `localhost/antec/`, с digest, плавающий тег или пре-релиз, нет `pull_policy: build`, удалённый контекст или `additional_contexts`, переменная в контексте без значения по умолчанию (`${VAR:-путь}` проверяется по умолчанию), Dockerfile сборки не читается |
 | PIN030 | Python-пакет запрещён в любой версии |
 | PIN031 | Версия Python-пакета в denylist |
 | PIN032 | Версия Python-пакета ниже минимальной |

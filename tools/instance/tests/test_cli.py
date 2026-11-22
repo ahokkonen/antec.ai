@@ -40,12 +40,27 @@ def test_render_dev(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
         "PLATFORM_ALLOWED_CLIENTS": "open-webui,antec-smoke",
     }
     agents = json.loads((out / "platform-api" / "agents.json").read_text())
-    assert [a["name"] for a in agents] == ["agent-assistant"]
+    assert [a["name"] for a in agents] == ["agent-assistant", "agent-notes"]
+    assert agents[1]["tools"] == ["mcp-demo.get_time", "mcp-demo.create_note"]
+    servers = json.loads((out / "platform-api" / "mcp_servers.json").read_text())
+    assert servers == [
+        {
+            "name": "mcp-demo",
+            "url": "http://mcp-demo:8080/mcp",
+            "audience": "mcp-demo",
+            "protocol_version": "2026-07-28",
+            "tools": [
+                {"name": "get_time", "read_only": True},
+                {"name": "create_note", "read_only": False},
+            ],
+        }
+    ]
     assert agents[0]["model"] == "chat-fast"
     assert "dev-инсталляции" in agents[0]["instructions"]
     assert agents[0]["max_steps"] == 5
     summary = json.loads((out / "instance.json").read_text())
     assert summary["id"] == "dev"
+    assert summary["mcp_audiences"] == ["mcp-demo"]
     assert summary["models"] == ["chat-default", "chat-fast", "chat-lab"]
 
 
@@ -129,16 +144,10 @@ def test_render_removes_legacy_layout(core_dir: Path, dev_instance: Path, tmp_pa
     assert not (out / "agents.json").exists()
 
 
-def test_agent_tools_rejected_until_mcp_client(
+def test_old_mcp_protocol_rejected(
     core_dir: Path, dev_instance: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     manifest = dev_instance / "instance.yaml"
-    text = manifest.read_text().replace(
-        "mcp_servers: []",
-        "mcp_servers:\n  - name: crm\n    url: http://mcp-crm:8080/mcp\n    audience: mcp-crm\n"
-        '    protocol_version: "2026-07-28"\n    tools: [{name: search}]',
-    )
-    text = text.replace("    max_steps: 5\n", "    max_steps: 5\n    tools: [crm.search]\n")
-    manifest.write_text(text)
+    manifest.write_text(manifest.read_text().replace('"2026-07-28"', '"2025-11-25"'))
     assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_INVALID
-    assert "инструменты агентов" in capsys.readouterr().err
+    assert "2025-11-25" in capsys.readouterr().err

@@ -9,6 +9,8 @@ dependencies = [
     "asyncpg>=0.32.0,<0.33",
     "fastapi>=0.163.0,<0.164",
     "httpx>=0.28.1,<0.29",
+    # Типы сообщений MCP 2026-07-28 для своего MCP-клиента (ADR-0010, п. 6); только adapters/.
+    "mcp-types>=2.3.0,<2.4",
     # OpenAI-совместимый клиент для Pydantic AI (вызовы LiteLLM); только в adapters/ (ADR-0010).
     "openai>=3.51.0,<3.52",
     "pydantic>=2.14.3,<3",
