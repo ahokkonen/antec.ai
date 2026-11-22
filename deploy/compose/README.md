@@ -141,8 +141,13 @@ Open WebUI с Keycloak: создаёт `breakglass` в пустом Open WebUI (
 роли клиента `platform-api` в Keycloak (`platform-user` у всех по умолчанию, `platform-admin`
 явно, Clients → platform-api → Roles), в токене claim `platform_roles`. Политики меняются в
 `policies/cerbos` и применяются `up.sh` (перезапуск Cerbos по хэшу).
-Если SSO-сессия Keycloak истекла (30 минут без активности), фасад отвечает 401: выйдите из
-Open WebUI и войдите заново. Настройки задаются только окружением в `compose.yaml`:
+Сессия Open WebUI (8 часов) не длиннее SSO-сессии Keycloak: простой до 8 часов, максимум
+10 часов от начала сессии Keycloak (`ssoSessionIdleTimeout`, `ssoSessionMaxLifespan` в
+`keycloak/realm-antec.json`; `up.sh` применяет их и к существующему realm). Блокировка
+пользователя или снятие роли действуют не позже чем через 15 минут (срок access token). Если
+сессия Keycloak закончилась раньше сессии Open WebUI (выход, администратор, вход в Open WebUI по
+сессии Keycloak старше 2 часов), Open WebUI не видит моделей: выйдите из Open WebUI и войдите
+заново. Настройки задаются только окружением в `compose.yaml`:
 изменения в админке Open WebUI не переживают перезапуск.
 
 ## Keycloak
