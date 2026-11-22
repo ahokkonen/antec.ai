@@ -1,0 +1,16 @@
+# Модели dev-инсталляции поверх политики ядра (ADR-0008, п. 4): scope dev, первое сработавшее
+# правило решает, остальное решает policies/cerbos/model.yaml ядра.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: model
+  scope: dev
+  scopePermissions: SCOPE_PERMISSIONS_OVERRIDE_PARENT
+  rules:
+    - name: platform-user-lab-model
+      actions: [invoke]
+      effect: EFFECT_ALLOW
+      roles: [platform-user]
+      condition:
+        match:
+          expr: R.id == "chat-lab"
