@@ -1,9 +1,9 @@
 # Архитектура v1
 
-Статус: черновик для MVP. Обновлено: 2026-11-21.
+Статус: черновик для MVP. Обновлено: 2026-11-22.
 Решения: [ADR-0001](../adr/0001-llm-gateway-litellm.md), [ADR-0002](../adr/0002-chat-ui-open-webui.md),
 [ADR-0003](../adr/0003-postgresql-single-datastore.md), [ADR-0004](../adr/0004-dependency-pinning-and-supply-chain.md),
-[ADR-0005](../adr/0005-core-and-instance-repositories.md).
+[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md).
 
 ## Главная идея
 
@@ -82,7 +82,7 @@ flowchart LR
 
   UI -->|"вход OIDC"| KC
   KC -.-|"федерация"| ENTRA
-  UI -->|"служебный ключ + id пользователя"| FACADE
+  UI -->|"токен пользователя (OIDC)"| FACADE
   APIC -->|"JWT"| FACADE
   FACADE -->|"проверка прав"| CERBOS
   FACADE --> GR --> RT
@@ -109,11 +109,10 @@ flowchart LR
 ## Путь запроса из веб-чата
 
 1. Пользователь входит в Open WebUI через Keycloak (федерация с Entra ID).
-2. Open WebUI отправляет запрос в OpenAI-совместимый фасад Platform API. Аутентификация клиента:
-   служебный ключ Open WebUI плюс заголовки с идентификатором пользователя, которые Platform API
-   принимает только от этого клиента и только из внутренней сети. Допущение: если выбранная версия
-   Open WebUI умеет пробрасывать OAuth-токен пользователя, используем токен вместо заголовков
-   (проверить в PoC). Прямые подключения из Open WebUI к провайдерам и к LiteLLM отключены.
+2. Open WebUI отправляет запрос в OpenAI-совместимый фасад Platform API с access token
+   пользователя из Keycloak (`auth_type: system_oauth`, ADR-0006). Platform API проверяет подпись,
+   `iss`, `aud` = `platform-api` и клиента (`azp`). Прямые подключения из Open WebUI к провайдерам
+   и к LiteLLM отключены.
 3. Platform API сопоставляет пользователя по `(iss, sub)` токена Keycloak (плюс `idp`, `entra_oid`,
    ADR-0007) и спрашивает Cerbos, доступна ли ему выбранная модель или агент.
 4. Входные гардрейлы: маскирование PII, проверка на prompt injection.
