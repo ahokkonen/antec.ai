@@ -13,5 +13,7 @@ mounts=(-v "$core_dir/policies/cerbos:/policies/core:ro")
 if [[ -d "$instance_dir/policies" ]]; then
   mounts+=(-v "$instance_dir/policies:/policies/instance:ro")
 fi
-exec docker run --rm --network none -u 65534:65534 --read-only "${mounts[@]}" "$image" \
+# tmpfs-корень /policies: при --read-only точки монтирования core и instance иначе негде создать.
+exec docker run --rm --network none -u 65534:65534 --read-only \
+  --tmpfs /policies:size=1m,mode=0555 "${mounts[@]}" "$image" \
   compile --verbose /policies

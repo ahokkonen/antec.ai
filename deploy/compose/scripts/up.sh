@@ -16,6 +16,7 @@ esac
 
 log "проверка и рендер манифеста инсталляции $ANTEC_INSTANCE_DIR (ADR-0008)"
 render_instance
+remember_active_instance
 
 log "запуск OpenBao"
 compose up -d openbao

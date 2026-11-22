@@ -12,8 +12,14 @@ KC_LEGACY_ROOT="antec-local-openbao-root-token"
 kc_unseal_name() { echo "antec-local-openbao-unseal-key-$1"; }
 kc_root_name() { echo "antec-local-openbao-root-token-$1"; }
 
-# Инсталляция (ADR-0008): манифест, политики и сервисы плагинов. По умолчанию dev-инсталляция
-# ядра; репозиторий инсталляции задаёт ANTEC_INSTANCE_DIR = свой корень (ядро в core/).
+# Инсталляция (ADR-0008): манифест, политики и сервисы плагинов. Порядок: ANTEC_INSTANCE_DIR
+# (репозиторий инсталляции задаёт свой корень, ядро в core/), затем инсталляция последнего
+# up.sh (ACTIVE_INSTANCE_FILE), затем dev-инсталляция ядра. Так down.sh, backup.sh и smoke без
+# переменной работают с той инсталляцией, что запущена.
+ACTIVE_INSTANCE_FILE="$COMPOSE_DIR/.active-instance"
+if [[ -z "${ANTEC_INSTANCE_DIR:-}" && -f "$ACTIVE_INSTANCE_FILE" ]]; then
+  ANTEC_INSTANCE_DIR="$(cat "$ACTIVE_INSTANCE_FILE")"
+fi
 ANTEC_INSTANCE_DIR="$(cd "${ANTEC_INSTANCE_DIR:-$COMPOSE_DIR/../../instances/dev}" 2>/dev/null && pwd)" \
   || { printf '[antec] ошибка: нет каталога инсталляции %s\n' "${ANTEC_INSTANCE_DIR:-}" >&2; exit 1; }
 ANTEC_INSTANCE_RENDERED="$ANTEC_INSTANCE_DIR/.rendered"
@@ -27,6 +33,11 @@ render_instance() {
     render "$ANTEC_INSTANCE_DIR" --out "$ANTEC_INSTANCE_RENDERED" >/dev/null \
     || die "манифест инсталляции $ANTEC_INSTANCE_DIR не прошёл проверку"
   compute_config_shas
+}
+
+# Запомнить инсталляцию, с которой запущен стенд (вызывает up.sh).
+remember_active_instance() {
+  printf '%s\n' "$ANTEC_INSTANCE_DIR" > "$ACTIVE_INSTANCE_FILE"
 }
 
 # Логические модели инсталляции из instance.json (JSON-массив).
@@ -77,6 +88,14 @@ compose() {
 
 log() { printf '\033[1m[antec]\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31m[antec] ошибка:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# compose.yaml читает производные файлы манифеста (env_file platform-api, модели LiteLLM): без
+# них не работает ни одна команда compose, поэтому их нет = рендер сейчас.
+if [[ ! -f "$ANTEC_INSTANCE_RENDERED/platform-api.env" \
+  || ! -f "$ANTEC_INSTANCE_RENDERED/litellm-models.yaml" \
+  || ! -f "$ANTEC_INSTANCE_RENDERED/instance.json" ]]; then
+  render_instance
+fi
 
 require_macos_keychain() {
   command -v security >/dev/null 2>&1 || die "нужна Связка ключей macOS (команда security); стенд рассчитан на macOS"
