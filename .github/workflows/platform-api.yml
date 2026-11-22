@@ -1,4 +1,5 @@
-# Platform API (ADR-0006): ruff, mypy strict, pytest (включая тесты на PostgreSQL), сборка образа.
+# Platform API (ADR-0006, ADR-0009): ruff, mypy strict, pytest (включая тесты на PostgreSQL и
+# настоящем Cerbos с политиками policies/cerbos), тесты политик Cerbos, сборка образа.
 # Actions и uv закреплены как в pincheck.yml; образ PostgreSQL по digest из реестра
 # (components.postgresql).
 name: platform-api
@@ -15,6 +16,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # components.cerbos в реестре.
+  CERBOS_IMAGE: ghcr.io/cerbos/cerbos:0.57.0@sha256:e5e3b150b3cb0090975605254f255164567d67e233634199fb20972e3eaff300
   # Та же версия и checksum, что в pincheck.yml (components.uv в реестре).
   UV_VERSION: "0.13.8"
   UV_CHECKSUM: "5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91"
@@ -53,22 +56,46 @@ jobs:
           checksum: ${{ env.UV_CHECKSUM }}
           python-version: "3.14"
           enable-cache: false
+      - name: Cerbos с политиками репозитория
+        working-directory: .
+        run: >-
+          docker run -d --name cerbos -u 65534:65534 -p 127.0.0.1:3592:3592
+          -v "$GITHUB_WORKSPACE/policies/cerbos:/policies:ro" "$CERBOS_IMAGE" server
+          --set=storage.driver=disk --set=storage.disk.directory=/policies
+          --set=telemetry.disabled=true --set=server.apiExplorerEnabled=false
       - run: uv sync --locked
       - run: uv run --locked ruff format --check .
       - run: uv run --locked ruff check --output-format=github .
       - run: uv run --locked mypy
-      - name: pytest (с PostgreSQL)
+      - name: pytest (с PostgreSQL и Cerbos)
         env:
           PLATFORM_TEST_DATABASE_URL: postgresql+asyncpg://postgres@127.0.0.1:5432/postgres
+          PLATFORM_TEST_CERBOS_URL: http://127.0.0.1:3592
         run: uv run --locked pytest
-      - name: Тесты на PostgreSQL не пропущены
+      - name: Тесты на PostgreSQL и Cerbos не пропущены
         env:
           PLATFORM_TEST_DATABASE_URL: postgresql+asyncpg://postgres@127.0.0.1:5432/postgres
+          PLATFORM_TEST_CERBOS_URL: http://127.0.0.1:3592
         run: |
           set -euo pipefail
-          out="$(uv run --locked pytest -m db -q)"
+          out="$(uv run --locked pytest -m 'db or cerbos' -q -rs)"
           echo "$out" | tail -3
-          if grep -q skipped <<<"$out"; then echo "тесты db пропущены" >&2; exit 1; fi
+          if grep -q skipped <<<"$out"; then echo "тесты db или cerbos пропущены" >&2; exit 1; fi
+
+  policies:
+    name: "policies/cerbos: компиляция и тесты политик"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: cerbos compile (с тестами)
+        run: >-
+          docker run --rm -u 65534:65534 -v "$GITHUB_WORKSPACE/policies/cerbos:/policies:ro"
+          "$CERBOS_IMAGE" compile --verbose /policies
 
   image:
     name: "platform-api: сборка образа"
