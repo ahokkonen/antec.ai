@@ -154,7 +154,9 @@ case "$target" in
     trap 'rm -f "$out"/.*.new' EXIT
     fetch platform-api db_password "$out/.platform_database_password.new"
     fetch platform-api litellm_key "$out/.platform_gateway_api_key.new"
-    for var in platform_database_password platform_gateway_api_key; do
+    # Секрет клиента platform-api в Keycloak: обмен токена для MCP-серверов (ADR-0010, п. 6).
+    fetch platform-api oidc_client_secret "$out/.platform_oidc_client_secret.new"
+    for var in platform_database_password platform_gateway_api_key platform_oidc_client_secret; do
       replace "$out/.$var.new" "$out/$var"
     done
     owner=65534:65534

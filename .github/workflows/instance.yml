@@ -1,4 +1,5 @@
 # tools/instance (ADR-0008): ruff, mypy strict, pytest; проверка instances/dev и инсталляции,
+# и тестовый MCP-сервер dev-инсталляции (ADR-0010);
 # созданной из templates/instance, вместе с политиками ядра в Cerbos.
 # Actions и uv закреплены как в pincheck.yml; образ Cerbos берёт policies-check.sh из compose.yaml.
 name: instance
@@ -54,3 +55,36 @@ jobs:
           uv run --project tools/instance --locked antec-instance init "$dest" --id ci --name "CI Oy"
           uv run --project tools/instance --locked antec-instance validate "$dest"
           deploy/compose/scripts/policies-check.sh "$dest"
+
+  mcp-demo:
+    name: "instances/dev/plugins/mcp-demo: ruff, mypy, pytest, сборка образа"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: instances/dev/plugins/mcp-demo
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          checksum: ${{ env.UV_CHECKSUM }}
+          python-version: "3.14"
+          enable-cache: false
+      - name: ruff, mypy, pytest
+        run: |
+          set -euo pipefail
+          uv sync --locked
+          uv run --locked ruff format --check .
+          uv run --locked ruff check --output-format=github .
+          uv run --locked mypy
+          uv run --locked pytest
+      - name: Сборка образа, пользователь без root
+        run: |
+          set -euo pipefail
+          docker build --tag localhost/antec/mcp-demo:ci .
+          test "$(docker run --rm --entrypoint id localhost/antec/mcp-demo:ci -u)" = 65534

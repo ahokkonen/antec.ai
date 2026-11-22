@@ -22,6 +22,7 @@ import copy
 import hashlib
 import http.server
 import json
+import re
 import secrets
 import sys
 import threading
@@ -724,6 +725,88 @@ def cmd_open_webui_identities(secrets_in: Json) -> None:
     print(json.dumps({"admins": admins, "uid_by_id": uid_by_id}))
 
 
+_AUDIENCE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def ensure_mcp_audiences(admin: Admin, audiences: list[str]) -> None:
+    """Клиенты-аудитории MCP-серверов инсталляции (ADR-0010, п. 6; вопрос ADR-0008).
+
+    Для каждой аудитории из mcp_servers манифеста: клиент без потоков (сам токены не получает),
+    client scope с маппером аудитории и этот scope как optional у platform-api: Platform API
+    получает токен с aud = аудитории обменом (RFC 8693, ADR-0007). Существующие объекты не
+    меняются; аудитории, убранные из манифеста, не удаляются (их токены не выпускаются без
+    scope у platform-api, который тоже остаётся: удаление вручную).
+    """
+    platform = admin.find_client(REALM, PLATFORM_CLIENT)
+    if platform is None:
+        raise KeycloakError(f"в realm {REALM} нет клиента {PLATFORM_CLIENT}")
+    scopes = {sc["name"]: sc for sc in admin.call("GET", f"/{REALM}/client-scopes")}
+    optional = {
+        sc["name"]
+        for sc in admin.call("GET", f"/{REALM}/clients/{platform['id']}/optional-client-scopes")
+    }
+    for audience in audiences:
+        if not _AUDIENCE_RE.fullmatch(audience) or audience == PLATFORM_CLIENT:
+            raise KeycloakError(f"недопустимая аудитория MCP-сервера: {audience!r}")
+        if admin.find_client(REALM, audience) is None:
+            log(f"клиент-аудитория MCP-сервера {audience}")
+            admin.call(
+                "POST",
+                f"/{REALM}/clients",
+                {
+                    "clientId": audience,
+                    "name": f"MCP {audience}",
+                    "description": "Аудитория MCP-сервера инсталляции, токены не получает",
+                    "enabled": True,
+                    "protocol": "openid-connect",
+                    "publicClient": False,
+                    "clientAuthenticatorType": "client-secret",
+                    "standardFlowEnabled": False,
+                    "implicitFlowEnabled": False,
+                    "directAccessGrantsEnabled": False,
+                    "serviceAccountsEnabled": False,
+                    "fullScopeAllowed": False,
+                    "defaultClientScopes": [],
+                    "optionalClientScopes": [],
+                },
+            )
+        if audience not in scopes:
+            log(f"client scope {audience} (аудитория для обмена токена)")
+            admin.call(
+                "POST",
+                f"/{REALM}/client-scopes",
+                {
+                    "name": audience,
+                    "description": f"Аудитория MCP-сервера {audience}: токен обменом (RFC 8693)",
+                    "protocol": "openid-connect",
+                    "attributes": {
+                        "include.in.token.scope": "true",
+                        "display.on.consent.screen": "false",
+                    },
+                    "protocolMappers": [
+                        {
+                            "name": f"aud-{audience}",
+                            "protocol": "openid-connect",
+                            "protocolMapper": "oidc-audience-mapper",
+                            "config": {
+                                "included.client.audience": audience,
+                                "access.token.claim": "true",
+                                "introspection.token.claim": "true",
+                                "id.token.claim": "false",
+                            },
+                        }
+                    ],
+                },
+            )
+            scopes = {sc["name"]: sc for sc in admin.call("GET", f"/{REALM}/client-scopes")}
+        if audience not in optional:
+            log(f"{PLATFORM_CLIENT}: optional client scope {audience}")
+            admin.call(
+                "PUT",
+                f"/{REALM}/clients/{platform['id']}/optional-client-scopes/{scopes[audience]['id']}",
+            )
+
+
 def cmd_apply(secrets_in: Json, recreate: bool) -> None:
     admin = ensure_master(connect(secrets_in), secrets_in)
     if recreate and admin.realm_exists(REALM):
@@ -735,6 +818,7 @@ def cmd_apply(secrets_in: Json, recreate: bool) -> None:
         )
         admin.call("DELETE", f"/{REALM}")
     ensure_realm(admin, secrets_in)
+    ensure_mcp_audiences(admin, cast(list[str], secrets_in.get("mcp_audiences") or []))
     ensure_idp(admin, cast(Json | None, secrets_in.get("entra")))
     log(f"готово: {BASE_URL.replace('127.0.0.1', 'localhost')}/realms/{REALM}/account")
 

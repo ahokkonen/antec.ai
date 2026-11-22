@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+import secrets
 import sys
 import urllib.error
 import urllib.request
@@ -20,9 +22,15 @@ BASE = "http://127.0.0.1:8000/v1"
 
 
 def call(
-    method: str, path: str, token: str | None, body: object | None = None
+    method: str,
+    path: str,
+    token: str | None,
+    body: object | None = None,
+    chat_id: str | None = None,
 ) -> tuple[int, dict[str, str], bytes]:
     headers = {"Content-Type": "application/json"}
+    if chat_id is not None:
+        headers["X-OpenWebUI-Chat-Id"] = chat_id
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(  # noqa: S310 - только 127.0.0.1 внутри контейнера
@@ -36,6 +44,55 @@ def call(
             return int(resp.status), dict(resp.headers), resp.read()
     except urllib.error.HTTPError as exc:
         return exc.code, dict(exc.headers), exc.read()
+
+
+def tool_scenario(token: str, checks: dict[str, bool], ids: dict[str, str]) -> None:
+    """Инструменты и подтверждения агента agent-notes (ADR-0010, пп. 6-7), один разговор."""
+    chat = f"smoke-{secrets.token_hex(4)}"
+
+    def ask(text: str) -> tuple[str, str]:
+        body = {"model": "agent-notes", "messages": [{"role": "user", "content": text}]}
+        status, headers, raw = call("POST", "/chat/completions", token, body, chat)
+        content = json.loads(raw)["choices"][0]["message"]["content"] if status == 200 else ""
+        return str(content or ""), headers.get("x-request-id", "")
+
+    def code_of(text: str) -> str | None:
+        match = re.search(r"подтверждаю ([A-Z0-9]{4})", text)
+        return match.group(1) if match else None
+
+    note = "Сохрани заметку с текстом: smoke {}. Сразу вызови create_note."
+    answer, ids["tool_time"] = ask("Сколько сейчас времени UTC? Вызови get_time.")
+    checks["agent-notes: read-only инструмент без подтверждения"] = (
+        bool(answer) and code_of(answer) is None
+    )
+    answer, ids["pause_wrong"] = ask(note.format("wrong"))
+    checks["agent-notes: необратимый инструмент ждёт подтверждения с кодом"] = (
+        code_of(answer) is not None and "mcp-demo.create_note" in answer
+    )
+    answer, _ = ask("подтверждаю ZZZZ" if code_of(answer) != "ZZZZ" else "подтверждаю YYYY")
+    checks["agent-notes: неверный код отменяет ожидание"] = "не совпадает" in answer
+    answer, ids["pause_deny"] = ask(note.format("deny"))
+    deny_code = code_of(answer)
+    answer, ids["resume_deny"] = ask("отмена")
+    checks["agent-notes: «отмена» продолжает запуск без вызова"] = (
+        deny_code is not None and bool(answer) and code_of(answer) is None
+    )
+    answer, ids["pause_ok"] = ask(note.format("approved"))
+    code = code_of(answer)
+    answer, ids["resume_ok"] = ask(f"подтверждаю {code}")
+    checks["agent-notes: верный код выполняет инструмент"] = code is not None and bool(answer)
+    answer, ids["pause_api"] = ask(note.format("api"))
+    status, headers, _raw = call(
+        "POST", f"/agent-runs/{ids['pause_api']}/decision", token, {"decision": "approve"}
+    )
+    ids["resume_api"] = headers.get("x-request-id", "")
+    checks["agent-notes: решение через /v1/agent-runs/{id}/decision"] = (
+        code_of(answer) is not None and status == 200
+    )
+    again = call(
+        "POST", f"/agent-runs/{ids['pause_api']}/decision", token, {"decision": "approve"}
+    )[0]
+    checks["agent-notes: повторное решение отклонено"] = again == 404
 
 
 def main() -> int:
@@ -68,7 +125,10 @@ def main() -> int:
             "chat-fast",
             "chat-lab",
         ]
-        checks["GET /models: агент agent-assistant (ADR-0010)"] = agents == ["agent-assistant"]
+        checks["GET /models: агенты agent-assistant и agent-notes (ADR-0010)"] = sorted(agents) == [
+            "agent-assistant",
+            "agent-notes",
+        ]
     model = "chat-fast" if "chat-fast" in models else (models or ["chat-fast"])[0]
     status, headers, _ = call("GET", "/models", None)
     checks["без токена: 401 и WWW-Authenticate"] = status == 401 and "Bearer" in headers.get(
@@ -125,6 +185,8 @@ def main() -> int:
             "data: [DONE]"
         ]
         ids["agent_stream"] = headers.get("x-request-id", "")
+    if "agent-notes" in agents:
+        tool_scenario(token, checks, ids)
 
     for name, ok in checks.items():
         print(f"  [{'ok' if ok else 'FAIL'}] {name}", file=sys.stderr)

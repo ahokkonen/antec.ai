@@ -87,6 +87,14 @@ compose() {
   docker compose --project-directory "$COMPOSE_DIR" "${files[@]}" "$@"
 }
 
+# Сервисы плагинов инсталляции: те, что есть в compose.override.yaml, но не в compose ядра.
+instance_services() {
+  [[ -f "$ANTEC_INSTANCE_DIR/compose.override.yaml" ]] || return 0
+  comm -23 <(compose config --services | LC_ALL=C sort) \
+    <(docker compose --project-directory "$COMPOSE_DIR" -f "$COMPOSE_DIR/compose.yaml" \
+      config --services | LC_ALL=C sort)
+}
+
 log() { printf '\033[1m[antec]\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31m[antec] ошибка:\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -273,7 +281,9 @@ if not docs[0]:
 kc = docs[0]["data"]["data"]
 entra = docs[1]["data"]["data"] if docs[1] else None
 kc["entra"] = {k: entra[k] for k in ("tenant_id", "client_id")} if entra else None
-print(json.dumps(kc))'
+# Аудитории MCP-серверов инсталляции: клиенты Keycloak для обмена токена (ADR-0010).
+kc["mcp_audiences"] = json.load(open(sys.argv[1])).get("mcp_audiences", [])
+print(json.dumps(kc))' "$ANTEC_INSTANCE_RENDERED/instance.json"
 }
 
 # Входные данные scripts/litellm_provision.py (JSON на stdout): мастер-ключ LiteLLM и
