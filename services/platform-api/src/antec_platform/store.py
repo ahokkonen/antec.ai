@@ -63,6 +63,16 @@ class Store(Protocol):
         self, principal: Principal, reason: str, request_id: uuid.UUID
     ) -> None: ...
 
+    async def record_policy_deny(
+        self,
+        principal: Principal,
+        user_id: uuid.UUID,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        request_id: uuid.UUID,
+    ) -> None: ...
+
     async def ensure_conversation(
         self, user_id: uuid.UUID, client_id: str, external_id: str | None
     ) -> uuid.UUID: ...
@@ -282,6 +292,32 @@ class PgStore:
                         actor_user_id=user_id,
                         actor_client=principal.client_id or None,
                         details={"reason": reason, "subject": principal.subject},
+                    )
+                )
+            )
+
+    async def record_policy_deny(
+        self,
+        principal: Principal,
+        user_id: uuid.UUID,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        request_id: uuid.UUID,
+    ) -> None:
+        """Отказ политики (ADR-0009, п. 6): кто, что и с какими ролями пытался сделать."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(audit_events).values(
+                    _audit(
+                        action="policy.deny",
+                        outcome="deny",
+                        request_id=request_id,
+                        actor_user_id=user_id,
+                        actor_client=principal.client_id or None,
+                        resource_type=resource_type,
+                        resource_id=resource_id,
+                        details={"action": action, "roles": list(principal.roles)},
                     )
                 )
             )

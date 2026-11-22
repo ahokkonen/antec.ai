@@ -8,6 +8,7 @@ platform-smoke.sh получает его входом через браузер
 
 from __future__ import annotations
 
+import base64
 import json
 import sys
 import urllib.error
@@ -44,9 +45,16 @@ def main() -> int:
     checks: dict[str, bool] = {}
     ids: dict[str, str] = {}
 
+    claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
+    checks["роль platform-user в токене (platform_roles)"] = "platform-user" in claims.get(
+        "platform_roles", []
+    )
     status, _, body = call("GET", "/models", token)
     models = [m["id"] for m in json.loads(body).get("data", [])] if status == 200 else []
-    checks["GET /models с токеном: 200, есть chat-fast"] = "chat-fast" in models
+    checks["GET /models: обе модели разрешены политикой"] = sorted(models) == [
+        "chat-default",
+        "chat-fast",
+    ]
     status, headers, _ = call("GET", "/models", None)
     checks["без токена: 401 и WWW-Authenticate"] = status == 401 and "Bearer" in headers.get(
         "www-authenticate", ""

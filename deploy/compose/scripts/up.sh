@@ -141,6 +141,9 @@ log "подготовка LiteLLM: бюджет пользователей и к
 litellm_provision_inputs \
   | compose exec -T litellm /app/.venv/bin/python -c "$(cat "$COMPOSE_DIR/scripts/litellm_provision.py")"
 
+log "запуск Cerbos (политики policies/cerbos)"
+compose up -d --wait cerbos
+
 log "сборка Platform API и миграции БД platform"
 compose build platform-api
 compose --profile bootstrap run --rm -T platform-migrate

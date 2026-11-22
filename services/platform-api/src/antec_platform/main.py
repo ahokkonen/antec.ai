@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 from fastapi import FastAPI
 
+from antec_platform.adapters.authzen import AuthZenPolicyClient
 from antec_platform.adapters.litellm import LiteLLMGateway
 from antec_platform.app import Deps, create_app
 from antec_platform.auth import JwksCache, TokenVerifier
@@ -34,12 +35,14 @@ def build_app(settings: Settings) -> FastAPI:
                 leeway=settings.jwt_leeway_seconds,
             ),
             jwks=jwks,
+            policy=AuthZenPolicyClient(settings.policy_url, settings.policy_timeout_seconds),
             models=settings.models,
             max_request_bytes=settings.max_request_bytes,
         )
 
     async def shutdown(deps: Deps) -> None:
         await deps.gateway.aclose()
+        await deps.policy.aclose()
         await http.aclose()
         await engine.dispose()
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -54,6 +55,23 @@ class Principal:
     entra_oid: str | None
     name: str | None
     email: str | None
+    # Роли клиента platform-api в Keycloak (claim platform_roles, ADR-0009).
+    roles: tuple[str, ...] = ()
+
+
+ROLES_CLAIM = "platform_roles"
+_ROLE_RE = re.compile(r"[a-z][a-z0-9._-]{0,63}")
+
+
+def _roles(claims: dict[str, Any]) -> tuple[str, ...]:
+    value = claims.get(ROLES_CLAIM)
+    if not isinstance(value, list):
+        return ()
+    roles = {r for r in value if isinstance(r, str) and _ROLE_RE.fullmatch(r)}
+    if len(roles) < len(set(map(str, value))):
+        # Роль с недопустимым именем не даёт прав; без этой записи отказ не объяснить.
+        log.warning("в %s отброшены роли с недопустимым именем", ROLES_CLAIM)
+    return tuple(sorted(roles))
 
 
 def _opt_str(claims: dict[str, Any], key: str, limit: int = 256) -> str | None:
@@ -190,6 +208,7 @@ class TokenVerifier:
             entra_oid=_opt_str(claims, "entra_oid", 64),
             name=_opt_str(claims, "name"),
             email=_opt_str(claims, "email"),
+            roles=_roles(claims),
         )
         aud = claims.get("aud")
         audiences = [aud] if isinstance(aud, str) else aud if isinstance(aud, list) else []

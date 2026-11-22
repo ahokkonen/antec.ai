@@ -18,9 +18,13 @@ kc_root_name() { echo "antec-local-openbao-root-token-$1"; }
 config_sha() { # файлы...
   cat "$@" | shasum -a 256 | cut -c1-16
 }
-export ANTEC_LITELLM_CONFIG_SHA ANTEC_OPEN_WEBUI_CONFIG_SHA
+export ANTEC_LITELLM_CONFIG_SHA ANTEC_OPEN_WEBUI_CONFIG_SHA ANTEC_CERBOS_CONFIG_SHA
 ANTEC_LITELLM_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/litellm/config.yaml" "$COMPOSE_DIR/common/env-from-files.sh")"
 ANTEC_OPEN_WEBUI_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/common/env-from-files.sh")"
+# Конфигурация Cerbos и все файлы каталога политик (.yaml, .yml, .json) в стабильном порядке (ADR-0009).
+ANTEC_CERBOS_CONFIG_SHA="$(cd "$COMPOSE_DIR/../.." && find policies/cerbos -type f | LC_ALL=C sort \
+  | { cat "$COMPOSE_DIR/cerbos/config.yaml"; while read -r f; do printf '%s\n' "$f"; cat "$f"; done; } \
+  | shasum -a 256 | cut -c1-16)"
 
 compose() {
   docker compose --project-directory "$COMPOSE_DIR" -f "$COMPOSE_DIR/compose.yaml" "$@"

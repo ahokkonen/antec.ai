@@ -147,3 +147,19 @@ async def test_stale_keys_used_when_jwks_down(
     calls = jwks_server.calls
     await verifier.verify(make_token())
     assert jwks_server.calls == calls  # следующая попытка не раньше чем через 30 с
+
+
+async def test_platform_roles_parsed_and_sanitized(
+    verifier: TokenVerifier, make_token: TokenFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    principal = await verifier.verify(
+        make_token(
+            platform_roles=["platform-user", "platform-admin", "Bad Role", 5, "platform-user"]
+        )
+    )
+    assert principal.roles == ("platform-admin", "platform-user")
+    assert "отброшены роли" in caplog.text
+    caplog.clear()
+    await verifier.verify(make_token(platform_roles=["platform-user", "platform-user"]))
+    assert "отброшены роли" not in caplog.text
+    assert (await verifier.verify(make_token(platform_roles="platform-admin"))).roles == ()

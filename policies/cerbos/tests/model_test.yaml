@@ -1,0 +1,59 @@
+# Тесты политики model (ADR-0009): `cerbos compile policies/cerbos` в CI.
+name: ModelPolicy
+principals:
+  user:
+    id: user-1
+    roles: [platform-user]
+  admin:
+    id: admin-1
+    roles: [platform-admin]
+  other:
+    id: other-1
+    roles: [open-webui-user]
+resources:
+  chat_default:
+    kind: model
+    id: chat-default
+  chat_fast:
+    kind: model
+    id: chat-fast
+  unknown_model:
+    kind: model
+    id: gpt-unknown
+tests:
+  - name: Пользователь вызывает разрешённые модели, но не неизвестную
+    input:
+      principals: [user]
+      resources: [chat_default, chat_fast, unknown_model]
+      actions: [invoke, delete]
+    expected:
+      - principal: user
+        resource: chat_default
+        actions: {invoke: EFFECT_ALLOW, delete: EFFECT_DENY}
+      - principal: user
+        resource: chat_fast
+        actions: {invoke: EFFECT_ALLOW, delete: EFFECT_DENY}
+      - principal: user
+        resource: unknown_model
+        actions: {invoke: EFFECT_DENY, delete: EFFECT_DENY}
+  - name: Без роли platform-user доступа нет
+    input:
+      principals: [other]
+      resources: [chat_default, chat_fast]
+      actions: [invoke]
+    expected:
+      - principal: other
+        resource: chat_default
+        actions: {invoke: EFFECT_DENY}
+      - principal: other
+        resource: chat_fast
+        actions: {invoke: EFFECT_DENY}
+  - name: Администратор вызывает любую модель
+    input:
+      principals: [admin]
+      resources: [unknown_model]
+      actions: [invoke]
+    expected:
+      - principal: admin
+        resource: unknown_model
+        actions: {invoke: EFFECT_ALLOW}

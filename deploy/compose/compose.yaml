@@ -1,5 +1,5 @@
 # Локальный стенд antec.ai: базовый слой OpenBao + PostgreSQL (ADR-0003, ADR-0017),
-# Keycloak (ADR-0007), LiteLLM и Open WebUI (ADR-0018), Platform API (ADR-0006).
+# Keycloak (ADR-0007), LiteLLM и Open WebUI (ADR-0018), Platform API (ADR-0006), Cerbos (ADR-0009).
 # Образы только по digest из policy/allowed-versions.yaml (ADR-0004).
 # Запуск только через scripts/up.sh: он распечатывает OpenBao, выгружает секреты
 # (secrets-render) и только потом запускает PostgreSQL и Keycloak.
@@ -186,6 +186,32 @@ services:
       postgres:
         condition: service_healthy
 
+  # PDP Platform API (ADR-0009): политики policies/cerbos ядра, только чтение; доступ только из
+  # сети policy. Образ запускается от root, поэтому пользователь задан явно.
+  cerbos:
+    <<: *hardening
+    image: ghcr.io/cerbos/cerbos:0.57.0@sha256:e5e3b150b3cb0090975605254f255164567d67e233634199fb20972e3eaff300
+    user: "65534:65534"
+    command: ["server", "--config=/antec/config.yaml"]
+    environment:
+      # Хэш конфигурации и политик (scripts/lib.sh): изменение пересоздаёт контейнер.
+      ANTEC_CONFIG_SHA: ${ANTEC_CERBOS_CONFIG_SHA:-}
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,uid=65534,gid=65534
+    volumes:
+      - ./cerbos/config.yaml:/antec/config.yaml:ro
+      - ../../policies/cerbos:/policies:ro
+    networks: [policy]
+    mem_limit: 256m
+    healthcheck:
+      # Адрес и TLS берутся из конфигурации (--host-port несовместим с CERBOS_CONFIG образа).
+      test: ["CMD", "/cerbos", "healthcheck", "--config=/antec/config.yaml", "--kind=http"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
   # Миграции БД platform ролью владельца схемы (ADR-0006, п. 9); одноразовый, запускается
   # только из scripts/up.sh (`compose run --rm platform-migrate`).
   platform-migrate:
@@ -229,13 +255,14 @@ services:
       PLATFORM_ALLOWED_CLIENTS: open-webui,antec-smoke
       PLATFORM_GATEWAY_URL: http://litellm:4000/v1
       PLATFORM_MODELS: chat-default,chat-fast
+      PLATFORM_POLICY_URL: http://cerbos:3592
     read_only: true
     tmpfs:
       - /tmp:size=64m,uid=65534,gid=65534
     volumes:
       - platform-api-secrets:/run/antec-secrets:ro
-    # data: PostgreSQL и JWKS Keycloak; llm: LiteLLM; platform: клиенты фасада.
-    networks: [data, llm, platform]
+    # data: PostgreSQL и JWKS Keycloak; llm: LiteLLM; platform: клиенты фасада; policy: Cerbos.
+    networks: [data, llm, platform, policy]
     mem_limit: 512m
     depends_on:
       postgres:
@@ -243,6 +270,8 @@ services:
       keycloak:
         condition: service_healthy
       litellm:
+        condition: service_healthy
+      cerbos:
         condition: service_healthy
 
   # Веб-чат (ADR-0002): единственное подключение = фасад Platform API с токеном пользователя
@@ -389,6 +418,9 @@ networks:
     internal: true
   # Клиенты фасада Platform API (Open WebUI); без выхода наружу.
   platform:
+    internal: true
+  # Platform API -> Cerbos; без выхода наружу (ADR-0009).
+  policy:
     internal: true
   # Выход LiteLLM к API провайдеров. Ограничение по доменам: открытый вопрос ADR-0018.
   llm-egress: {}

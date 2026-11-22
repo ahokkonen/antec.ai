@@ -86,6 +86,10 @@ class Settings(DatabaseSettings):
         default_factory=lambda: ["chat-default", "chat-fast"]
     )
 
+    # PDP по AuthZEN (ADR-0009).
+    policy_url: str = "http://cerbos:3592"
+    policy_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 3.0
+
     max_request_bytes: Annotated[int, Field(ge=1024, le=64 * 1024 * 1024)] = 8 * 1024 * 1024
     log_level: str = "INFO"
 

@@ -23,8 +23,10 @@ Platform API принимает токен пользователя и пуск�
   (`release.yaml@refs/tags/v0.57.0`), статический бинарник, пользователь в образе не задан (root),
   встроенный `cerbos healthcheck`.
 - С 0.48 Cerbos реализует AuthZEN Authorization API 1.0 (OpenID): `/access/v1/evaluation`,
-  `/access/v1/evaluations` (пакет), `/.well-known/authzen-configuration`. Роли передаются в
-  `subject.properties.cerbos.roles`, остальные свойства становятся атрибутами.
+  `/access/v1/evaluations` (пакет), `/.well-known/authzen-configuration`. Роли передаются плоским
+  свойством `subject.properties["cerbos.roles"]` (так читает `internal/svc/authzen_svc.go` 0.57.0;
+  вложенный объект `cerbos.roles` из документации не работает, проверено на стенде), остальные
+  свойства становятся атрибутами. Без ролей Cerbos подставляет роль = `subject.type`.
 - По умолчанию включены телеметрия (`telemetry.disabled: false`) и API Explorer; Admin API
   выключен. Политики читаются с диска (`storage.driver: disk`), Cerbos Hub платный и не нужен.
   Встроенный `cerbos compile` компилирует политики и прогоняет их тесты.
@@ -60,7 +62,9 @@ PDP:
 1. **Cerbos 0.57.0** как PDP Platform API. Политики только с диска, Cerbos Hub не используется.
 2. **Контракт: `PolicyClient` в Platform API по AuthZEN** (HTTP, httpx, без SDK). Адаптер
    `antec_platform/adapters/authzen.py` знает о полях Cerbos (`properties.cerbos.roles`); остальной
-   код видит только `check(principal, action, resource)` и пакетную проверку.
+   код видит только `PolicyClient.check(subject, action, resources) -> list[bool]` (одна проверка
+   = список из одного ресурса). Субъект без ролей
+   до PDP не доходит (отказ), а роль `user` (значение `subject.type`) не используется в политиках.
 3. **Роли:** роли клиента `platform-api` в Keycloak. `platform-user` входит в роли realm по
    умолчанию (доступ к realm ограничивает IdP, для Entra «Assignment required»), `platform-admin`
    назначается явно. Client scope `platform-api` (аудитория Platform API) дополнительно кладёт в

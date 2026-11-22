@@ -1,0 +1,18 @@
+# Модели: кто может вызывать логическую модель (ADR-0009). Всё, что не разрешено явно,
+# запрещено. id ресурса = логическое имя модели в Platform API (PLATFORM_MODELS).
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: model
+  rules:
+    - name: platform-user-chat-models
+      actions: [invoke]
+      effect: EFFECT_ALLOW
+      roles: [platform-user]
+      condition:
+        match:
+          expr: R.id in ["chat-default", "chat-fast"]
+    - name: platform-admin-all-models
+      actions: [invoke]
+      effect: EFFECT_ALLOW
+      roles: [platform-admin]
