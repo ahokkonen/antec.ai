@@ -559,19 +559,20 @@ def ensure_platform_roles(admin: Admin) -> None:
     missing = [roles[r] for r in PLATFORM_ROLES if not any(m["name"] == r for m in mapped)]
     if missing:
         admin.call("POST", f"/{REALM}/client-scopes/{sid}/scope-mappings/clients/{cid}", missing)
+    wanted_config: dict[str, str] = {
+        "usermodel.clientRoleMapping.clientId": PLATFORM_CLIENT,
+        "claim.name": PLATFORM_ROLES_CLAIM,
+        "multivalued": "true",
+        "jsonType.label": "String",
+        "id.token.claim": "false",
+        "access.token.claim": "true",
+        "userinfo.token.claim": "false",
+        "introspection.token.claim": "true",
+    }
     wanted = {
         "protocol": "openid-connect",
         "protocolMapper": "oidc-usermodel-client-role-mapper",
-        "config": {
-            "usermodel.clientRoleMapping.clientId": PLATFORM_CLIENT,
-            "claim.name": PLATFORM_ROLES_CLAIM,
-            "multivalued": "true",
-            "jsonType.label": "String",
-            "id.token.claim": "false",
-            "access.token.claim": "true",
-            "userinfo.token.claim": "false",
-            "introspection.token.claim": "true",
-        },
+        "config": wanted_config,
     }
     mappers = {
         m["name"]: m
@@ -584,7 +585,7 @@ def ensure_platform_roles(admin: Admin) -> None:
             f"/{REALM}/client-scopes/{sid}/protocol-mappers/models",
             {"name": PLATFORM_ROLES_CLAIM, **wanted},
         )
-    elif any(current.get("config", {}).get(k) != v for k, v in wanted["config"].items()):
+    elif any(current.get("config", {}).get(k) != v for k, v in wanted_config.items()):
         # Сравниваются только наши ключи: Keycloak может добавлять в config свои.
         admin.call(
             "PUT",
