@@ -3,7 +3,7 @@
 Статус: черновик для MVP. Обновлено: 2026-11-22.
 Решения: [ADR-0001](../adr/0001-llm-gateway-litellm.md), [ADR-0002](../adr/0002-chat-ui-open-webui.md),
 [ADR-0003](../adr/0003-postgresql-single-datastore.md), [ADR-0004](../adr/0004-dependency-pinning-and-supply-chain.md),
-[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md), [ADR-0009](../adr/0009-authorization-cerbos.md), [ADR-0008](../adr/0008-plugin-contract-and-instance-template.md).
+[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md), [ADR-0009](../adr/0009-authorization-cerbos.md), [ADR-0008](../adr/0008-plugin-contract-and-instance-template.md), [ADR-0010](../adr/0010-agent-runtime.md).
 
 ## Главная идея
 
@@ -28,7 +28,7 @@
 | Каналы | Open WebUI | Веб-чат, тонкий клиент | OpenAI-совместимый API к Platform API |
 | Каналы | OpenCode и др. coding-агенты | Работа разработчиков | OpenAI-совместимый API к LiteLLM, личный виртуальный ключ |
 | Ядро | Platform API (свой, FastAPI) | OpenAI-совместимый фасад (модели и агенты), история чатов, агентный рантайм, RAG, MCP-клиент, гардрейлы, аудит, управление ключами и бюджетами | Наш код |
-| Ядро | Pydantic AI + DBOS | Агенты и durable execution (ожидание подтверждений) | `AgentSpec`, `WorkflowEngine` |
+| Ядро | Pydantic AI | Агенты (ADR-0010); ожидание подтверждений в `agent_runs` Platform API, DBOS отложен | `AgentRuntime`; `WorkflowEngine` позже |
 | Ядро | Docling + pgvector | Парсинг и векторный поиск для RAG | `DocumentParser`, `Retriever` |
 | Модели | LiteLLM | LLM-шлюз: маршрутизация, виртуальные ключи, бюджеты, учёт расходов | OpenAI-совместимый API + `GatewayAdmin` |
 | Модели | OpenRouter, OpenAI, Anthropic | Облачные модели | Через LiteLLM, логические имена моделей |
@@ -59,7 +59,7 @@ flowchart LR
   subgraph CORE["Platform API (FastAPI)"]
     FACADE["OpenAI-совместимый фасад: модели и агенты"]
     GR["Гардрейлы: PII, injection"]
-    RT["Агентный рантайм: Pydantic AI + DBOS"]
+    RT["Агентный рантайм: Pydantic AI"]
     RAG["RAG: Docling + pgvector"]
     MCPC["MCP-клиент: права, подтверждения"]
     AUD["Аудит и история"]
@@ -123,7 +123,8 @@ flowchart LR
    вызывает инструменты.
 6. Вызов инструмента: проверка прав в Cerbos, затем MCP-сервер с правами пользователя: Platform API
    обменивает токен пользователя на токен с аудиторией этого MCP-сервера (token exchange V2, ADR-0007).
-   Отправка письма, создание события, запись в Git ждут подтверждения человеком (DBOS хранит состояние).
+   Отправка письма, создание события, запись в Git ждут подтверждения человеком (состояние в
+   `agent_runs` Platform API, ADR-0010).
 7. Выходные гардрейлы, ответ в UI. История, аудит и расходы записываются в PostgreSQL Platform API.
 
 Coding-агенты ходят в LiteLLM напрямую с личным виртуальным ключом, который выпускает Platform API
@@ -140,8 +141,8 @@ Coding-агенты ходят в LiteLLM напрямую с личным ви�
 | Аутентификация | OIDC/OAuth2, token exchange | Keycloak | Authentik, другой IdP |
 | Политики | `PolicyClient.check(subject, action, resource)`, AuthZEN | Cerbos | OPA, OpenFGA |
 | Инструменты | MCP | Свои MCP-серверы | Любой MCP-сервер |
-| Агенты | `AgentSpec`, `run(ctx, input) -> stream` | Pydantic AI | LangGraph |
-| Процессы | `WorkflowEngine` | DBOS | Temporal |
+| Агенты | `AgentRuntime`, агент в манифесте (ADR-0010) | Pydantic AI | LangGraph |
+| Процессы | `WorkflowEngine` (позже) | своя таблица `agent_runs` | DBOS, Temporal |
 | Секреты | `SecretProvider` | OpenBao | Infisical, Vault |
 | Данные | SQL, отдельная БД на сервис | PostgreSQL 18 | Managed PostgreSQL |
 | Телеметрия | OTLP, семантика GenAI | VictoriaStack + Grafana | Любой OTLP-бэкенд |

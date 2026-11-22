@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from antec_instance import __version__
+from antec_instance.agents import resolve_agents
 from antec_instance.core import CoreError, core_version, default_core_dir
 from antec_instance.manifest import Manifest, ManifestError, load_manifest
 from antec_instance.policies import check_policies
@@ -56,7 +57,18 @@ def _validate(core_dir: Path, instance_dir: Path) -> Manifest:
             f"core.version: манифест рассчитан на ядро {manifest.core.version}, "
             f"закреплено ядро {version}"
         )
+    # Инструменты агентов исполняет MCP-клиент Platform API (ADR-0010, п. 6, 8); в этой версии
+    # ядра его нет, и Platform API с такими агентами не запустится: ошибка здесь, до развёртывания.
+    problems += [
+        f"агент {a.name}: инструменты агентов не поддерживаются ядром {version} (ADR-0010, п. 8)"
+        for a in manifest.agents
+        if a.tools
+    ]
     problems += check_policies(instance_dir, manifest.instance.id)
+    try:
+        resolve_agents(manifest, instance_dir)
+    except ManifestError as exc:
+        problems += exc.problems
     if problems:
         raise ManifestError(problems)
     return manifest
@@ -72,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_OK
         manifest = _validate(core_dir, args.instance)
         if args.command == "render":
-            for path in render(manifest, args.out):
+            for path in render(manifest, args.instance, args.out):
                 print(path)
         else:
             print(f"{args.instance}: инсталляция {manifest.instance.id} в порядке")

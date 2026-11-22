@@ -29,7 +29,7 @@ deploy/compose/scripts/up.sh
 Инсталляция: `ANTEC_INSTANCE_DIR` (по умолчанию `instances/dev`). `up.sh` сначала проверяет её
 манифест и политики и пишет производные файлы в `<инсталляция>/.rendered/` (`tools/instance render`):
 модели LiteLLM (`include` в `litellm/config.yaml`), `PLATFORM_MODELS`, `PLATFORM_POLICY_SCOPE` и
-настройки Platform API, модели ключа `platform-api` в LiteLLM. `compose.override.yaml` инсталляции,
+настройки Platform API, агенты (`agents.json`, ADR-0010), модели ключа `platform-api` в LiteLLM. `compose.override.yaml` инсталляции,
 если есть, подключается к `compose.yaml`. Репозиторий инсталляции с ядром в `core/`:
 
 ```bash
@@ -104,7 +104,8 @@ deploy/compose/scripts/platform-smoke.sh
 ```
 
 Проверка Platform API: откроется браузер для входа (клиент `antec-smoke`), затем изнутри
-контейнера `platform-api`: модели (`chat-lab` разрешает только политика scope `dev`), отказ без токена и с подделанной подписью, чат `chat-fast` с
+контейнера `platform-api`: модели (`chat-lab` разрешает только политика scope `dev`), агент
+`agent-assistant` с потоком и без (ADR-0010; в БД: `agent_runs`, шаги в `model_calls`, история, аудит), отказ без токена и с подделанной подписью, чат `chat-fast` с
 потоком и без (с параметрами шлюза, которые фасад должен отбросить), неизвестная модель; в БД:
 статус и токены вызовов, вопрос и ответ в истории, запись аудита, конечный пользователь в учёте
 LiteLLM = пользователь Platform API. Токен передаётся только через конвейер.
@@ -133,7 +134,7 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 | `litellm` | `litellm-non_root:v1.108.8`, модели из манифеста инсталляции (dev: `chat-default`, `chat-fast`, `chat-lab`); порт 4000 только внутри | `data`, `llm` (internal), `llm-egress` | 1,5 GB |
 | `cerbos` | `cerbos:0.57.0`, политики ядра `/policies/core` и инсталляции `/policies/instance` (scope, только чтение); без телеметрии, Admin API и аудита | `policy` (internal) | 256 MB |
 | `platform-migrate` | Одноразовые миграции БД `platform` ролью владельца схемы (профиль `bootstrap`) | `data` | 256 MB |
-| `platform-api` | `localhost/antec/platform-api:0.1.0`, фасад `/v1`, роль БД `platform_app`; порт 8000 только внутри | `data`, `llm`, `platform`, `policy` (internal) | 512 MB |
+| `platform-api` | `localhost/antec/platform-api:0.1.0`, фасад `/v1` (модели и агенты инсталляции, ADR-0010), роль БД `platform_app`; порт 8000 только внутри | `data`, `llm`, `platform`, `policy` (internal) | 512 MB |
 | `open-webui` | `open-webui:v0.13.3`, вход через Keycloak; `http://localhost:3000` | `data`, `platform`, `ui` | 1,5 GB |
 
 Наружу опубликованы только порты Keycloak `127.0.0.1:8080` и Open WebUI `127.0.0.1:3000` (сеть

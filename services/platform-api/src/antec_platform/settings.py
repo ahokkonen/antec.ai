@@ -91,6 +91,8 @@ class Settings(DatabaseSettings):
     # PDP по AuthZEN (ADR-0009).
     policy_url: str = "http://cerbos:3592"
     policy_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 3.0
+    # Агенты инсталляции (agents.json рендера манифеста, ADR-0010); пусто = агентов нет.
+    agents_file: Path | None = None
     # Scope политик инсталляции (ADR-0008, п. 4); пусто = только базовые политики ядра.
     policy_scope: str | None = None
 
@@ -121,6 +123,11 @@ class Settings(DatabaseSettings):
             if not _MODEL_RE.fullmatch(item):
                 raise ValueError(f"недопустимое имя модели: {item!r}")
         return value
+
+    @field_validator("agents_file", mode="before")
+    @classmethod
+    def _agents_file(cls, value: object) -> object:
+        return None if value == "" else value
 
     @field_validator("policy_scope", mode="before")
     @classmethod

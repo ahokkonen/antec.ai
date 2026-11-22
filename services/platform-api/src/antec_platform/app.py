@@ -21,6 +21,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from antec_platform.adapters.gateway import ChatGateway, GatewayMeta, GatewayUnavailable
+from antec_platform.agents import (
+    AGENT_KIND,
+    AgentDefinition,
+    AgentRun,
+    AgentRuntime,
+    RunOutcome,
+    agent_input,
+)
 from antec_platform.auth import (
     DeniedToken,
     InvalidToken,
@@ -40,7 +48,7 @@ from antec_platform.chat import (
 )
 from antec_platform.errors import ApiError, error_body, forbidden, unauthorized
 from antec_platform.policy import PolicyClient, PolicyUnavailable, Resource, Subject
-from antec_platform.store import CallResult, CallStart, Store, User
+from antec_platform.store import AgentRunStart, CallResult, CallStart, Store, User
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +71,9 @@ class Deps:
     max_request_bytes: int
     # Scope политик инсталляции (ADR-0008) для аудита отказов.
     policy_scope: str | None = None
+    # Агенты инсталляции (ADR-0010) и рантайм; без агентов рантайма нет.
+    agents: dict[str, AgentDefinition] = field(default_factory=dict)
+    runtime: AgentRuntime | None = None
     # Фоновые записи итогов вызова: переживают отмену запроса клиентом, ждутся при остановке.
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
 
@@ -135,6 +146,41 @@ async def _check(
         raise ApiError(
             503, "проверка прав временно недоступна", type_="api_error", code="policy_unavailable"
         ) from exc
+
+
+async def authorize_agent(
+    request: Request, principal: Principal, user: User, agent: AgentDefinition
+) -> None:
+    """Агент и его модель (ADR-0010, п. 4): агент не получает модель, недоступную пользователю."""
+    deps = _deps(request)
+    agent_ok, model_ok = await _check(
+        deps,
+        _subject(principal, user),
+        INVOKE,
+        [Resource(AGENT_KIND, agent.name), Resource(MODEL_KIND, agent.model)],
+    )
+    for ok, kind, resource_id in (
+        (agent_ok, AGENT_KIND, agent.name),
+        (model_ok, MODEL_KIND, agent.model),
+    ):
+        if not ok:
+            await deps.store.record_policy_deny(
+                principal,
+                user.id,
+                INVOKE,
+                kind,
+                resource_id,
+                _request_id(request),
+                scope=deps.policy_scope,
+            )
+    if not agent_ok:
+        log.info("политика: нет права invoke на агента %s", agent.name)
+        raise forbidden(f"нет доступа к агенту {agent.name!r}", code="agent_forbidden")
+    if not model_ok:
+        log.info("политика: агент %s, нет права invoke на модель %s", agent.name, agent.model)
+        raise forbidden(
+            f"нет доступа к модели {agent.model!r} агента {agent.name!r}", code="model_forbidden"
+        )
 
 
 async def authorize_model(request: Request, principal: Principal, user: User, model: str) -> None:
@@ -215,8 +261,10 @@ async def chat_completions(request: Request) -> Response:
     deps = _deps(request)
     principal, user = await authenticate(request)
     chat = parse_chat_request(
-        await read_json(request, deps.max_request_bytes), frozenset(deps.models)
+        await read_json(request, deps.max_request_bytes), frozenset([*deps.models, *deps.agents])
     )
+    if chat.model in deps.agents:
+        return await _agent_completion(request, deps, principal, user, chat)
     await authorize_model(request, principal, user, chat.model)
     conversation_id = await deps.store.ensure_conversation(
         user.id, principal.client_id, _external_id(request)
@@ -403,21 +451,194 @@ async def _close_and_finish(
 
 
 async def list_models(request: Request) -> Response:
-    """Только модели, на которые у пользователя есть право invoke (одна пакетная проверка)."""
+    """Модели и агенты с правом invoke (одна пакетная проверка).
+
+    Агент виден, только если разрешены и он, и его модель (ADR-0010, п. 4).
+    """
     principal, user = await authenticate(request)
     deps = _deps(request)
+    agents = list(deps.agents.values())
     decisions = await _check(
-        deps, _subject(principal, user), INVOKE, [Resource(MODEL_KIND, m) for m in deps.models]
+        deps,
+        _subject(principal, user),
+        INVOKE,
+        [Resource(MODEL_KIND, m) for m in deps.models]
+        + [Resource(AGENT_KIND, a.name) for a in agents],
     )
-    return JSONResponse(
-        {
-            "object": "list",
-            "data": [
-                {"id": m, "object": "model", "created": 0, "owned_by": "antec"}
-                for m, ok in zip(deps.models, decisions, strict=True)
-                if ok
-            ],
-        }
+    allowed_models = {
+        m for m, ok in zip(deps.models, decisions[: len(deps.models)], strict=True) if ok
+    }
+    data: list[dict[str, Any]] = [
+        {"id": m, "object": "model", "created": 0, "owned_by": "antec"}
+        for m in deps.models
+        if m in allowed_models
+    ]
+    data += [
+        {"id": a.name, "object": "model", "created": 0, "owned_by": "antec-agent"}
+        for a, ok in zip(agents, decisions[len(deps.models) :], strict=True)
+        if ok and a.model in allowed_models
+    ]
+    return JSONResponse({"object": "list", "data": data})
+
+
+def _agent_error(outcome: RunOutcome) -> ApiError:
+    status = outcome.http_status or 502
+    return ApiError(
+        status,
+        outcome.error or "ошибка агента",
+        type_="invalid_request_error" if 400 <= status < 500 else "api_error",
+        code=outcome.error_code or "agent_error",
+    )
+
+
+async def _finish_run(deps: Deps, run: AgentRunStart, outcome: RunOutcome) -> None:
+    try:
+        await deps.store.finish_agent_run(run, outcome)
+    except Exception:
+        log.exception("не удалось записать итог запуска агента %s", run.id)
+
+
+async def _finish_run_when_done(deps: Deps, run: AgentRunStart, handle: AgentRun) -> None:
+    await _finish_run(deps, run, await handle.outcome())
+
+
+def _usage(outcome: RunOutcome) -> dict[str, int]:
+    prompt = outcome.prompt_tokens or 0
+    completion = outcome.completion_tokens or 0
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    }
+
+
+def _chunk(base: dict[str, Any], delta: dict[str, Any], finish: str | None = None) -> bytes:
+    body = {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+    return b"data: " + json.dumps(body, ensure_ascii=False).encode() + b"\n\n"
+
+
+async def _agent_completion(
+    request: Request, deps: Deps, principal: Principal, user: User, chat: ChatRequest
+) -> Response:
+    """Запуск агента через фасад (ADR-0010, п. 4): ответ в формате Chat Completions."""
+    agent = deps.agents[chat.model]
+    if deps.runtime is None:
+        raise ApiError(
+            503, "агентный рантайм не запущен", type_="api_error", code="agent_unavailable"
+        )
+    await authorize_agent(request, principal, user, agent)
+    history, prompt = agent_input(chat.messages)
+    conversation_id = await deps.store.ensure_conversation(
+        user.id, principal.client_id, _external_id(request)
+    )
+    run = AgentRunStart(
+        id=_request_id(request),
+        user_id=user.id,
+        conversation_id=conversation_id,
+        client_id=principal.client_id,
+        agent=agent.name,
+        model=agent.model,
+        stream=chat.stream,
+        # В историю то, что получил агент: системные сообщения и вызовы инструментов клиента
+        # агенту не передаются (ADR-0010, п. 4).
+        new_messages=[m for m in chat.new_messages() if m["role"] == "user"],
+    )
+    await deps.store.start_agent_run(run)
+    handle = deps.runtime.start(agent, str(user.id), history, prompt)
+    base = {
+        "id": f"chatcmpl-{run.id.hex}",
+        "created": int(time.time()),
+        "model": agent.name,
+    }
+    deltas = handle.deltas()
+    first: str | None = None
+    try:
+        if chat.stream:
+            # Первый фрагмент до ответа: ошибка до начала текста (бюджет, шлюз) = HTTP-ошибка.
+            first = await anext(deltas, None)
+        else:
+            async for _ in deltas:
+                pass
+    except BaseException:
+        # Отмена запроса или сбой до ответа: запуск прерывается, итог пишется отдельной задачей.
+        handle.cancel()
+        deps.spawn(_finish_run_when_done(deps, run, handle))
+        raise
+    if not chat.stream or first is None:
+        outcome = await handle.outcome()
+        if outcome.status != "ok" or not chat.stream:
+            await _finish_run(deps, run, outcome)
+        if outcome.status != "ok":
+            raise _agent_error(outcome)
+        if not chat.stream:
+            return JSONResponse(
+                {
+                    **base,
+                    "object": "chat.completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": outcome.text},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": _usage(outcome),
+                }
+            )
+    return _agent_stream(deps, run, handle, deltas, first, base, chat.client_wants_usage)
+
+
+def _agent_stream(
+    deps: Deps,
+    run: AgentRunStart,
+    handle: AgentRun,
+    deltas: AsyncIterator[str],
+    first: str | None,
+    base: dict[str, Any],
+    wants_usage: bool,
+) -> Response:
+    chunk_base = {**base, "object": "chat.completion.chunk"}
+    finalized = False
+    completed = False
+
+    def finalize() -> None:
+        nonlocal finalized
+        if finalized:
+            return
+        finalized = True
+        if not completed:
+            # Клиент ушёл до конца: запуск прерывается; итог записывается, когда рантайм его
+            # отдаст.
+            handle.cancel()
+        deps.spawn(_finish_run_when_done(deps, run, handle))
+
+    async def body() -> AsyncIterator[bytes]:
+        nonlocal completed
+        try:
+            yield _chunk(chunk_base, {"role": "assistant", "content": ""})
+            if first is not None:
+                yield _chunk(chunk_base, {"content": first})
+            async for delta in deltas:
+                yield _chunk(chunk_base, {"content": delta})
+            outcome = await handle.outcome()
+            completed = True
+            if outcome.status != "ok":
+                err = _agent_error(outcome)
+                yield _sse_error(err.message, err.code or "agent_error")
+                return
+            yield _chunk(chunk_base, {}, "stop")
+            if wants_usage:
+                usage = {**chunk_base, "choices": [], "usage": _usage(outcome)}
+                yield b"data: " + json.dumps(usage).encode() + b"\n\n"
+            yield b"data: [DONE]\n\n"
+        finally:
+            finalize()
+
+    return _GuardedStream(
+        body(),
+        finalize,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

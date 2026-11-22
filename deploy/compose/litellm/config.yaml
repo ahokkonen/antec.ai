@@ -4,12 +4,12 @@
 # common/env-from-files.sh кладёт их в окружение процесса (не контейнера).
 
 # Логические модели задаёт манифест инсталляции (ADR-0008): tools/instance render пишет
-# litellm-models.yaml (только model_list), каталог рендера монтируется как /antec/instance.
+# litellm/models.yaml (только model_list), этот подкаталог рендера монтируется как /antec/instance.
 # Клиенты (Platform API, Open WebUI, coding-агенты) знают только логические имена; смена
 # провайдера или модели не меняет клиентов (ADR-0001, план выхода). Другие ключи в включаемом
 # файле заменили бы настройки ниже целиком, поэтому рендер пишет только model_list.
 include:
-  - instance/litellm-models.yaml
+  - instance/models.yaml
 
 litellm_settings:
   # Параметры OpenAI, которых нет у провайдера, отбрасываются, а не дают 400.

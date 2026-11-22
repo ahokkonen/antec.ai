@@ -81,6 +81,32 @@ conversations = Table(
     Index("ix_conversations_user_id_updated_at", "user_id", "updated_at"),
 )
 
+agent_runs = Table(
+    "agent_runs",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("user_id", UUID(as_uuid=True), ForeignKey("users.id"), nullable=False),
+    Column("conversation_id", UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False),
+    Column("client_id", Text, nullable=False),
+    Column("agent", Text, nullable=False),
+    Column("model", Text, nullable=False),
+    Column("stream", Boolean, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("steps", Integer, nullable=False, server_default=text("0")),
+    Column("prompt_tokens", BigInteger),
+    Column("completion_tokens", BigInteger),
+    Column("error", Text),
+    Column("state", JSONB),
+    Column("started_at", DateTime(timezone=True), nullable=False, server_default=NOW),
+    Column("finished_at", DateTime(timezone=True)),
+    CheckConstraint(
+        "status in ('started', 'ok', 'error', 'cancelled', 'rejected', 'awaiting_approval')",
+        name="status",
+    ),
+    Index("ix_agent_runs_user_id_started_at", "user_id", "started_at"),
+    Index("ix_agent_runs_conversation_id", "conversation_id"),
+)
+
 model_calls = Table(
     "model_calls",
     metadata,
@@ -99,9 +125,12 @@ model_calls = Table(
     Column("error", Text),
     Column("started_at", DateTime(timezone=True), nullable=False, server_default=NOW),
     Column("finished_at", DateTime(timezone=True)),
+    # Шаг запуска агента (ADR-0010, п. 5); пусто у прямых вызовов модели.
+    Column("agent_run_id", UUID(as_uuid=True), ForeignKey("agent_runs.id")),
     CheckConstraint("status in ('started', 'ok', 'error', 'cancelled', 'rejected')", name="status"),
     Index("ix_model_calls_user_id_started_at", "user_id", "started_at"),
     Index("ix_model_calls_conversation_id", "conversation_id"),
+    Index("ix_model_calls_agent_run_id", "agent_run_id"),
 )
 
 messages = Table(

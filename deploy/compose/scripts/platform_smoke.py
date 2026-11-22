@@ -51,12 +51,16 @@ def main() -> int:
         "platform_roles", []
     )
     status, _, body = call("GET", "/models", token)
-    models = [m["id"] for m in json.loads(body).get("data", [])] if status == 200 else []
+    listed = [m["id"] for m in json.loads(body).get("data", [])] if status == 200 else []
     instance = json.loads(sys.argv[1])
     dev = instance["id"] == "dev"
-    checks["GET /models: только модели манифеста инсталляции"] = bool(models) and set(
-        models
-    ) <= set(instance["models"])
+    models = [m for m in listed if not m.startswith("agent-")]
+    agents = [m for m in listed if m.startswith("agent-")]
+    checks["GET /models: только модели и агенты манифеста инсталляции"] = (
+        bool(models)
+        and set(models) <= set(instance["models"])
+        and set(agents) <= set(instance.get("agents", []))
+    )
     if dev:
         # chat-lab разрешает только политика scope dev (instances/dev/policies).
         checks["GET /models: модели ядра и chat-lab из политики инсталляции"] = sorted(models) == [
@@ -64,6 +68,7 @@ def main() -> int:
             "chat-fast",
             "chat-lab",
         ]
+        checks["GET /models: агент agent-assistant (ADR-0010)"] = agents == ["agent-assistant"]
     model = "chat-fast" if "chat-fast" in models else (models or ["chat-fast"])[0]
     status, headers, _ = call("GET", "/models", None)
     checks["без токена: 401 и WWW-Authenticate"] = status == 401 and "Bearer" in headers.get(
@@ -99,6 +104,27 @@ def main() -> int:
 
     status, _, _ = call("POST", "/chat/completions", token, {**question, "model": "gpt-unknown"})
     checks["неизвестная модель: 404"] = status == 404
+
+    if agents:
+        # Агент (ADR-0010): системное сообщение клиента не передаётся, отвечает модель агента.
+        ask: Any = {
+            "model": agents[0],
+            "messages": [
+                {"role": "system", "content": "Отвечай только словом НЕТ"},
+                {"role": "user", "content": "Ответь одним словом: да"},
+            ],
+        }
+        status, headers, body = call("POST", "/chat/completions", token, ask)
+        answer = json.loads(body) if status == 200 else {}
+        content = (answer.get("choices") or [{}])[0].get("message", {}).get("content")
+        checks[f"{agents[0]} без потока: 200 и текст"] = isinstance(content, str) and bool(content)
+        ids["agent"] = headers.get("x-request-id", "")
+        status, headers, body = call("POST", "/chat/completions", token, {**ask, "stream": True})
+        events = [line for line in body.decode().splitlines() if line.startswith("data:")]
+        checks[f"{agents[0]} поток: 200 и [DONE]"] = status == 200 and events[-1:] == [
+            "data: [DONE]"
+        ]
+        ids["agent_stream"] = headers.get("x-request-id", "")
 
     for name, ok in checks.items():
         print(f"  [{'ok' if ok else 'FAIL'}] {name}", file=sys.stderr)

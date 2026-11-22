@@ -74,7 +74,11 @@ async def test_disabled_user_is_403(harness: Harness, make_token: TokenFactory) 
 async def test_models(harness: Harness, make_token: TokenFactory) -> None:
     resp = await harness.client.get("/v1/models", headers=_auth(make_token()))
     assert resp.status_code == 200
-    assert [m["id"] for m in resp.json()["data"]] == ["chat-default", "chat-fast"]
+    assert [m["id"] for m in resp.json()["data"]] == [
+        "chat-default",
+        "chat-fast",
+        "agent-assistant",
+    ]
 
 
 async def test_completion_records_call(harness: Harness, make_token: TokenFactory) -> None:
@@ -344,7 +348,8 @@ async def test_models_filtered_by_policy(harness: Harness, make_token: TokenFact
     assert action == "invoke"
     assert subject.roles == ("platform-user",)
     assert subject.attrs == {"client_id": "open-webui", "idp": "entra"}
-    assert [r.id for r in resources] == ["chat-default", "chat-fast"]
+    assert [r.id for r in resources] == ["chat-default", "chat-fast", "agent-assistant"]
+    assert [r.kind for r in resources] == ["model", "model", "agent"]
 
 
 async def test_policy_down_fails_closed(harness: Harness, make_token: TokenFactory) -> None:

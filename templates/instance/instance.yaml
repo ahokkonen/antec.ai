@@ -1,6 +1,6 @@
 # Манифест инсталляции __INSTANCE_NAME__ (ADR-0008). Схема v1: tools/instance ядра.
 # Проверка: uv run --project core/tools/instance --locked antec-instance validate .
-schema_version: 1
+schema_version: 2
 instance:
   # id = scope политик Cerbos инсталляции (policies/), менять нельзя.
   id: __INSTANCE_ID__
@@ -34,6 +34,18 @@ models:
 #       - {name: create_deal}         # без read_only: только с подтверждением человека
 #     secrets: [api_token]            # OpenBao antec/plugins/crm
 mcp_servers: []
+
+# Агенты (ADR-0010): имя agent-<имя>, модель из models, инструкции текстом или файлом,
+# инструменты <mcp_server>.<tool> из mcp_servers. Пример:
+# agents:
+#   - name: agent-sales
+#     description: "Помощник отдела продаж"
+#     model: chat-default
+#     instructions_file: agents/sales.md
+#     tools: [crm.search_contacts, crm.create_deal]
+#     max_steps: 10
+#     max_tool_calls: 20
+agents: []
 
 # Параметры Platform API, которые может менять инсталляция.
 settings:

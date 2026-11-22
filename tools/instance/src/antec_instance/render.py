@@ -1,7 +1,8 @@
 """Производные файлы манифеста (ADR-0008, п. 3): LiteLLM, Platform API, сводка для скриптов.
 
-Модели задаются только в манифесте; LiteLLM читает `litellm-models.yaml` через `include`,
-Platform API получает `platform-api.env`, скрипты стенда читают `instance.json`.
+Модели задаются только в манифесте; LiteLLM читает `litellm/models.yaml` через `include`,
+Platform API получает `platform-api.env` и `platform-api/agents.json` (ADR-0010), скрипты
+стенда читают `instance.json`.
 """
 
 from __future__ import annotations
@@ -14,11 +15,16 @@ from typing import Any
 
 import yaml
 
+from antec_instance.agents import resolve_agents
 from antec_instance.manifest import Manifest
 
-LITELLM_MODELS = "litellm-models.yaml"
+# Каждому сервису свой подкаталог: контейнер монтирует только своё (LiteLLM не видит агентов).
+LITELLM_MODELS = "litellm/models.yaml"
+AGENTS = "platform-api/agents.json"
 PLATFORM_ENV = "platform-api.env"
 SUMMARY = "instance.json"
+# Прежняя раскладка (до подкаталогов): удаляется, чтобы не осталось устаревших копий.
+_LEGACY = ("litellm-models.yaml", "agents.json")
 _HEADER = "# Сгенерировано tools/instance render из instance.yaml (ADR-0008). Не редактировать.\n"
 
 
@@ -59,6 +65,7 @@ def summary(manifest: Manifest) -> dict[str, Any]:
         "id": manifest.instance.id,
         "core_version": manifest.core.version,
         "models": [m.name for m in manifest.models],
+        "agents": [a.name for a in manifest.agents],
     }
 
 
@@ -81,17 +88,23 @@ def _write(path: Path, content: str) -> None:
         raise
 
 
-def render(manifest: Manifest, out_dir: Path) -> list[Path]:
+def render(manifest: Manifest, instance_dir: Path, out_dir: Path) -> list[Path]:
+    agents = resolve_agents(manifest, instance_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     files = {
         LITELLM_MODELS: _HEADER
         + yaml.safe_dump(litellm_models(manifest), sort_keys=False, allow_unicode=True),
         PLATFORM_ENV: _HEADER + "".join(f"{k}={v}\n" for k, v in platform_env(manifest).items()),
         SUMMARY: json.dumps(summary(manifest), ensure_ascii=False, indent=2) + "\n",
+        # Всегда, даже пустой: Platform API читает файл при старте.
+        AGENTS: json.dumps(agents, ensure_ascii=False, indent=2) + "\n",
     }
+    for legacy in _LEGACY:
+        (out_dir / legacy).unlink(missing_ok=True)
     written = []
     for name, content in files.items():
         path = out_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
         _write(path, content)
         written.append(path)
     return written

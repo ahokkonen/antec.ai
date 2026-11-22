@@ -66,14 +66,15 @@ tree_sha() { # каталоги...
 export ANTEC_LITELLM_CONFIG_SHA ANTEC_OPEN_WEBUI_CONFIG_SHA ANTEC_CERBOS_CONFIG_SHA ANTEC_PLATFORM_CONFIG_SHA
 compute_config_shas() {
   ANTEC_LITELLM_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/litellm/config.yaml" \
-    "$COMPOSE_DIR/common/env-from-files.sh" "$ANTEC_INSTANCE_RENDERED/litellm-models.yaml")"
+    "$COMPOSE_DIR/common/env-from-files.sh" "$ANTEC_INSTANCE_RENDERED/litellm/models.yaml")"
   ANTEC_OPEN_WEBUI_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/common/env-from-files.sh")"
   # Конфигурация Cerbos и все файлы политик ядра и инсталляции в стабильном порядке.
   ANTEC_CERBOS_CONFIG_SHA="$( { config_sha "$COMPOSE_DIR/cerbos/config.yaml"
     tree_sha "$COMPOSE_DIR/../../policies/cerbos" "$ANTEC_INSTANCE_DIR/policies"; } \
     | shasum -a 256 | cut -c1-16)"
   # env_file не меняет окружение контейнера при compose up без хэша: та же схема.
-  ANTEC_PLATFORM_CONFIG_SHA="$(config_sha "$ANTEC_INSTANCE_RENDERED/platform-api.env")"
+  ANTEC_PLATFORM_CONFIG_SHA="$(config_sha "$ANTEC_INSTANCE_RENDERED/platform-api.env" \
+    "$ANTEC_INSTANCE_RENDERED/platform-api/agents.json")"
 }
 compute_config_shas
 
@@ -92,8 +93,9 @@ die() { printf '\033[31m[antec] ошибка:\033[0m %s\n' "$*" >&2; exit 1; }
 # compose.yaml читает производные файлы манифеста (env_file platform-api, модели LiteLLM): без
 # них не работает ни одна команда compose, поэтому их нет = рендер сейчас.
 if [[ ! -f "$ANTEC_INSTANCE_RENDERED/platform-api.env" \
-  || ! -f "$ANTEC_INSTANCE_RENDERED/litellm-models.yaml" \
-  || ! -f "$ANTEC_INSTANCE_RENDERED/instance.json" ]]; then
+  || ! -f "$ANTEC_INSTANCE_RENDERED/litellm/models.yaml" \
+  || ! -f "$ANTEC_INSTANCE_RENDERED/instance.json" \
+  || ! -f "$ANTEC_INSTANCE_RENDERED/platform-api/agents.json" ]]; then
   render_instance
 fi
 

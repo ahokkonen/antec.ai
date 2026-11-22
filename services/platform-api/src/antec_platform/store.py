@@ -14,8 +14,17 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from antec_platform.agents import RunOutcome
 from antec_platform.auth import Principal
-from antec_platform.db import audit_events, conversations, identities, messages, model_calls, users
+from antec_platform.db import (
+    agent_runs,
+    audit_events,
+    conversations,
+    identities,
+    messages,
+    model_calls,
+    users,
+)
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +63,20 @@ class CallStart:
     new_messages: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class AgentRunStart:
+    """Запуск агента (ADR-0010, п. 5): id = id запроса."""
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    conversation_id: uuid.UUID
+    client_id: str
+    agent: str
+    model: str
+    stream: bool
+    new_messages: list[dict[str, Any]] = field(default_factory=list)
+
+
 class Store(Protocol):
     async def ping(self) -> None: ...
 
@@ -81,6 +104,10 @@ class Store(Protocol):
     async def start_call(self, call: CallStart) -> None: ...
 
     async def finish_call(self, call: CallStart, result: CallResult) -> None: ...
+
+    async def start_agent_run(self, run: AgentRunStart) -> None: ...
+
+    async def finish_agent_run(self, run: AgentRunStart, outcome: RunOutcome) -> None: ...
 
 
 def _audit(
@@ -429,6 +456,137 @@ class PgStore:
                             "cost_usd": str(result.cost_usd)
                             if result.cost_usd is not None
                             else None,
+                        },
+                    )
+                )
+            )
+
+    async def start_agent_run(self, run: AgentRunStart) -> None:
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(agent_runs).values(
+                    id=run.id,
+                    user_id=run.user_id,
+                    conversation_id=run.conversation_id,
+                    client_id=run.client_id,
+                    agent=run.agent,
+                    model=run.model,
+                    stream=run.stream,
+                    status="started",
+                )
+            )
+
+    async def finish_agent_run(self, run: AgentRunStart, outcome: RunOutcome) -> None:
+        """Итог запуска, шаги в model_calls, история и аудит в одной транзакции (ADR-0010, п. 5).
+
+        Каждый шаг = строка model_calls со ссылкой agent_run_id и событие model.call; запуск
+        целиком = событие agent.run. История (новые сообщения пользователя и ответ агента)
+        привязана к последнему шагу; без шагов истории нет.
+        """
+        ok = outcome.status in ("ok", "cancelled")
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                update(agent_runs)
+                .where(agent_runs.c.id == run.id)
+                .values(
+                    status=outcome.status,
+                    steps=len(outcome.steps),
+                    prompt_tokens=outcome.prompt_tokens,
+                    completion_tokens=outcome.completion_tokens,
+                    error=outcome.error,
+                    finished_at=func.now(),
+                )
+            )
+            step_ids: list[uuid.UUID] = []
+            for number, step in enumerate(outcome.steps, start=1):
+                step_id = uuid.uuid7()
+                step_ids.append(step_id)
+                await conn.execute(
+                    insert(model_calls).values(
+                        id=step_id,
+                        user_id=run.user_id,
+                        conversation_id=run.conversation_id,
+                        client_id=run.client_id,
+                        model=run.model,
+                        stream=run.stream,
+                        status=step.status,
+                        http_status=step.http_status,
+                        prompt_tokens=step.prompt_tokens,
+                        completion_tokens=step.completion_tokens,
+                        gateway_request_id=step.gateway_request_id,
+                        error=step.error,
+                        agent_run_id=run.id,
+                        started_at=step.started_at or func.now(),
+                        finished_at=step.finished_at or func.now(),
+                    )
+                )
+                await conn.execute(
+                    insert(audit_events).values(
+                        _audit(
+                            action="model.call",
+                            outcome="allow" if step.status in ("ok", "cancelled") else "error",
+                            request_id=run.id,
+                            actor_user_id=run.user_id,
+                            actor_client=run.client_id,
+                            resource_type="model",
+                            resource_id=run.model,
+                            details={
+                                "status": step.status,
+                                "http_status": step.http_status,
+                                "stream": run.stream,
+                                "conversation_id": str(run.conversation_id),
+                                "agent": run.agent,
+                                "agent_run_id": str(run.id),
+                                "step": number,
+                                "model_call_id": str(step_id),
+                                "prompt_tokens": step.prompt_tokens,
+                                "completion_tokens": step.completion_tokens,
+                            },
+                        )
+                    )
+                )
+            history = list(run.new_messages)
+            if outcome.text:
+                history.append({"role": "assistant", "content": outcome.text})
+            if ok and step_ids and history:
+                await conn.execute(
+                    insert(messages),
+                    [
+                        {
+                            "id": uuid.uuid7(),
+                            "conversation_id": run.conversation_id,
+                            "model_call_id": step_ids[-1],
+                            "position": pos,
+                            "role": msg["role"],
+                            "content": msg,
+                        }
+                        for pos, msg in enumerate(history)
+                    ],
+                )
+            await conn.execute(
+                update(conversations)
+                .where(conversations.c.id == run.conversation_id)
+                .values(updated_at=func.now())
+            )
+            await conn.execute(
+                insert(audit_events).values(
+                    _audit(
+                        action="agent.run",
+                        outcome="allow" if ok else "error",
+                        request_id=run.id,
+                        actor_user_id=run.user_id,
+                        actor_client=run.client_id,
+                        resource_type="agent",
+                        resource_id=run.agent,
+                        details={
+                            "status": outcome.status,
+                            "model": run.model,
+                            "stream": run.stream,
+                            "conversation_id": str(run.conversation_id),
+                            "steps": len(outcome.steps),
+                            "prompt_tokens": outcome.prompt_tokens,
+                            "completion_tokens": outcome.completion_tokens,
+                            "error_code": outcome.error_code,
                         },
                     )
                 )

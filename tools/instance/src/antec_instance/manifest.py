@@ -1,4 +1,6 @@
-"""Схема манифеста инсталляции `instance.yaml`, версия 1 (ADR-0008, п. 2).
+"""Схема манифеста инсталляции `instance.yaml` (ADR-0008, п. 2), версии 1 и 2.
+
+Версия 2 добавляет раздел `agents` (ADR-0010, п. 3); манифест версии 1 остаётся валидным.
 
 Неизвестные поля = ошибка: опечатка в манифесте не должна молча менять поведение инсталляции.
 """
@@ -22,7 +24,10 @@ from pydantic import (
 
 from antec_instance.yamlload import YamlError, load_mapping
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+AGENT_PREFIX = "agent-"
+# Инструкции агента: в agents.json и в каждый запрос к модели, поэтому размер ограничен.
+MAX_INSTRUCTIONS_BYTES = 32 * 1024
 MANIFEST_FILE = "instance.yaml"
 
 # Переменные с ключами провайдеров, которые ядро выгружает из OpenBao в окружение LiteLLM
@@ -37,6 +42,9 @@ _CLIENT_ID = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 _INSTANCE_ID = r"^[a-z][a-z0-9-]{1,30}$"
 _SLUG = r"^[a-z][a-z0-9-]{0,62}$"
 _ENV_REF = re.compile(r"os\.environ/([A-Z][A-Z0-9_]*)")
+
+_AGENT = r"^agent-[a-z0-9][a-z0-9-]{0,56}$"
+_TOOL_REF = r"^[a-z][a-z0-9-]{0,62}\.[A-Za-z0-9_.-]{1,128}$"
 
 InstanceId = Annotated[str, StringConstraints(pattern=_INSTANCE_ID)]
 ModelName = Annotated[str, StringConstraints(pattern=_MODEL)]
@@ -113,6 +121,47 @@ class Model(_Strict):
     description: Text = ""
     litellm: LiteLLMParams
 
+    @field_validator("name")
+    @classmethod
+    def _not_agent(cls, value: str) -> str:
+        if value.startswith(AGENT_PREFIX):
+            raise ValueError(f"префикс {AGENT_PREFIX!r} зарезервирован за агентами (ADR-0010)")
+        return value
+
+
+class Agent(_Strict):
+    """Агент инсталляции (ADR-0010, п. 3). Инструкции: текст или файл в репозитории инсталляции."""
+
+    name: Annotated[str, StringConstraints(pattern=_AGENT)]
+    description: Text = ""
+    model: ModelName
+    instructions: Annotated[str, StringConstraints(min_length=1)] | None = None
+    instructions_file: (
+        Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")] | None
+    ) = None
+    tools: list[Annotated[str, StringConstraints(pattern=_TOOL_REF)]] = []
+    max_steps: Annotated[int, Field(ge=1, le=50)] = 10
+    max_tool_calls: Annotated[int, Field(ge=0, le=100)] = 20
+
+    @model_validator(mode="after")
+    def _instructions(self) -> Agent:
+        if (self.instructions is None) == (self.instructions_file is None):
+            raise ValueError("нужно ровно одно из instructions и instructions_file")
+        if (
+            self.instructions is not None
+            and len(self.instructions.encode()) > MAX_INSTRUCTIONS_BYTES
+        ):
+            raise ValueError(f"instructions больше {MAX_INSTRUCTIONS_BYTES} байт")
+        if self.instructions_file is not None and ".." in self.instructions_file.split("/"):
+            raise ValueError("instructions_file: путь внутри репозитория инсталляции, без ..")
+        return self
+
+    @field_validator("tools")
+    @classmethod
+    def _tools(cls, value: list[str]) -> list[str]:
+        _unique(value, "инструмент")
+        return value
+
 
 class McpTool(_Strict):
     name: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_.-]{1,128}$")]
@@ -164,19 +213,43 @@ class Settings(_Strict):
 
 
 class Manifest(_Strict):
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     instance: InstanceInfo
     core: CoreRef
     models: Annotated[list[Model], Field(min_length=1)]
     mcp_servers: list[McpServer] = []
+    agents: list[Agent] = []
     settings: Settings = Settings()
 
     @model_validator(mode="before")
     @classmethod
-    def _reserved(cls, data: Any) -> Any:  # noqa: ANN401 - сырые данные до проверки
-        if isinstance(data, dict) and "agents" in data:
-            raise ValueError("раздел agents зарезервирован: формат агентов задаст ADR-0010")
+    def _agents_need_v2(cls, data: Any) -> Any:  # noqa: ANN401 - сырые данные до проверки
+        if isinstance(data, dict) and "agents" in data and data.get("schema_version") == 1:
+            raise ValueError("раздел agents есть только в schema_version: 2 (ADR-0010)")
         return data
+
+    @model_validator(mode="after")
+    def _agent_refs(self) -> Manifest:
+        models = {m.name for m in self.models}
+        tools = {f"{s.name}.{t.name}" for s in self.mcp_servers for t in s.tools}
+        problems = []
+        for agent in self.agents:
+            if agent.model not in models:
+                problems.append(f"агент {agent.name}: модели {agent.model!r} нет в models")
+            problems += [
+                f"агент {agent.name}: инструмента {ref!r} нет в mcp_servers"
+                for ref in agent.tools
+                if ref not in tools
+            ]
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
+
+    @field_validator("agents")
+    @classmethod
+    def _agents(cls, value: list[Agent]) -> list[Agent]:
+        _unique([a.name for a in value], "агент")
+        return value
 
     @field_validator("models")
     @classmethod

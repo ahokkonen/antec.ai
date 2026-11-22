@@ -8,6 +8,7 @@ postgresql+asyncpg://postgres:pw@127.0.0.1:55432/postgres. Тест создаё
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import os
 import secrets
 import uuid
@@ -23,11 +24,19 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from antec_platform.agents import RunOutcome, StepRecord
 from antec_platform.auth import Principal
-from antec_platform.db import audit_events, create_engine, messages, metadata, model_calls
+from antec_platform.db import (
+    agent_runs,
+    audit_events,
+    create_engine,
+    messages,
+    metadata,
+    model_calls,
+)
 from antec_platform.migrate import upgrade
 from antec_platform.settings import DatabaseSettings
-from antec_platform.store import CallResult, CallStart, PgStore
+from antec_platform.store import AgentRunStart, CallResult, CallStart, PgStore
 
 pytestmark = [pytest.mark.db, pytest.mark.anyio]
 
@@ -148,6 +157,7 @@ async def test_migrations_are_idempotent(db: Db) -> None:
     "stmt",
     [
         "delete from users",
+        "delete from agent_runs",
         "update audit_events set action = 'x'",
         "delete from audit_events",
         "create table x (id int)",
@@ -329,3 +339,135 @@ async def test_policy_deny_audited(app_engine: AsyncEngine) -> None:
             )
         ).scalar_one()
     assert details == {"action": "invoke", "roles": ["open-webui-user"], "policy_scope": "dev"}
+
+
+async def test_agent_run_steps_history_and_audit(app_engine: AsyncEngine) -> None:
+    """Запуск агента (ADR-0010, п. 5): agent_runs, шаги в model_calls, история, аудит."""
+    store = PgStore(app_engine)
+    principal = _principal(f"agent-{uuid.uuid4()}")
+    user = await store.resolve_user(principal, uuid.uuid7())
+    conv = await store.ensure_conversation(user.id, "open-webui", "chat-agent")
+    run = AgentRunStart(
+        id=uuid.uuid7(),
+        user_id=user.id,
+        conversation_id=conv,
+        client_id="open-webui",
+        agent="agent-assistant",
+        model="chat-fast",
+        stream=True,
+        new_messages=[{"role": "user", "content": "Привет"}],
+    )
+    await store.start_agent_run(run)
+    outcome = RunOutcome(
+        status="ok",
+        text="Здравствуйте",
+        steps=[
+            StepRecord(
+                status="ok",
+                http_status=200,
+                prompt_tokens=10,
+                completion_tokens=3,
+                gateway_request_id="gw-1",
+                started_at=dt.datetime(2026, 11, 22, 12, 0, tzinfo=dt.UTC),
+                finished_at=dt.datetime(2026, 11, 22, 12, 0, 3, tzinfo=dt.UTC),
+            ),
+            StepRecord(
+                status="ok",
+                http_status=200,
+                prompt_tokens=20,
+                completion_tokens=4,
+                gateway_request_id="gw-2",
+            ),
+        ],
+    )
+    await store.finish_agent_run(run, outcome)
+    async with app_engine.connect() as conn:
+        row = (await conn.execute(select(agent_runs).where(agent_runs.c.id == run.id))).one()
+        calls = (
+            await conn.execute(
+                select(
+                    model_calls.c.id,
+                    model_calls.c.gateway_request_id,
+                    model_calls.c.status,
+                    model_calls.c.started_at,
+                    model_calls.c.finished_at,
+                )
+                .where(model_calls.c.agent_run_id == run.id)
+                .order_by(model_calls.c.id)
+            )
+        ).all()
+        history = (
+            await conn.execute(
+                select(messages.c.role, messages.c.model_call_id)
+                .where(messages.c.conversation_id == conv)
+                .order_by(messages.c.position)
+            )
+        ).all()
+        audit = (
+            await conn.execute(
+                select(audit_events.c.action, audit_events.c.outcome)
+                .where(audit_events.c.request_id == run.id)
+                .order_by(audit_events.c.occurred_at, audit_events.c.id)
+            )
+        ).all()
+    assert (row.status, row.steps, row.prompt_tokens, row.completion_tokens) == ("ok", 2, 30, 7)
+    assert row.finished_at is not None
+    assert [(c.gateway_request_id, c.status) for c in calls] == [("gw-1", "ok"), ("gw-2", "ok")]
+    assert calls[0].started_at == dt.datetime(2026, 11, 22, 12, 0, tzinfo=dt.UTC)
+    assert (calls[0].finished_at - calls[0].started_at).total_seconds() == 3
+    assert [h.role for h in history] == ["user", "assistant"]
+    assert {h.model_call_id for h in history} == {calls[-1].id}
+    assert [(a.action, a.outcome) for a in audit] == [
+        ("model.call", "allow"),
+        ("model.call", "allow"),
+        ("agent.run", "allow"),
+    ]
+
+
+async def test_agent_run_failed_without_steps(app_engine: AsyncEngine) -> None:
+    store = PgStore(app_engine)
+    principal = _principal(f"agent-fail-{uuid.uuid4()}")
+    user = await store.resolve_user(principal, uuid.uuid7())
+    conv = await store.ensure_conversation(user.id, "open-webui", None)
+    run = AgentRunStart(
+        id=uuid.uuid7(),
+        user_id=user.id,
+        conversation_id=conv,
+        client_id="open-webui",
+        agent="agent-assistant",
+        model="chat-fast",
+        stream=False,
+        new_messages=[{"role": "user", "content": "q"}],
+    )
+    await store.start_agent_run(run)
+    await store.finish_agent_run(
+        run,
+        RunOutcome(
+            status="rejected",
+            steps=[StepRecord(status="rejected", http_status=400)],
+            error="Budget",
+            http_status=400,
+            error_code="upstream_error",
+        ),
+    )
+    async with app_engine.connect() as conn:
+        status = (
+            await conn.execute(select(agent_runs.c.status).where(agent_runs.c.id == run.id))
+        ).scalar_one()
+        n_messages = len(
+            (
+                await conn.execute(select(messages.c.id).where(messages.c.conversation_id == conv))
+            ).all()
+        )
+        outcomes = (
+            (
+                await conn.execute(
+                    select(audit_events.c.outcome).where(audit_events.c.request_id == run.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert status == "rejected"
+    assert n_messages == 0
+    assert sorted(outcomes) == ["error", "error"]
