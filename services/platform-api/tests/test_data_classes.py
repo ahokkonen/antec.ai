@@ -123,3 +123,75 @@ async def test_tool_above_model_clearance_denied_before_call() -> None:
     ok = await broker.call("mcp-demo.get_time", True, {}, None)
     assert not ok.is_error
     assert seen[-1].attrs == {"data_class": "public"}
+
+
+async def test_conversation_class_blocks_lower_model(
+    harness: Harness, make_token: TokenFactory
+) -> None:
+    """Данные confidential в разговоре: модель с допуском internal в нём недоступна."""
+    harness.deps.clearances = {"chat-fast": "internal"}
+    headers = {**_auth(make_token()), "X-OpenWebUI-Chat-Id": "classed"}
+    body = {"model": "chat-fast", "messages": [{"role": "user", "content": "x"}]}
+    harness.gateway.response = None
+    first = await harness.client.post("/v1/chat/completions", json=body, headers=headers)
+    assert first.status_code != 403  # класс разговора ещё internal
+    (conv,) = set(harness.store.conversations.values())
+    harness.store.conv_classes[conv] = "confidential"
+    resp = await harness.client.post("/v1/chat/completions", json=body, headers=headers)
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "data_class_forbidden"
+    assert "разговора" in resp.json()["error"]["message"]
+    agent = await harness.client.post(
+        "/v1/chat/completions", json={**body, "model": ASSISTANT.name}, headers=headers
+    )
+    assert agent.json()["error"]["code"] == "data_class_forbidden"
+    # В другом разговоре та же модель доступна.
+    other = {**headers, "X-OpenWebUI-Chat-Id": "fresh"}
+    assert (
+        await harness.client.post(
+            "/v1/chat/completions", json={**body, "model": ASSISTANT.name}, headers=other
+        )
+    ).status_code == 200
+
+
+async def test_tool_call_raises_conversation_class() -> None:
+    from conftest import FakePolicy, FakeStore
+
+    store, mcp = FakeStore(), FakeMcp()
+    policy = FakePolicy()
+
+    async def allow(subject: Subject, action: str, resources: list[Resource]) -> list[bool]:
+        return [True] * len(resources)
+
+    policy.check = allow  # type: ignore[method-assign]
+    server = McpServerSpec(
+        SERVER.name,
+        SERVER.url,
+        SERVER.audience,
+        SERVER.protocol_version,
+        (
+            McpToolSpec("get_time", True, "public"),
+            McpToolSpec("create_note", False, "confidential"),
+        ),
+    )
+    conv = uuid.uuid7()
+    broker = ToolBroker(
+        servers={server.name: server},
+        client=mcp,
+        exchanger=FakeExchange(),
+        policy=policy,
+        audit=store,
+        subject=Subject(id="u1", roles=("platform-user",)),
+        subject_token="t",
+        user_id=uuid.uuid7(),
+        client_id="open-webui",
+        request_id=uuid.uuid7(),
+        agent=AGENT.name,
+        clearance="restricted",
+        default_class="internal",
+        conversation_id=conv,
+    )
+    await broker.call("mcp-demo.get_time", True, {}, None)
+    assert conv not in store.conv_classes
+    await broker.call("mcp-demo.create_note", False, {"text": "x"}, "u1")
+    assert store.conv_classes[conv] == "confidential"

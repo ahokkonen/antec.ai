@@ -95,8 +95,17 @@ def tool_scenario(token: str, checks: dict[str, bool], ids: dict[str, str]) -> N
     checks["agent-notes: повторное решение отклонено"] = again == 404
 
     # Классы данных (ADR-0011): agent-lab на chat-lab (допуск internal), create_note confidential.
+    # Класс разговора: после create_note (confidential) модель chat-lab (допуск internal) в этом
+    # разговоре недоступна, независимо от поведения модели.
+    direct = {"model": "chat-lab", "messages": [{"role": "user", "content": "Привет"}]}
+    status, _, raw = call("POST", "/chat/completions", token, direct, chat)
+    code = json.loads(raw).get("error", {}).get("code") if status == 403 else None
+    checks["класс разговора: chat-lab недоступна после данных confidential"] = (
+        code == "data_class_forbidden"
+    )
     lab = {"model": "agent-lab", "messages": [{"role": "user", "content": note.format("lab")}]}
-    status, headers, raw = call("POST", "/chat/completions", token, lab, chat)
+    # Свой разговор: в основном класс уже confidential, и agent-lab в нём отклонён целиком.
+    status, headers, raw = call("POST", "/chat/completions", token, lab, f"{chat}-lab")
     answer = json.loads(raw)["choices"][0]["message"]["content"] if status == 200 else ""
     ids["class_lab"] = headers.get("x-request-id", "")
     checks["agent-lab: инструмент выше допуска модели без запроса подтверждения"] = (

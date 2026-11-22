@@ -174,6 +174,12 @@ class Store(Protocol):
         self, user_id: uuid.UUID, *, client_id: str, request_id: uuid.UUID
     ) -> int: ...
 
+    async def conversation_class(self, conversation_id: uuid.UUID) -> str | None: ...
+
+    async def raise_conversation_class(
+        self, conversation_id: uuid.UUID, data_class: str
+    ) -> None: ...
+
 
 def _audit(
     *,
@@ -827,6 +833,32 @@ class PgStore:
                     )
                 )
         return len(rows)
+
+    async def conversation_class(self, conversation_id: uuid.UUID) -> str | None:
+        async with self._engine.connect() as conn:
+            value = (
+                await conn.execute(
+                    select(conversations.c.data_class).where(conversations.c.id == conversation_id)
+                )
+            ).scalar_one_or_none()
+        return str(value) if value is not None else None
+
+    async def raise_conversation_class(self, conversation_id: uuid.UUID, data_class: str) -> None:
+        """Класс разговора только растёт (ADR-0011): одно условное UPDATE, без гонок."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                text(_RAISE_CLASS_SQL),
+                {"c": data_class, "id": conversation_id},
+            )
+
+
+# Порядок классов ADR-0011 (data_classes.CLASSES); значение класса только параметром.
+_RAISE_CLASS_SQL = (
+    "update conversations set data_class = :c where id = :id and (data_class is null or "
+    "array_position(array['public', 'internal', 'confidential', 'restricted'], data_class) "
+    "< array_position(array['public', 'internal', 'confidential', 'restricted'], "
+    "cast(:c as text)))"
+)
 
 
 def _pending(row: Any) -> PendingRun:  # noqa: ANN401 - строка SQLAlchemy

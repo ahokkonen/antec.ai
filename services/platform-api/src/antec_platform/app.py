@@ -50,7 +50,7 @@ from antec_platform.chat import (
     response_message,
     usage_tokens,
 )
-from antec_platform.data_classes import DATA_CLASS_REASON, DEFAULT_CLEARANCE, allows
+from antec_platform.data_classes import DATA_CLASS_REASON, DEFAULT_CLEARANCE, allows, rank
 from antec_platform.errors import ApiError, error_body, forbidden, unauthorized
 from antec_platform.policy import PolicyClient, PolicyUnavailable, Resource, Subject
 from antec_platform.store import AgentRunStart, Approval, CallResult, CallStart, Store, User
@@ -98,9 +98,19 @@ class Deps:
     def clearance(self, model: str) -> str:
         return self.clearances.get(model, DEFAULT_CLEARANCE)
 
-    def model_allowed(self, model: str) -> bool:
-        """Инвариант ADR-0011: ввод пользователя (default_data_class) не выше допуска модели."""
-        return allows(self.clearance(model), self.default_data_class)
+    def model_allowed(self, model: str, data_class: str | None = None) -> bool:
+        """Инвариант ADR-0011: данные запроса не выше допуска модели.
+
+        data_class = класс разговора (наибольший из попавших в него), без него класс ввода.
+        """
+        return allows(self.clearance(model), data_class or self.default_data_class)
+
+    async def request_class(self, conversation_id: uuid.UUID) -> str:
+        """Класс запроса = max(класс ввода, класс разговора) (ADR-0011)."""
+        stored = await self.store.conversation_class(conversation_id)
+        if stored is not None and rank(stored) > rank(self.default_data_class):
+            return stored
+        return self.default_data_class
 
     # Фоновые записи итогов вызова: переживают отмену запроса клиентом, ждутся при остановке.
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
@@ -177,16 +187,24 @@ async def _check(
 
 
 async def authorize_agent(
-    request: Request, principal: Principal, user: User, agent: AgentDefinition
+    request: Request,
+    principal: Principal,
+    user: User,
+    agent: AgentDefinition,
+    data_class: str | None = None,
 ) -> None:
     """Агент и его модель (ADR-0010, п. 4): агент не получает модель, недоступную пользователю.
 
-    Сначала инвариант класса данных (ADR-0011): модель агента допущена к вводу пользователя.
+    Сначала инвариант класса данных (ADR-0011): модель агента допущена к классу запроса
+    (ввод пользователя и данные, уже попавшие в разговор).
     """
     deps = _deps(request)
-    if not deps.model_allowed(agent.model):
-        raise await _deny_data_class(request, principal, user, AGENT_KIND, agent.name, agent.model)
-    attrs = {"data_class": deps.default_data_class}
+    data_class = data_class or deps.default_data_class
+    if not deps.model_allowed(agent.model, data_class):
+        raise await _deny_data_class(
+            request, principal, user, AGENT_KIND, agent.name, agent.model, data_class
+        )
+    attrs = {"data_class": data_class}
     agent_ok, model_ok = await _check(
         deps,
         _subject(principal, user),
@@ -206,7 +224,7 @@ async def authorize_agent(
                 resource_id,
                 _request_id(request),
                 scope=deps.policy_scope,
-                data_class=deps.default_data_class,
+                data_class=data_class,
             )
     if not agent_ok:
         log.info("политика: нет права invoke на агента %s", agent.name)
@@ -219,7 +237,13 @@ async def authorize_agent(
 
 
 async def _deny_data_class(
-    request: Request, principal: Principal, user: User, kind: str, resource_id: str, model: str
+    request: Request,
+    principal: Principal,
+    user: User,
+    kind: str,
+    resource_id: str,
+    model: str,
+    data_class: str,
 ) -> ApiError:
     deps = _deps(request)
     await deps.store.record_policy_deny(
@@ -231,24 +255,28 @@ async def _deny_data_class(
         _request_id(request),
         scope=deps.policy_scope,
         reason=DATA_CLASS_REASON,
-        data_class=deps.default_data_class,
+        data_class=data_class,
     )
-    log.info("класс данных: %s выше допуска модели %s", deps.default_data_class, model)
+    log.info("класс данных: %s выше допуска модели %s", data_class, model)
+    where = "этого разговора" if data_class != deps.default_data_class else "запроса"
     return forbidden(
-        f"модель {model!r} не допущена к данным класса {deps.default_data_class!r}",
+        f"модель {model!r} не допущена к данным класса {data_class!r} ({where})",
         code="data_class_forbidden",
     )
 
 
-async def authorize_model(request: Request, principal: Principal, user: User, model: str) -> None:
+async def authorize_model(
+    request: Request, principal: Principal, user: User, model: str, data_class: str | None = None
+) -> None:
     deps = _deps(request)
-    if not deps.model_allowed(model):
-        raise await _deny_data_class(request, principal, user, MODEL_KIND, model, model)
+    data_class = data_class or deps.default_data_class
+    if not deps.model_allowed(model, data_class):
+        raise await _deny_data_class(request, principal, user, MODEL_KIND, model, model, data_class)
     (allowed,) = await _check(
         deps,
         _subject(principal, user),
         INVOKE,
-        [Resource(MODEL_KIND, model, {"data_class": deps.default_data_class})],
+        [Resource(MODEL_KIND, model, {"data_class": data_class})],
     )
     if not allowed:
         await deps.store.record_policy_deny(
@@ -259,7 +287,7 @@ async def authorize_model(request: Request, principal: Principal, user: User, mo
             model,
             _request_id(request),
             scope=deps.policy_scope,
-            data_class=deps.default_data_class,
+            data_class=data_class,
         )
         log.info("политика: нет права invoke на модель %s", model)
         raise forbidden(f"нет доступа к модели {model!r}", code="model_forbidden")
@@ -328,10 +356,12 @@ async def chat_completions(request: Request) -> Response:
     )
     if chat.model in deps.agents:
         return await _agent_completion(request, deps, principal, user, chat)
-    await authorize_model(request, principal, user, chat.model)
     conversation_id = await deps.store.ensure_conversation(
         user.id, principal.client_id, _external_id(request)
     )
+    # Класс запроса = max(класс ввода, класс разговора) (ADR-0011).
+    data_class = await deps.request_class(conversation_id)
+    await authorize_model(request, principal, user, chat.model, data_class)
     call = CallStart(
         id=_request_id(request),
         user_id=user.id,
@@ -340,7 +370,7 @@ async def chat_completions(request: Request) -> Response:
         model=chat.model,
         stream=chat.stream,
         new_messages=chat.new_messages(),
-        data_class=deps.default_data_class,
+        data_class=data_class,
     )
     await deps.store.start_call(call)
     payload = chat.upstream_payload(str(user.id))
@@ -666,6 +696,7 @@ def _tool_session(
     user: User,
     agent: AgentDefinition,
     token: str,
+    conversation_id: uuid.UUID,
 ) -> ToolBroker | None:
     if not agent.tools:
         return None
@@ -687,6 +718,7 @@ def _tool_session(
         agent=agent.name,
         clearance=deps.clearance(agent.model),
         default_class=deps.default_data_class,
+        conversation_id=conversation_id,
     )
 
 
@@ -701,12 +733,14 @@ async def _agent_completion(
     другое сообщение отменяет ожидание и обрабатывается как новый вопрос.
     """
     agent = deps.agents[chat.model]
-    await authorize_agent(request, principal, user, agent)
-    history, prompt = agent_input(chat.messages)
     external_id = _external_id(request)
     conversation_id = await deps.store.ensure_conversation(
         user.id, principal.client_id, external_id
     )
+    await authorize_agent(
+        request, principal, user, agent, await deps.request_class(conversation_id)
+    )
+    history, prompt = agent_input(chat.messages)
     rid = _request_id(request)
     resume: Resume | None = None
     parent: uuid.UUID | None = None
@@ -785,7 +819,8 @@ async def _run_agent(
             503, "агентный рантайм не запущен", type_="api_error", code="agent_unavailable"
         )
     token = bearer_token(request.headers.get("authorization")) or ""
-    tools = _tool_session(request, deps, principal, user, agent, token)
+    tools = _tool_session(request, deps, principal, user, agent, token, conversation_id)
+    data_class = await deps.request_class(conversation_id)
     run = AgentRunStart(
         id=_request_id(request),
         user_id=user.id,
@@ -798,7 +833,7 @@ async def _run_agent(
         # агенту не передаются (ADR-0010, п. 4).
         new_messages=new_messages,
         parent_run_id=parent,
-        data_class=deps.default_data_class,
+        data_class=data_class,
     )
     await deps.store.start_agent_run(run)
     handle = deps.runtime.start(agent, str(user.id), history, prompt, tools, resume)
@@ -914,7 +949,9 @@ async def agent_run_decision(request: Request) -> Response:
         )
         raise ApiError(409, "срок подтверждения истёк", code="approval_expired")
     agent = deps.agents[pending.agent]
-    await authorize_agent(request, principal, user, agent)
+    await authorize_agent(
+        request, principal, user, agent, await deps.request_class(pending.conversation_id)
+    )
     resolved = await deps.store.resolve_pending_run(
         pending.id,
         user.id,

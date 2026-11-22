@@ -589,3 +589,16 @@ async def test_expire_pending_runs(app_engine: AsyncEngine) -> None:
         )
     assert status == "expired"
     assert [d["decision"] for d in decisions] == ["expired"]
+
+
+async def test_conversation_class_only_grows(app_engine: AsyncEngine) -> None:
+    store = PgStore(app_engine)
+    principal = _principal(f"class-{uuid.uuid4()}")
+    user = await store.resolve_user(principal, uuid.uuid7())
+    conv = await store.ensure_conversation(user.id, "open-webui", "chat-class")
+    assert await store.conversation_class(conv) is None
+    await store.raise_conversation_class(conv, "confidential")
+    await store.raise_conversation_class(conv, "internal")
+    assert await store.conversation_class(conv) == "confidential"
+    await store.raise_conversation_class(conv, "restricted")
+    assert await store.conversation_class(conv) == "restricted"

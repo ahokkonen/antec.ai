@@ -192,3 +192,26 @@ def test_data_classes_need_v3() -> None:
     assert "default_class" in _problems(
         {**BASE, "schema_version": 3, "data": {"default_class": "secret"}}
     )
+
+
+def test_data_classes_match_platform_api() -> None:
+    """Один набор классов (ADR-0011): схема манифеста = data_classes.CLASSES Platform API."""
+    import ast
+    from pathlib import Path
+    from typing import get_args
+
+    from antec_instance.manifest import DATA_CLASSES, DataClass
+
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "services/platform-api/src/antec_platform/data_classes.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    (value,) = [
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "CLASSES" for t in node.targets)
+    ]
+    assert tuple(ast.literal_eval(value)) == DATA_CLASSES
+    assert get_args(DataClass) == DATA_CLASSES

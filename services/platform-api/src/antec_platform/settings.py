@@ -15,6 +15,8 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import URL
 
+from antec_platform.data_classes import CLASSES
+
 DEFAULT_SECRETS_DIR = Path("/run/antec-secrets")
 
 _CLIENT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -139,7 +141,7 @@ class Settings(DatabaseSettings):
     @field_validator("default_data_class")
     @classmethod
     def _data_class(cls, value: str) -> str:
-        if value not in ("public", "internal", "confidential", "restricted"):
+        if value not in CLASSES:
             raise ValueError(f"неизвестный класс данных: {value!r}")
         return value
 

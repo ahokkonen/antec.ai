@@ -117,6 +117,10 @@ class ToolAudit(Protocol):
         details: dict[str, Any],
     ) -> None: ...
 
+    async def raise_conversation_class(
+        self, conversation_id: uuid.UUID, data_class: str
+    ) -> None: ...
+
 
 def _data_class(value: object) -> str | None:
     if value is None:
@@ -189,7 +193,9 @@ class ToolBroker:
         agent: str,
         clearance: str = "restricted",
         default_class: str = "internal",
+        conversation_id: uuid.UUID | None = None,
     ) -> None:
+        self._conversation_id = conversation_id
         self._clearance = clearance
         self._default_class = default_class
         self._servers = servers
@@ -301,6 +307,12 @@ class ToolBroker:
             return ToolCallResult(f"инструмент недоступен: {exc}", is_error=True)
         details |= {"is_error": result.is_error, "duration_ms": _ms(started)}
         await self._record(ref, "error" if result.is_error else "allow", details)
+        # Данные инструмента теперь в разговоре: его класс не ниже класса инструмента
+        # (ADR-0011): следующая модель в этом разговоре должна быть допущена к нему.
+        if self._conversation_id is not None and rank(details["data_class"]) > rank(
+            self._default_class
+        ):
+            await self._audit.raise_conversation_class(self._conversation_id, details["data_class"])
         return result
 
     async def _record(self, ref: str, outcome: str, details: dict[str, Any]) -> None:

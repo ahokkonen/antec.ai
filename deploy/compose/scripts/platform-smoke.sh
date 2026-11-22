@@ -166,12 +166,15 @@ checks = {
     "решение через API: tool.call create_note allow": (
         "tool.call:allow:mcp-demo.create_note" in audit["resume_api"]
     ),
-    "классы данных: agent-lab create_note deny, вызова нет (ADR-0011)": (
-        "tool.call:deny:mcp-demo.create_note" in audit.get("class_lab", [])
-        and "tool.call:allow:mcp-demo.create_note" not in audit.get("class_lab", [])
+    # Отказ виден, только если модель попыталась вызвать инструмент; без попытки проверка
+    # не падает (инвариант детерминированно проверяет «класс разговора»).
+    "классы данных: agent-lab create_note не выполнен (ADR-0011)": (
+        "tool.call:allow:mcp-demo.create_note" not in audit.get("class_lab", [])
     ),
     "mcp-demo: созданы 2 подтверждённые заметки (токен обмена принят)": notes >= 2,
 }
+if "tool.call:deny:mcp-demo.create_note" not in audit.get("class_lab", []):
+    print("  [skip] agent-lab: модель не пыталась вызвать create_note", file=sys.stderr)
 for name, ok in checks.items():
     print(f"  [{'ok' if ok else 'FAIL'}] {name}", file=sys.stderr)
 sys.exit(0 if all(checks.values()) else 1)
