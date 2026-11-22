@@ -115,8 +115,9 @@ Platform API владеет всем, что нельзя потерять пр�
    `conversation_id`, `client_id`, `model`, `stream`, `status` ok, error, cancelled, rejected,
    `http_status`, `prompt_tokens`, `completion_tokens`, `cost_usd`, `gateway_request_id`,
    `started_at`, `finished_at`). Токены берутся из `usage` ответа (для потока Platform API
-   запрашивает `stream_options.include_usage`), стоимость из ответа шлюза, если он её сообщает,
-   иначе пусто до колбэка расходов (ADR-0001, п. 4). Источник истины расходов `model_calls`.
+   запрашивает `stream_options.include_usage`), стоимость из ответа шлюза, если он её сообщает
+   (LiteLLM: только без потока), иначе пусто до колбэка расходов (ADR-0001, п. 4).
+   `gateway_request_id` = `id` ответа: по нему LiteLLM записывает расход (SpendLogs). Источник истины расходов `model_calls`.
    Бюджеты на пользователя считает LiteLLM по `user` = id пользователя Platform API: ключ
    `platform-api` только с логическими моделями и бюджетом конечного пользователя
    `platform-user` (5 USD на 30 дней, как у Open WebUI в ADR-0018).
@@ -175,6 +176,8 @@ Platform API владеет всем, что нельзя потерять пр�
 - [ ] Колбэк расходов LiteLLM в `model_calls` (ADR-0001, п. 4).
 - [ ] Клиенты API кроме Open WebUI и их права: вместе с Cerbos (ADR-0009).
 - [ ] Очистка истории по сроку и роль для неё (ADR-0012).
+- [ ] Сеть `data` на стенде общая: Open WebUI достижим LiteLLM и наоборот, доступ закрывают
+      ключи и токены. Отдельные сети к PostgreSQL на сервис или egress-политики на сервере.
 
 ## Ссылки
 
