@@ -62,7 +62,8 @@ PDP:
 1. **Cerbos 0.57.0** как PDP Platform API. Политики только с диска, Cerbos Hub не используется.
 2. **Контракт: `PolicyClient` в Platform API по AuthZEN** (HTTP, httpx, без SDK). Адаптер
    `antec_platform/adapters/authzen.py` знает о полях Cerbos (`properties.cerbos.roles`); остальной
-   код видит только `check(principal, action, resource)` и пакетную проверку. Субъект без ролей
+   код видит только `PolicyClient.check(subject, action, resources) -> list[bool]` (одна проверка
+   = список из одного ресурса). Субъект без ролей
    до PDP не доходит (отказ), а роль `user` (значение `subject.type`) не используется в политиках.
 3. **Роли:** роли клиента `platform-api` в Keycloak. `platform-user` входит в роли realm по
    умолчанию (доступ к realm ограничивает IdP, для Entra «Assignment required»), `platform-admin`
