@@ -20,9 +20,11 @@ RUN uv sync --locked --no-dev --no-editable
 FROM docker.io/library/python:3.14.10-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
 # Без uv, исходников и инструментов сборки: только окружение с пакетом.
 COPY --from=build /app/.venv /app/.venv
+# PYDANTIC_AI_NO_BANNER: без рекламного баннера Pydantic AI в журнале (ADR-0010, п. 1).
 ENV PATH=/app/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYDANTIC_AI_NO_BANNER=1
 # Пользователь nobody (65534): владелец секретов в томе, как у LiteLLM и Open WebUI.
 USER 65534:65534
 EXPOSE 8000

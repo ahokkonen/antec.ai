@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import time
@@ -18,10 +19,11 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from antec_platform.adapters.gateway import GatewayMeta, GatewayResponse, GatewayUnavailable
+from antec_platform.agents import AgentDefinition, RunOutcome, StepRecord, Turn
 from antec_platform.app import Deps, create_app
 from antec_platform.auth import JwksCache, Principal, TokenVerifier
 from antec_platform.policy import PolicyUnavailable, Resource, Subject
-from antec_platform.store import CallResult, CallStart, User
+from antec_platform.store import AgentRunStart, CallResult, CallStart, User
 
 ISSUER = "http://localhost:8080/realms/antec"
 JWKS_URL = "http://keycloak:8080/realms/antec/protocol/openid-connect/certs"
@@ -145,6 +147,8 @@ class FakeStore:
     policy_denied: list[tuple[str, str, str]] = field(default_factory=list)
     finished: list[tuple[CallStart, CallResult]] = field(default_factory=list)
     disabled: set[str] = field(default_factory=set)
+    runs_started: list[AgentRunStart] = field(default_factory=list)
+    runs_finished: list[tuple[AgentRunStart, RunOutcome]] = field(default_factory=list)
 
     async def ping(self) -> None:
         return None
@@ -184,6 +188,75 @@ class FakeStore:
 
     async def finish_call(self, call: CallStart, result: CallResult) -> None:
         self.finished.append((call, result))
+
+    async def start_agent_run(self, run: AgentRunStart) -> None:
+        self.runs_started.append(run)
+
+    async def finish_agent_run(self, run: AgentRunStart, outcome: RunOutcome) -> None:
+        self.runs_finished.append((run, outcome))
+
+
+@dataclass
+class FakeRun:
+    deltas_value: list[str]
+    result: RunOutcome
+    hold: asyncio.Event | None = None
+    cancelled: bool = False
+
+    async def deltas(self) -> AsyncIterator[str]:
+        for d in self.deltas_value:
+            yield d
+        if self.hold is not None:
+            await self.hold.wait()
+
+    async def outcome(self) -> RunOutcome:
+        if self.cancelled:
+            self.result.status = "cancelled"
+        return self.result
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        if self.hold is not None:
+            self.hold.set()
+
+
+@dataclass
+class FakeRuntime:
+    """Рантайм для тестов фасада: заранее заданные фрагменты и итог."""
+
+    deltas: list[str] = field(default_factory=lambda: ["При", "вет"])
+    result: RunOutcome = field(
+        default_factory=lambda: RunOutcome(
+            status="ok",
+            text="Привет",
+            steps=[StepRecord(status="ok", http_status=200, prompt_tokens=7, completion_tokens=2)],
+        )
+    )
+    hold: asyncio.Event | None = None
+    started: list[tuple[AgentDefinition, str, list[Turn], str]] = field(default_factory=list)
+    runs: list[FakeRun] = field(default_factory=list)
+
+    def start(
+        self, agent: AgentDefinition, user_id: str, history: list[Turn], prompt: str
+    ) -> FakeRun:
+        self.started.append((agent, user_id, history, prompt))
+        run = FakeRun(list(self.deltas), self.result, self.hold)
+        self.runs.append(run)
+        return run
+
+    async def aclose(self) -> None:
+        return None
+
+
+ASSISTANT = AgentDefinition(
+    name="agent-assistant",
+    description="",
+    model="chat-fast",
+    instructions="Ты ассистент.",
+    tools=(),
+    max_steps=5,
+    max_tool_calls=0,
+)
 
 
 @dataclass
@@ -273,6 +346,7 @@ class Harness:
     gateway: FakeGateway
     policy: FakePolicy
     deps: Deps
+    runtime: FakeRuntime
 
 
 @pytest.fixture
@@ -280,6 +354,8 @@ async def harness(verifier: TokenVerifier, jwks: JwksCache) -> AsyncIterator[Har
     store = FakeStore()
     gateway = FakeGateway()
     policy = FakePolicy()
+    policy.allowed.add(("platform-user", ASSISTANT.name))
+    runtime = FakeRuntime()
     deps = Deps(
         store=store,
         gateway=gateway,
@@ -288,6 +364,8 @@ async def harness(verifier: TokenVerifier, jwks: JwksCache) -> AsyncIterator[Har
         policy=policy,
         models=["chat-default", "chat-fast"],
         max_request_bytes=64 * 1024,
+        agents={ASSISTANT.name: ASSISTANT},
+        runtime=runtime,
     )
 
     async def factory() -> Deps:
@@ -297,7 +375,14 @@ async def harness(verifier: TokenVerifier, jwks: JwksCache) -> AsyncIterator[Har
     app.state.deps = deps  # ASGITransport не выполняет lifespan
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://platform-api") as client:
-        yield Harness(client=client, store=store, gateway=gateway, policy=policy, deps=deps)
+        yield Harness(
+            client=client,
+            store=store,
+            gateway=gateway,
+            policy=policy,
+            deps=deps,
+            runtime=runtime,
+        )
 
 
 @pytest.fixture

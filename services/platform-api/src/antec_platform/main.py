@@ -7,6 +7,8 @@ from fastapi import FastAPI
 
 from antec_platform.adapters.authzen import AuthZenPolicyClient
 from antec_platform.adapters.litellm import LiteLLMGateway
+from antec_platform.adapters.pydantic_ai import PydanticAIRuntime
+from antec_platform.agents import AgentRuntime, load_agents
 from antec_platform.app import Deps, create_app
 from antec_platform.auth import JwksCache, TokenVerifier
 from antec_platform.db import create_engine
@@ -15,11 +17,21 @@ from antec_platform.store import PgStore
 
 
 def build_app(settings: Settings) -> FastAPI:
+    # agents.json проверяется при сборке: ошибка конфигурации агентов не даёт запустить сервис.
+    agents = load_agents(settings.agents_file, settings.models)
     engine = create_engine(settings)
     http = httpx.AsyncClient(trust_env=False, follow_redirects=False)
 
     async def factory() -> Deps:
         jwks = JwksCache(settings.oidc_jwks_url, http, ttl=settings.jwks_cache_seconds)
+        runtime: AgentRuntime | None = None
+        if agents:
+            runtime = PydanticAIRuntime(
+                agents,
+                settings.gateway_url,
+                settings.gateway_api_key.get_secret_value(),
+                settings.gateway_timeout_seconds,
+            )
         return Deps(
             store=PgStore(engine),
             gateway=LiteLLMGateway(
@@ -41,9 +53,13 @@ def build_app(settings: Settings) -> FastAPI:
             models=settings.models,
             max_request_bytes=settings.max_request_bytes,
             policy_scope=settings.policy_scope,
+            agents=agents,
+            runtime=runtime,
         )
 
     async def shutdown(deps: Deps) -> None:
+        if deps.runtime is not None:
+            await deps.runtime.aclose()
         await deps.gateway.aclose()
         await deps.policy.aclose()
         await http.aclose()

@@ -1,13 +1,14 @@
 # Platform API
 
 OpenAI-совместимый фасад antec.ai: проверка токена Keycloak, пользователи, история, вызовы
-моделей и расходы, аудит. Решение и модель данных: [ADR-0006](../../docs/adr/0006-platform-api-data-model.md).
+моделей и расходы, аудит, агенты. Решение и модель данных: [ADR-0006](../../docs/adr/0006-platform-api-data-model.md),
+агенты: [ADR-0010](../../docs/adr/0010-agent-runtime.md).
 
 ## Что умеет v0.1
 
 | Метод | Путь | Что делает |
 | --- | --- | --- |
-| `GET` | `/v1/models` | Логические модели (`PLATFORM_MODELS`) |
+| `GET` | `/v1/models` | Логические модели (`PLATFORM_MODELS`) и агенты (`PLATFORM_AGENTS_FILE`) |
 | `POST` | `/v1/chat/completions` | Чат с потоком SSE и без; в LiteLLM уходят только параметры OpenAI из белого списка, `user` = id пользователя Platform API |
 | `GET` | `/healthz` | Процесс жив |
 | `GET` | `/readyz` | БД и JWKS доступны |
@@ -21,6 +22,13 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 инсталляции (`tools/instance render`). Ошибки в формате OpenAI, у каждого ответа заголовок `x-request-id`
 (он же id вызова в `model_calls` и `audit_events`).
 
+Агенты (`agent-<имя>`, `agents.json` рендера манифеста): вызов требует `invoke` на `agent` и на
+его модель; инструкции задаёт манифест, системные сообщения и параметры генерации клиента не
+передаются; модель агента вызывается в LiteLLM тем же ключом с `user` = id пользователя. Запуск
+записывается в `agent_runs` (событие `agent.run`), каждый шаг в `model_calls` с `agent_run_id`
+(событие `model.call`). Рантайм: Pydantic AI только в `adapters/pydantic_ai.py` за контрактом
+`AgentRuntime` (`agents.py`); граница импорта проверяется тестом `test_boundaries.py`.
+
 ## Код
 
 | Модуль | Роль |
@@ -31,7 +39,8 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 | `store.py` | Пользователи, разговоры, вызовы, аудит (PostgreSQL) |
 | `db.py`, `migrations/` | Схема (SQLAlchemy Core) и миграции Alembic |
 | `policy.py` | Контракт `PolicyClient`: субъект, действие, ресурсы |
-| `adapters/` | Контракт шлюза `ChatGateway`, адаптер LiteLLM и `PolicyClient` по AuthZEN (HTTP, без SDK) |
+| `agents.py` | Контракт `AgentRuntime`, описания агентов из `agents.json`, вход агента из сообщений |
+| `adapters/` | Контракт шлюза `ChatGateway`, адаптер LiteLLM и `PolicyClient` по AuthZEN (HTTP, без SDK), `AgentRuntime` на Pydantic AI |
 | `settings.py` | Настройки: несекретные из `PLATFORM_*`, секреты из файлов `/run/antec-secrets` |
 
 Секреты (файлы в `/run/antec-secrets`, имя = переменная в нижнем регистре):
