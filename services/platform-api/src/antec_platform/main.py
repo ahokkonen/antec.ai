@@ -13,6 +13,7 @@ from antec_platform.adapters.pydantic_ai import PydanticAIRuntime
 from antec_platform.agents import AgentConfigError, AgentRuntime, load_agents
 from antec_platform.app import Deps, create_app
 from antec_platform.auth import JwksCache, TokenVerifier
+from antec_platform.data_classes import load_clearances
 from antec_platform.db import create_engine
 from antec_platform.settings import Settings
 from antec_platform.store import PgStore
@@ -23,6 +24,7 @@ def build_app(settings: Settings) -> FastAPI:
     # agents.json проверяется при сборке: ошибка конфигурации агентов не даёт запустить сервис.
     agents = load_agents(settings.agents_file, settings.models)
     servers = load_mcp_servers(settings.mcp_servers_file, agents)
+    clearances = load_clearances(settings.models_file, settings.models)
     uses_tools = any(a.tools for a in agents.values())
     if uses_tools and (settings.oidc_token_url is None or settings.oidc_client_secret is None):
         raise AgentConfigError(
@@ -79,6 +81,8 @@ def build_app(settings: Settings) -> FastAPI:
             mcp_client=mcp_client,
             token_exchange=exchanger,
             approval_ttl_seconds=settings.approval_ttl_seconds,
+            clearances=clearances,
+            default_data_class=settings.default_data_class,
         )
 
     async def shutdown(deps: Deps) -> None:

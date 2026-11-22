@@ -50,6 +50,7 @@ from antec_platform.chat import (
     response_message,
     usage_tokens,
 )
+from antec_platform.data_classes import DATA_CLASS_REASON, DEFAULT_CLEARANCE, allows
 from antec_platform.errors import ApiError, error_body, forbidden, unauthorized
 from antec_platform.policy import PolicyClient, PolicyUnavailable, Resource, Subject
 from antec_platform.store import AgentRunStart, Approval, CallResult, CallStart, Store, User
@@ -90,6 +91,17 @@ class Deps:
     mcp_client: McpClient | None = None
     token_exchange: TokenExchanger | None = None
     approval_ttl_seconds: int = 900
+    # Классы данных (ADR-0011): допуски логических моделей и класс ввода пользователя.
+    clearances: dict[str, str] = field(default_factory=dict)
+    default_data_class: str = "internal"
+
+    def clearance(self, model: str) -> str:
+        return self.clearances.get(model, DEFAULT_CLEARANCE)
+
+    def model_allowed(self, model: str) -> bool:
+        """Инвариант ADR-0011: ввод пользователя (default_data_class) не выше допуска модели."""
+        return allows(self.clearance(model), self.default_data_class)
+
     # Фоновые записи итогов вызова: переживают отмену запроса клиентом, ждутся при остановке.
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
 
@@ -167,13 +179,19 @@ async def _check(
 async def authorize_agent(
     request: Request, principal: Principal, user: User, agent: AgentDefinition
 ) -> None:
-    """Агент и его модель (ADR-0010, п. 4): агент не получает модель, недоступную пользователю."""
+    """Агент и его модель (ADR-0010, п. 4): агент не получает модель, недоступную пользователю.
+
+    Сначала инвариант класса данных (ADR-0011): модель агента допущена к вводу пользователя.
+    """
     deps = _deps(request)
+    if not deps.model_allowed(agent.model):
+        raise await _deny_data_class(request, principal, user, AGENT_KIND, agent.name, agent.model)
+    attrs = {"data_class": deps.default_data_class}
     agent_ok, model_ok = await _check(
         deps,
         _subject(principal, user),
         INVOKE,
-        [Resource(AGENT_KIND, agent.name), Resource(MODEL_KIND, agent.model)],
+        [Resource(AGENT_KIND, agent.name, attrs), Resource(MODEL_KIND, agent.model, attrs)],
     )
     for ok, kind, resource_id in (
         (agent_ok, AGENT_KIND, agent.name),
@@ -188,6 +206,7 @@ async def authorize_agent(
                 resource_id,
                 _request_id(request),
                 scope=deps.policy_scope,
+                data_class=deps.default_data_class,
             )
     if not agent_ok:
         log.info("политика: нет права invoke на агента %s", agent.name)
@@ -199,10 +218,37 @@ async def authorize_agent(
         )
 
 
+async def _deny_data_class(
+    request: Request, principal: Principal, user: User, kind: str, resource_id: str, model: str
+) -> ApiError:
+    deps = _deps(request)
+    await deps.store.record_policy_deny(
+        principal,
+        user.id,
+        INVOKE,
+        kind,
+        resource_id,
+        _request_id(request),
+        scope=deps.policy_scope,
+        reason=DATA_CLASS_REASON,
+        data_class=deps.default_data_class,
+    )
+    log.info("класс данных: %s выше допуска модели %s", deps.default_data_class, model)
+    return forbidden(
+        f"модель {model!r} не допущена к данным класса {deps.default_data_class!r}",
+        code="data_class_forbidden",
+    )
+
+
 async def authorize_model(request: Request, principal: Principal, user: User, model: str) -> None:
     deps = _deps(request)
+    if not deps.model_allowed(model):
+        raise await _deny_data_class(request, principal, user, MODEL_KIND, model, model)
     (allowed,) = await _check(
-        deps, _subject(principal, user), INVOKE, [Resource(MODEL_KIND, model)]
+        deps,
+        _subject(principal, user),
+        INVOKE,
+        [Resource(MODEL_KIND, model, {"data_class": deps.default_data_class})],
     )
     if not allowed:
         await deps.store.record_policy_deny(
@@ -213,6 +259,7 @@ async def authorize_model(request: Request, principal: Principal, user: User, mo
             model,
             _request_id(request),
             scope=deps.policy_scope,
+            data_class=deps.default_data_class,
         )
         log.info("политика: нет права invoke на модель %s", model)
         raise forbidden(f"нет доступа к модели {model!r}", code="model_forbidden")
@@ -293,6 +340,7 @@ async def chat_completions(request: Request) -> Response:
         model=chat.model,
         stream=chat.stream,
         new_messages=chat.new_messages(),
+        data_class=deps.default_data_class,
     )
     await deps.store.start_call(call)
     payload = chat.upstream_payload(str(user.id))
@@ -469,29 +517,30 @@ async def _close_and_finish(
 async def list_models(request: Request) -> Response:
     """Модели и агенты с правом invoke (одна пакетная проверка).
 
-    Агент виден, только если разрешены и он, и его модель (ADR-0010, п. 4).
+    Агент виден, только если разрешены и он, и его модель (ADR-0010, п. 4); модель и агент
+    с допуском ниже класса ввода не показываются (ADR-0011, п. 3).
     """
     principal, user = await authenticate(request)
     deps = _deps(request)
-    agents = list(deps.agents.values())
+    models = [m for m in deps.models if deps.model_allowed(m)]
+    agents = [a for a in deps.agents.values() if deps.model_allowed(a.model)]
+    attrs = {"data_class": deps.default_data_class}
     decisions = await _check(
         deps,
         _subject(principal, user),
         INVOKE,
-        [Resource(MODEL_KIND, m) for m in deps.models]
-        + [Resource(AGENT_KIND, a.name) for a in agents],
+        [Resource(MODEL_KIND, m, attrs) for m in models]
+        + [Resource(AGENT_KIND, a.name, attrs) for a in agents],
     )
-    allowed_models = {
-        m for m, ok in zip(deps.models, decisions[: len(deps.models)], strict=True) if ok
-    }
+    allowed_models = {m for m, ok in zip(models, decisions[: len(models)], strict=True) if ok}
     data: list[dict[str, Any]] = [
         {"id": m, "object": "model", "created": 0, "owned_by": "antec"}
-        for m in deps.models
+        for m in models
         if m in allowed_models
     ]
     data += [
         {"id": a.name, "object": "model", "created": 0, "owned_by": "antec-agent"}
-        for a, ok in zip(agents, decisions[len(deps.models) :], strict=True)
+        for a, ok in zip(agents, decisions[len(models) :], strict=True)
         if ok and a.model in allowed_models
     ]
     return JSONResponse({"object": "list", "data": data})
@@ -636,6 +685,8 @@ def _tool_session(
         client_id=principal.client_id,
         request_id=_request_id(request),
         agent=agent.name,
+        clearance=deps.clearance(agent.model),
+        default_class=deps.default_data_class,
     )
 
 
@@ -747,6 +798,7 @@ async def _run_agent(
         # агенту не передаются (ADR-0010, п. 4).
         new_messages=new_messages,
         parent_run_id=parent,
+        data_class=deps.default_data_class,
     )
     await deps.store.start_agent_run(run)
     handle = deps.runtime.start(agent, str(user.id), history, prompt, tools, resume)

@@ -27,6 +27,8 @@ class Subject:
 class Resource:
     kind: str
     id: str
+    # Атрибуты ресурса для политик (например, data_class, ADR-0011).
+    attrs: dict[str, str] = field(default_factory=dict)
 
 
 class PolicyClient(Protocol):

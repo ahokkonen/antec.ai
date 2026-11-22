@@ -61,7 +61,7 @@ from antec_platform.agents import (
     ToolSession,
     Turn,
 )
-from antec_platform.tools import ToolDefinition, ToolError
+from antec_platform.tools import DENIED_TEXT, ToolDefinition, ToolError
 
 log = logging.getLogger(__name__)
 
@@ -195,7 +195,7 @@ def _tool(defn: ToolDefinition, session: ToolSession, approved_by: str | None) -
         try:
             if not defn.read_only and not ctx.tool_call_approved:
                 if not await session.authorize(defn.ref, defn.read_only):
-                    return "доступ к инструменту запрещён политикой"
+                    return DENIED_TEXT
                 raise ApprovalRequired(metadata={"ref": defn.ref})
             result = await session.call(
                 defn.ref,

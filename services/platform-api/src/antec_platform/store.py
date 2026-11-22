@@ -61,6 +61,8 @@ class CallStart:
     model: str
     stream: bool
     new_messages: list[dict[str, Any]] = field(default_factory=list)
+    # Класс данных запроса (ADR-0011): в аудит model.call.
+    data_class: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +79,7 @@ class AgentRunStart:
     new_messages: list[dict[str, Any]] = field(default_factory=list)
     # Продолжение запуска после подтверждения (ADR-0010, п. 7).
     parent_run_id: uuid.UUID | None = None
+    data_class: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +121,8 @@ class Store(Protocol):
         resource_id: str,
         request_id: uuid.UUID,
         scope: str | None = None,
+        reason: str = "policy",
+        data_class: str | None = None,
     ) -> None: ...
 
     async def ensure_conversation(
@@ -393,6 +398,8 @@ class PgStore:
         resource_id: str,
         request_id: uuid.UUID,
         scope: str | None = None,
+        reason: str = "policy",
+        data_class: str | None = None,
     ) -> None:
         """Отказ политики (ADR-0009, п. 6): кто, что и с какими ролями пытался сделать.
 
@@ -402,6 +409,11 @@ class PgStore:
         details: dict[str, object] = {"action": action, "roles": list(principal.roles)}
         if scope:
             details["policy_scope"] = scope
+        # Причина: policy (Cerbos) или data_class (инвариант ADR-0011).
+        if reason != "policy":
+            details["reason"] = reason
+        if data_class:
+            details["data_class"] = data_class
         async with self._engine.begin() as conn:
             await conn.execute(
                 insert(audit_events).values(
@@ -511,6 +523,7 @@ class PgStore:
                             "http_status": result.http_status,
                             "stream": call.stream,
                             "conversation_id": str(call.conversation_id),
+                            "data_class": call.data_class,
                             "prompt_tokens": result.prompt_tokens,
                             "completion_tokens": result.completion_tokens,
                             "cost_usd": str(result.cost_usd)
@@ -612,6 +625,7 @@ class PgStore:
                                 "conversation_id": str(run.conversation_id),
                                 "agent": run.agent,
                                 "agent_run_id": str(run.id),
+                                "data_class": run.data_class,
                                 "step": number,
                                 "model_call_id": str(step_id),
                                 "prompt_tokens": step.prompt_tokens,
@@ -658,6 +672,7 @@ class PgStore:
                             "model": run.model,
                             "stream": run.stream,
                             "conversation_id": str(run.conversation_id),
+                            "data_class": run.data_class,
                             "steps": len(outcome.steps),
                             "prompt_tokens": outcome.prompt_tokens,
                             "completion_tokens": outcome.completion_tokens,

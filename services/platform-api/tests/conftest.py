@@ -160,6 +160,7 @@ class FakeStore:
     conversations: dict[tuple[uuid.UUID, str, str | None], uuid.UUID] = field(default_factory=dict)
     started: list[CallStart] = field(default_factory=list)
     policy_denied: list[tuple[str, str, str]] = field(default_factory=list)
+    deny_reasons: list[str] = field(default_factory=list)
     finished: list[tuple[CallStart, CallResult]] = field(default_factory=list)
     disabled: set[str] = field(default_factory=set)
     runs_started: list[AgentRunStart] = field(default_factory=list)
@@ -192,8 +193,11 @@ class FakeStore:
         resource_id: str,
         request_id: uuid.UUID,
         scope: str | None = None,
+        reason: str = "policy",
+        data_class: str | None = None,
     ) -> None:
         self.policy_denied.append((action, resource_type, resource_id))
+        self.deny_reasons.append(reason)
 
     async def ensure_conversation(
         self, user_id: uuid.UUID, client_id: str, external_id: str | None
