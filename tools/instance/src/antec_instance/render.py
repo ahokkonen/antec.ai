@@ -1,8 +1,8 @@
 """Производные файлы манифеста (ADR-0008, п. 3): LiteLLM, Platform API, сводка для скриптов.
 
-Модели задаются только в манифесте; LiteLLM читает `litellm-models.yaml` через `include`,
-Platform API получает `platform-api.env` и `agents.json` (ADR-0010), скрипты стенда читают
-`instance.json`.
+Модели задаются только в манифесте; LiteLLM читает `litellm/models.yaml` через `include`,
+Platform API получает `platform-api.env` и `platform-api/agents.json` (ADR-0010), скрипты
+стенда читают `instance.json`.
 """
 
 from __future__ import annotations
@@ -18,10 +18,13 @@ import yaml
 from antec_instance.agents import resolve_agents
 from antec_instance.manifest import Manifest
 
-LITELLM_MODELS = "litellm-models.yaml"
+# Каждому сервису свой подкаталог: контейнер монтирует только своё (LiteLLM не видит агентов).
+LITELLM_MODELS = "litellm/models.yaml"
+AGENTS = "platform-api/agents.json"
 PLATFORM_ENV = "platform-api.env"
 SUMMARY = "instance.json"
-AGENTS = "agents.json"
+# Прежняя раскладка (до подкаталогов): удаляется, чтобы не осталось устаревших копий.
+_LEGACY = ("litellm-models.yaml", "agents.json")
 _HEADER = "# Сгенерировано tools/instance render из instance.yaml (ADR-0008). Не редактировать.\n"
 
 
@@ -96,9 +99,12 @@ def render(manifest: Manifest, instance_dir: Path, out_dir: Path) -> list[Path]:
         # Всегда, даже пустой: Platform API читает файл при старте.
         AGENTS: json.dumps(agents, ensure_ascii=False, indent=2) + "\n",
     }
+    for legacy in _LEGACY:
+        (out_dir / legacy).unlink(missing_ok=True)
     written = []
     for name, content in files.items():
         path = out_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
         _write(path, content)
         written.append(path)
     return written

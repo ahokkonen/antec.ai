@@ -18,7 +18,7 @@ def test_render_dev(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
     assert (
         main(["--core", str(core_dir), "render", str(dev_instance), "--out", str(out)]) == EXIT_OK
     )
-    models = yaml.safe_load((out / "litellm-models.yaml").read_text())
+    models = yaml.safe_load((out / "litellm" / "models.yaml").read_text())
     assert list(models) == ["model_list"]
     assert [m["model_name"] for m in models["model_list"]] == [
         "chat-default",
@@ -39,7 +39,7 @@ def test_render_dev(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
         "PLATFORM_POLICY_SCOPE": "dev",
         "PLATFORM_ALLOWED_CLIENTS": "open-webui,antec-smoke",
     }
-    agents = json.loads((out / "agents.json").read_text())
+    agents = json.loads((out / "platform-api" / "agents.json").read_text())
     assert [a["name"] for a in agents] == ["agent-assistant"]
     assert agents[0]["model"] == "chat-fast"
     assert "dev-инсталляции" in agents[0]["instructions"]
@@ -115,3 +115,30 @@ def test_instructions_file_problems(core_dir: Path, dev_instance: Path) -> None:
     md.unlink()
     md.write_text("  \n")
     assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_INVALID
+
+
+def test_render_removes_legacy_layout(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "litellm-models.yaml").write_text("old")
+    (out / "agents.json").write_text("old")
+    assert (
+        main(["--core", str(core_dir), "render", str(dev_instance), "--out", str(out)]) == EXIT_OK
+    )
+    assert not (out / "litellm-models.yaml").exists()
+    assert not (out / "agents.json").exists()
+
+
+def test_agent_tools_rejected_until_mcp_client(
+    core_dir: Path, dev_instance: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = dev_instance / "instance.yaml"
+    text = manifest.read_text().replace(
+        "mcp_servers: []",
+        "mcp_servers:\n  - name: crm\n    url: http://mcp-crm:8080/mcp\n    audience: mcp-crm\n"
+        '    protocol_version: "2026-07-28"\n    tools: [{name: search}]',
+    )
+    text = text.replace("    max_steps: 5\n", "    max_steps: 5\n    tools: [crm.search]\n")
+    manifest.write_text(text)
+    assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_INVALID
+    assert "инструменты агентов" in capsys.readouterr().err

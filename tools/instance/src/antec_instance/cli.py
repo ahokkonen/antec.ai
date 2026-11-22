@@ -57,6 +57,13 @@ def _validate(core_dir: Path, instance_dir: Path) -> Manifest:
             f"core.version: манифест рассчитан на ядро {manifest.core.version}, "
             f"закреплено ядро {version}"
         )
+    # Инструменты агентов исполняет MCP-клиент Platform API (ADR-0010, п. 6, 8); в этой версии
+    # ядра его нет, и Platform API с такими агентами не запустится: ошибка здесь, до развёртывания.
+    problems += [
+        f"агент {a.name}: инструменты агентов не поддерживаются ядром {version} (ADR-0010, п. 8)"
+        for a in manifest.agents
+        if a.tools
+    ]
     problems += check_policies(instance_dir, manifest.instance.id)
     try:
         resolve_agents(manifest, instance_dir)
