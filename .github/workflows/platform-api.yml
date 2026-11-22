@@ -63,6 +63,14 @@ jobs:
           -v "$GITHUB_WORKSPACE/policies/cerbos:/policies:ro" "$CERBOS_IMAGE" server
           --set=storage.driver=disk --set=storage.disk.directory=/policies
           --set=telemetry.disabled=true --set=server.apiExplorerEnabled=false
+      - name: Cerbos готов
+        run: |
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3592/_cerbos/health && exit 0
+            sleep 1
+          done
+          docker logs cerbos >&2
+          exit 1
       - run: uv sync --locked
       - run: uv run --locked ruff format --check .
       - run: uv run --locked ruff check --output-format=github .
