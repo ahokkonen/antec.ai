@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -101,20 +102,37 @@ def _history(turns: list[Turn]) -> list[ModelMessage]:
 
 
 def _steps(messages: list[ModelMessage]) -> list[StepRecord]:
-    """Шаги = ответы модели этого запуска (прерванный ответ без частей не считается)."""
+    """Шаги = ответы модели этого запуска (прерванный ответ без частей не считается).
+
+    Ответ, оборванный отменой или сбоем (state не complete), записывается как cancelled, а не
+    ok. Начало шага = время запроса к модели, конец = время ответа.
+    """
     steps = []
+    requested_at: dt.datetime | None = None
     for msg in messages:
-        if isinstance(msg, ModelResponse) and msg.parts:
+        if isinstance(msg, ModelRequest):
+            requested_at = msg.timestamp
+        elif isinstance(msg, ModelResponse) and msg.parts:
+            complete = msg.state == "complete"
             steps.append(
                 StepRecord(
-                    status="ok",
+                    status="ok" if complete else "cancelled",
                     http_status=200,
                     prompt_tokens=msg.usage.input_tokens,
                     completion_tokens=msg.usage.output_tokens,
                     gateway_request_id=(msg.provider_response_id or "")[:128] or None,
+                    started_at=requested_at,
+                    finished_at=msg.timestamp,
                 )
             )
     return steps
+
+
+def _last_request_at(messages: list[ModelMessage]) -> dt.datetime | None:
+    for msg in reversed(messages):
+        if isinstance(msg, ModelRequest):
+            return msg.timestamp
+    return None
 
 
 def _http_error_message(exc: ModelHTTPError) -> str:
@@ -187,7 +205,14 @@ class PydanticAIRun:
             message = _http_error_message(exc)
             status = "rejected" if 400 <= exc.status_code < 500 else "error"
             steps = _steps(messages)
-            steps.append(StepRecord(status=status, http_status=exc.status_code, error=message))
+            steps.append(
+                StepRecord(
+                    status=status,
+                    http_status=exc.status_code,
+                    error=message,
+                    started_at=_last_request_at(messages),
+                )
+            )
             # Как у ChatGateway: 4xx шлюза (бюджет, параметры) клиенту как есть; отказ в ключе
             # Platform API (401, 403, 407) и 5xx = 502 без текста шлюза.
             client_status, code = exc.status_code, "upstream_error"

@@ -8,6 +8,7 @@ postgresql+asyncpg://postgres:pw@127.0.0.1:55432/postgres. Тест создаё
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import os
 import secrets
 import uuid
@@ -367,6 +368,8 @@ async def test_agent_run_steps_history_and_audit(app_engine: AsyncEngine) -> Non
                 prompt_tokens=10,
                 completion_tokens=3,
                 gateway_request_id="gw-1",
+                started_at=dt.datetime(2026, 11, 22, 12, 0, tzinfo=dt.UTC),
+                finished_at=dt.datetime(2026, 11, 22, 12, 0, 3, tzinfo=dt.UTC),
             ),
             StepRecord(
                 status="ok",
@@ -382,7 +385,13 @@ async def test_agent_run_steps_history_and_audit(app_engine: AsyncEngine) -> Non
         row = (await conn.execute(select(agent_runs).where(agent_runs.c.id == run.id))).one()
         calls = (
             await conn.execute(
-                select(model_calls.c.id, model_calls.c.gateway_request_id, model_calls.c.status)
+                select(
+                    model_calls.c.id,
+                    model_calls.c.gateway_request_id,
+                    model_calls.c.status,
+                    model_calls.c.started_at,
+                    model_calls.c.finished_at,
+                )
                 .where(model_calls.c.agent_run_id == run.id)
                 .order_by(model_calls.c.id)
             )
@@ -404,6 +413,8 @@ async def test_agent_run_steps_history_and_audit(app_engine: AsyncEngine) -> Non
     assert (row.status, row.steps, row.prompt_tokens, row.completion_tokens) == ("ok", 2, 30, 7)
     assert row.finished_at is not None
     assert [(c.gateway_request_id, c.status) for c in calls] == [("gw-1", "ok"), ("gw-2", "ok")]
+    assert calls[0].started_at == dt.datetime(2026, 11, 22, 12, 0, tzinfo=dt.UTC)
+    assert (calls[0].finished_at - calls[0].started_at).total_seconds() == 3
     assert [h.role for h in history] == ["user", "assistant"]
     assert {h.model_call_id for h in history} == {calls[-1].id}
     assert [(a.action, a.outcome) for a in audit] == [

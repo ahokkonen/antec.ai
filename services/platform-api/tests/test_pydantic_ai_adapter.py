@@ -164,3 +164,43 @@ async def test_cancel() -> None:
     finally:
         await rt.aclose()
     assert outcome.status == "cancelled"
+
+
+def test_steps_status_and_times() -> None:
+    """Оборванный ответ = cancelled; время шага = от запроса до ответа (ADR-0010, п. 5)."""
+    import datetime as dt
+
+    from pydantic_ai.messages import (
+        ModelMessage,
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        UserPromptPart,
+    )
+    from pydantic_ai.usage import RequestUsage
+
+    from antec_platform.adapters.pydantic_ai import _steps
+
+    t0 = dt.datetime(2026, 11, 22, 12, 0, tzinfo=dt.UTC)
+    t1 = t0 + dt.timedelta(seconds=3)
+    messages: list[ModelMessage] = [
+        ModelRequest(parts=[UserPromptPart(content="q")], timestamp=t0),
+        ModelResponse(
+            parts=[TextPart(content="a")],
+            usage=RequestUsage(input_tokens=5, output_tokens=1),
+            timestamp=t1,
+        ),
+        ModelRequest(parts=[UserPromptPart(content="q2")], timestamp=t1),
+        ModelResponse(parts=[TextPart(content="об")], timestamp=t1, state="interrupted"),
+        ModelResponse(parts=[], state="interrupted"),
+    ]
+    first, second = _steps(messages)
+    assert (first.status, first.started_at, first.finished_at) == ("ok", t0, t1)
+    assert (first.prompt_tokens, first.completion_tokens) == (5, 1)
+    assert second.status == "cancelled"
+
+
+def test_banner_disabled_by_adapters_package() -> None:
+    import os
+
+    assert os.environ.get("PYDANTIC_AI_NO_BANNER") == "1"

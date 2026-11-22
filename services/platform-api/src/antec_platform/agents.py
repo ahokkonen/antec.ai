@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
@@ -45,12 +46,15 @@ class Turn:
 class StepRecord:
     """Один вызов модели внутри запуска агента: строка model_calls."""
 
-    status: str  # ok, error, rejected
+    status: str  # ok, error, rejected, cancelled
     http_status: int | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     gateway_request_id: str | None = None
     error: str | None = None
+    # Время шага по рантайму; пусто = время записи итога.
+    started_at: dt.datetime | None = None
+    finished_at: dt.datetime | None = None
 
 
 @dataclass(slots=True)

@@ -516,14 +516,15 @@ class PgStore:
                         gateway_request_id=step.gateway_request_id,
                         error=step.error,
                         agent_run_id=run.id,
-                        finished_at=func.now(),
+                        started_at=step.started_at or func.now(),
+                        finished_at=step.finished_at or func.now(),
                     )
                 )
                 await conn.execute(
                     insert(audit_events).values(
                         _audit(
                             action="model.call",
-                            outcome="allow" if step.status == "ok" else "error",
+                            outcome="allow" if step.status in ("ok", "cancelled") else "error",
                             request_id=run.id,
                             actor_user_id=run.user_id,
                             actor_client=run.client_id,
