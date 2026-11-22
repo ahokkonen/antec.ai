@@ -67,7 +67,11 @@ def _roles(claims: dict[str, Any]) -> tuple[str, ...]:
     value = claims.get(ROLES_CLAIM)
     if not isinstance(value, list):
         return ()
-    return tuple(sorted({r for r in value if isinstance(r, str) and _ROLE_RE.fullmatch(r)}))
+    roles = {r for r in value if isinstance(r, str) and _ROLE_RE.fullmatch(r)}
+    if len(roles) < len(set(map(str, value))):
+        # Роль с недопустимым именем не даёт прав; без этой записи отказ не объяснить.
+        log.warning("в %s отброшены роли с недопустимым именем", ROLES_CLAIM)
+    return tuple(sorted(roles))
 
 
 def _opt_str(claims: dict[str, Any], key: str, limit: int = 256) -> str | None:

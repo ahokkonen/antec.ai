@@ -150,7 +150,7 @@ async def test_stale_keys_used_when_jwks_down(
 
 
 async def test_platform_roles_parsed_and_sanitized(
-    verifier: TokenVerifier, make_token: TokenFactory
+    verifier: TokenVerifier, make_token: TokenFactory, caplog: pytest.LogCaptureFixture
 ) -> None:
     principal = await verifier.verify(
         make_token(
@@ -158,4 +158,8 @@ async def test_platform_roles_parsed_and_sanitized(
         )
     )
     assert principal.roles == ("platform-admin", "platform-user")
+    assert "отброшены роли" in caplog.text
+    caplog.clear()
+    await verifier.verify(make_token(platform_roles=["platform-user", "platform-user"]))
+    assert "отброшены роли" not in caplog.text
     assert (await verifier.verify(make_token(platform_roles="platform-admin"))).roles == ()
