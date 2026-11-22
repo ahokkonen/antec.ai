@@ -16,7 +16,7 @@ esac
 
 log "вход пользователя через браузер (клиент antec-smoke)"
 # Токен идёт только через конвейер: в argv, окружение и терминал он не попадает.
-ids="$(echo '{}' | python3 "$COMPOSE_DIR/scripts/keycloak.py" user-token "${open_flag[@]}" \
+ids="$(echo '{}' | python3 "$COMPOSE_DIR/scripts/keycloak.py" user-token ${open_flag[@]+"${open_flag[@]}"} \
   | compose exec -T platform-api python -c "$(cat "$COMPOSE_DIR/scripts/platform_smoke.py")")" \
   || die "проверка фасада не пройдена"
 
@@ -37,7 +37,7 @@ calls="$(pg_exec psql -X -q -v ON_ERROR_STOP=1 -At -d platform \
 # а не значение, которое прислал клиент.
 end_users="$(python3 -c '
 import json, sys
-print("\n".join(json.loads(r)["gateway_request_id"] or "-" for r in sys.stdin.read().split()))' <<<"$calls" \
+print("\n".join(json.loads(r)["gateway_request_id"] or "-" for r in sys.stdin.read().splitlines() if r.strip()))' <<<"$calls" \
   | while read -r gw; do
       pg_exec psql -X -q -At -d litellm -v gw="$gw" <<'SQL'
 select coalesce(max("end_user"), '-') from "LiteLLM_SpendLogs" where request_id = :'gw';
@@ -48,8 +48,8 @@ python3 - "$calls" "$end_users" <<'PY'
 import json
 import sys
 
-rows = [json.loads(r) for r in sys.argv[1].split()]
-end_users = sys.argv[2].split()
+rows = [json.loads(r) for r in sys.argv[1].splitlines() if r.strip()]
+end_users = sys.argv[2].splitlines()
 by_kind = {r["kind"]: (r, end_users[i] if i < len(end_users) else "-") for i, r in enumerate(rows)}
 checks = {}
 for kind in ("completion", "stream"):
