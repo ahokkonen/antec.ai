@@ -12,6 +12,15 @@ umask 077
 mkdir -p "$dir"
 log "бэкап в $dir"
 
+# Точка перед выгрузкой и её копия в бэкапе: restore-verify сверяет с ней восстановленный аудит.
+BAO_TOKEN="$(kc_get "$(kc_root_name "$(current_installation)")")"; export BAO_TOKEN
+[[ -n "$BAO_TOKEN" ]] || die "нет root token в Связке ключей"
+audit_checkpoint
+if [[ -s "$(audit_points_file)" ]]; then
+  cp "$(audit_points_file)" "$dir/audit-checkpoints.jsonl"
+fi
+unset BAO_TOKEN
+
 # Канарейка: случайная запись, которую restore-verify обязан найти после восстановления.
 canary="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 pg_exec psql -v ON_ERROR_STOP=1 -q -d platform -v canary="$canary" <<'SQL'

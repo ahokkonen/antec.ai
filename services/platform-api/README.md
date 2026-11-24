@@ -115,6 +115,9 @@ PLATFORM_TEST_DATABASE_URL=postgresql+asyncpg://postgres:test@127.0.0.1:55432/po
 
 ## Миграции
 
+Таблица аудита после миграций `platform` принадлежит роли `platform_audit` (схема `audit`): её меняет
+только `deploy/compose/postgres/audit.sql` (ADR-0012, п. 4).
+
 Новая миграция: файл в `src/antec_platform/migrations/versions/` с `upgrade(*, app_role)`;
 права роли сервиса выдаются в самой миграции. Тест `test_schema_matches_metadata` сверяет
 миграции с `db.py`. На стенде миграции применяет `scripts/up.sh` (сервис `platform-migrate`,

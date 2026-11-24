@@ -91,6 +91,7 @@ class WorkerSettings(DatabaseSettings):
     # Сроки хранения (манифест, раздел retention; ADR-0012, п. 1), дни.
     retention_content_days: Annotated[int, Field(ge=30, le=180)] = 90
     retention_metadata_days: Annotated[int, Field(ge=180, le=730)] = 365
+    retention_audit_days: Annotated[int, Field(ge=180, le=730)] = 365
     worker_heartbeat_file: Path = Path("/tmp/worker-alive")  # noqa: S108 - tmpfs контейнера
     log_level: str = "INFO"
 

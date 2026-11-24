@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import importlib.util
+import json
 import os
+import re
 import secrets
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import pytest
 from alembic.autogenerate import compare_metadata
@@ -52,6 +57,7 @@ OWNER = "platform_test_owner"
 APP = "platform_test_app"
 WORKER = "platform_test_worker"
 SUBJECT = "platform_test_subject"
+AUDIT = "platform_test_audit"
 
 
 def _settings(user: str, password: str, database: str) -> DatabaseSettings:
@@ -77,6 +83,36 @@ async def _admin(sql: list[str], database: str | None = None) -> None:
         async with engine.connect() as conn:
             for stmt in sql:
                 await conn.execute(text(stmt))
+    finally:
+        await engine.dispose()
+
+
+def _audit_sql() -> str:
+    sql = (Path(__file__).parents[3] / "deploy/compose/postgres/audit.sql").read_text()
+    for real, test in (
+        ("platform_audit", AUDIT),
+        ("platform_app", APP),
+        ("platform_worker", WORKER),
+        ("platform_subject", SUBJECT),
+        ("PUBLIC, platform,", f"PUBLIC, {OWNER},"),
+    ):
+        assert real in sql
+        sql = sql.replace(real, test)
+    return sql
+
+
+async def _script(sql: str, database: str) -> None:
+    """Файл SQL целиком (несколько команд) суперпользователем."""
+    engine = create_async_engine(
+        make_url(ADMIN_URL or "").set(database=database),
+        poolclass=NullPool,
+        isolation_level="AUTOCOMMIT",
+    )
+    try:
+        async with engine.connect() as conn:
+            raw = await conn.get_raw_connection()
+            assert raw.driver_connection is not None
+            await raw.driver_connection.execute(sql)
     finally:
         await engine.dispose()
 
@@ -109,6 +145,7 @@ async def db() -> AsyncIterator[Db]:
             f"drop role if exists {APP}",
             f"drop role if exists {WORKER}",
             f"drop role if exists {SUBJECT}",
+            f"drop role if exists {AUDIT}",
             f"drop role if exists {OWNER}",
             f"create role {OWNER} login password '{owner_pw}'",
             f"create role {APP} login password '{app_pw}'",
@@ -125,6 +162,18 @@ async def db() -> AsyncIterator[Db]:
     )
     owner = _settings(OWNER, owner_pw, name)
     await asyncio.to_thread(upgrade, owner)
+    # События до переноса схемы: должны попасть в цепочку.
+    await _admin(
+        [
+            "insert into audit_events (id, occurred_at, action, outcome, details) select "
+            "gen_random_uuid(), now() - n * interval '1 day', 'legacy', 'allow', "
+            "jsonb_build_object('n', n, 'т', 'е''\"кст') from generate_series(1, 3) n"
+        ],
+        database=name,
+    )
+    await _script(_audit_sql(), name)
+    # Повторный up.sh ничего не меняет.
+    await _script(_audit_sql(), name)
     try:
         yield Db(
             owner,
@@ -134,7 +183,10 @@ async def db() -> AsyncIterator[Db]:
         )
     finally:
         await _admin(
-            [f"drop database {name} with (force)", f"drop role {APP}, {WORKER}, {SUBJECT}, {OWNER}"]
+            [
+                f"drop database {name} with (force)",
+                f"drop role {APP}, {WORKER}, {SUBJECT}, {OWNER}, {AUDIT}",
+            ]
         )
 
 
@@ -182,6 +234,7 @@ _OPEN_WEBUI_DDL = [
     "create table chat_view_state (user_id text, chat_id text)",
     "create table chatidtag (id varchar primary key, chat_id varchar)",
 ]
+_COMPOSE = Path(__file__).parents[3] / "deploy/compose"
 _GRANTS = Path(__file__).parents[3] / "deploy/compose/open-webui/retention-grants.sql"
 
 
@@ -243,8 +296,8 @@ async def test_migrations_are_idempotent(db: Db) -> None:
     [
         "delete from users",
         "delete from agent_runs",
-        "update audit_events set action = 'x'",
-        "delete from audit_events",
+        "update audit.audit_events set action = 'x'",
+        "delete from audit.audit_events",
         "create table x (id int)",
         "select * from alembic_version",
     ],
@@ -258,17 +311,228 @@ async def test_app_role_privileges(app_engine: AsyncEngine, stmt: str) -> None:
 @pytest.mark.parametrize(
     "stmt",
     [
-        "update audit_events set action = 'x'",
-        "delete from audit_events",
-        "truncate audit_events",
+        "update audit.audit_events set action = 'x'",
+        "delete from audit.audit_events",
+        "truncate audit.audit_events",
+        "drop table audit.audit_events",
+        "alter table audit.audit_events disable trigger all",
+        "update audit.chain_head set seq = 0",
+        "create or replace function audit.append_only() returns trigger language plpgsql "
+        "as $$begin return old; end$$",
+        "drop schema audit cascade",
+        "select audit.purge(180, 1)",
     ],
 )
-async def test_audit_append_only_for_owner(owner_engine: AsyncEngine, stmt: str) -> None:
-    store = PgStore(owner_engine)
-    await store.resolve_user(_principal(f"owner-{uuid.uuid4()}"), uuid.uuid7())
+async def test_database_owner_cannot_touch_audit(owner_engine: AsyncEngine, stmt: str) -> None:
     async with owner_engine.connect() as conn:
-        with pytest.raises(DBAPIError, match="только добавление"):
+        with pytest.raises(DBAPIError, match=r"permission denied|must be owner"):
             await conn.execute(text(stmt))
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "update audit.audit_events set action = 'x'",
+        "delete from audit.audit_events",
+        "truncate audit.audit_events",
+        "set session_replication_role = replica; delete from audit.audit_events",
+    ],
+)
+async def test_audit_append_only_even_for_superuser(db: Db, stmt: str) -> None:
+    with pytest.raises(Exception, match="только добавление"):
+        await _script(stmt, db.app.database_name)
+
+
+def _chain() -> ModuleType:
+    """Независимая проверка стенда: scripts/audit_chain.py."""
+    path = _COMPOSE / "scripts/audit_chain.py"
+    spec = importlib.util.spec_from_file_location("audit_chain", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def _export(database: str) -> list[str]:
+    sql = (_COMPOSE / "postgres/audit-export.sql").read_text()
+    selects = re.findall(r"^SELECT [\s\S]*?;$", sql, re.MULTILINE)
+    assert len(selects) == 2
+    engine = create_async_engine(
+        make_url(ADMIN_URL or "").set(database=database), poolclass=NullPool
+    )
+    out: list[str] = []
+    try:
+        async with engine.connect() as conn:
+            for stmt in selects:
+                rows = await conn.exec_driver_sql(stmt)
+                out += [
+                    r if isinstance(r, str) else json.dumps(r, default=str) for r in rows.scalars()
+                ]
+    finally:
+        await engine.dispose()
+    return out
+
+
+def _point(chain: ModuleType, result: dict[str, Any], at: dt.datetime) -> dict[str, Any]:
+    return {**result, "at": at.isoformat()}
+
+
+async def test_chain_is_verified_independently(
+    db: Db, app_engine: AsyncEngine, tmp_path: Path
+) -> None:
+    chain = _chain()
+    store = PgStore(app_engine)
+    for text_value in ("обычный", 'кавычки " и \\ слэш', "перевод\nстроки ; 3:x -"):
+        await store.record_tool_call(
+            request_id=uuid.uuid7(),
+            user_id=uuid.uuid7(),
+            client_id="open-webui",
+            run_id=uuid.uuid7(),
+            agent=text_value,
+            ref="mcp-demo.get_time",
+            outcome="allow",
+            details={"x": text_value, "n": 1.5, "пусто": None},
+        )
+    now = dt.datetime.now(dt.UTC)
+    lines = await _export(db.app.database_name)
+    result = chain.verify(lines, [], now)
+    assert result["seq"] == result["count"] == len(lines) - 1
+    # События до переноса вошли в цепочку по времени.
+    assert [json.loads(line)["action"] for line in lines[1:4]] == ["legacy"] * 3
+    point = _point(chain, result, now)
+    assert chain.verify(lines, [point], now)["checkpoints"] == 1
+
+    def tampered(index: int, **changes: object) -> list[str]:
+        row = json.loads(lines[index]) | changes
+        return [*lines[:index], json.dumps(row), *lines[index + 1 :]]
+
+    with pytest.raises(chain.ChainError, match="изменена"):
+        chain.verify(tampered(5, outcome="deny"), [], now)
+    with pytest.raises(chain.ChainError, match="пропущено"):
+        chain.verify([*lines[:4], *lines[5:]], [], now)
+    with pytest.raises(chain.ChainError, match="chain_head"):
+        chain.verify(lines[:-1], [], now)
+    # Переписанная целиком цепочка сходится сама с собой, но не с контрольной точкой.
+    forged, prev = [lines[0]], ""
+    for i, line in enumerate(lines[1:]):
+        row = json.loads(line)
+        if i == 1:
+            row["outcome"] = "deny"
+        row["prev_hash"] = prev
+        prev = row["hash"] = chain.event_hash(prev, row)
+        forged.append(json.dumps(row))
+    forged[0] = json.dumps(json.loads(lines[0]) | {"hash": prev})
+    assert chain.verify(forged, [], now)["hash"] == prev
+    with pytest.raises(chain.ChainError, match="контрольной точкой"):
+        chain.verify(forged, [point], now)
+    with pytest.raises(chain.ChainError, match="обрезано"):
+        chain.verify(lines, [{**point, "seq": point["seq"] + 1}], now)
+    with pytest.raises(chain.ChainError, match="другой цепочки"):
+        chain.verify(lines, [{**point, "chain_id": str(uuid.uuid4())}], now)
+    # Удаление событий моложе 180 дней видно по контрольной точке.
+    cut = 4
+    row = json.loads(lines[cut])
+    head = json.loads(lines[0]) | {"base_seq": row["seq"], "base_hash": row["hash"]}
+    short = [json.dumps(head), *lines[cut + 1 :]]
+    assert chain.verify(short, [], now)["base_seq"] == cut
+    early = _point(chain, {**result, "seq": 2, "hash": json.loads(lines[2])["hash"]}, now)
+    with pytest.raises(chain.ChainError, match="моложе 180 дней"):
+        chain.verify(short, [early], now)
+
+    # Файл точек: запись, чтение, подмена.
+    path = tmp_path / "points.jsonl"
+    for _ in range(2):
+        chain.append(path, chain.payload(path, result), "vault:v1:c2ln")
+    points = chain.load(path)
+    assert len(points) == 2
+    assert chain.verify(lines, points, now)["checkpoints"] == 2
+    assert len(json.loads(chain.batch(points))["batch_input"]) == 2
+    first, second = path.read_text().splitlines()
+    mark = chain.last(path, "")
+    path.write_text(first + "\n")
+    with pytest.raises(chain.ChainError, match="обрезан"):
+        chain.last(path, mark)
+    # Обрыв между строкой и отметкой: отметка отстаёт на одну строку.
+    behind = chain.last(path, "")
+    path.write_text(first + "\n" + second + "\n")
+    assert chain.last(path, behind) == mark
+    with pytest.raises(chain.ChainError, match="удалён"):
+        chain.last(tmp_path / "absent", mark)
+    path.write_text(second + "\n")
+    with pytest.raises(chain.ChainError, match="цепочка контрольных точек"):
+        chain.load(path)
+    path.write_text(first.replace("seq", "sec") + "\n" + second + "\n")
+    with pytest.raises(chain.ChainError):
+        chain.load(path)
+
+
+async def test_chain_fields_are_set_by_database(app_engine: AsyncEngine) -> None:
+    """Вызывающий не может задать время, номер и хэш события."""
+    event_id = uuid.uuid7()
+    async with app_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "insert into audit.audit_events (id, occurred_at, action, outcome, seq, hash) "
+                "values (:i, '2000-01-01', 'x', 'allow', 1, '\\x00')"
+            ),
+            {"i": event_id},
+        )
+        row = (await conn.execute(select(audit_events).where(audit_events.c.id == event_id))).one()
+    assert row.occurred_at > dt.datetime.now(dt.UTC) - dt.timedelta(minutes=1)
+    assert row.seq > 1
+    assert len(row.hash) == 32
+
+
+async def test_concurrent_inserts_keep_chain(db: Db, app_engine: AsyncEngine) -> None:
+    store = PgStore(app_engine)
+    principal = _principal(f"conc-{uuid.uuid4()}")
+    user = await store.resolve_user(principal, uuid.uuid7())
+    conv = await store.ensure_conversation(user.id, "open-webui", "same")
+
+    async def one(i: int) -> None:
+        call = CallStart(
+            id=uuid.uuid7(),
+            user_id=user.id,
+            conversation_id=conv,
+            client_id="open-webui",
+            model="chat-fast",
+            stream=False,
+            new_messages=[{"role": "user", "content": str(i)}],
+        )
+        await store.start_call(call)
+        await store.finish_call(call, CallResult(status="ok"))
+
+    await asyncio.wait_for(asyncio.gather(*(one(i) for i in range(40))), 30)
+    chain = _chain()
+    chain.verify(await _export(db.app.database_name), [], dt.datetime.now(dt.UTC))
+
+
+async def test_audit_purge(db: Db, worker_engine: AsyncEngine) -> None:
+    """Удаляется только начало цепочки старше срока; проверка продолжает с базы."""
+    name = db.app.database_name
+    chain = _chain()
+    async with worker_engine.connect() as conn:
+        with pytest.raises(DBAPIError, match="не меньше 180"):
+            await conn.execute(text("select audit.purge(179, 10)"))
+    # Старые события можно получить только с отключённым триггером (суперпользователь).
+    await _script(
+        "alter table audit.audit_events disable trigger audit_events_no_update_delete; "
+        "update audit.audit_events set occurred_at = now() - interval '400 days' where seq <= 2; "
+        "alter table audit.audit_events enable always trigger audit_events_no_update_delete",
+        name,
+    )
+    with pytest.raises(chain.ChainError, match="событие 1 "):
+        chain.verify(await _export(name), [], dt.datetime.now(dt.UTC))
+    async with worker_engine.begin() as conn:
+        assert (await conn.execute(text("select audit.purge(365, 1)"))).scalar_one() == 1
+        assert (await conn.execute(text("select audit.purge(365, 10)"))).scalar_one() == 1
+        assert (await conn.execute(text("select audit.purge(365, 10)"))).scalar_one() == 0
+    result = chain.verify(await _export(name), [], dt.datetime.now(dt.UTC))
+    assert result["base_seq"] == 2
+    with pytest.raises(DBAPIError, match="permission denied"):
+        async with worker_engine.begin() as conn:
+            await conn.execute(text("delete from audit.audit_events"))
 
 
 async def test_resolve_user_create_repeat_rebind(app_engine: AsyncEngine) -> None:
@@ -710,8 +974,8 @@ async def test_conversation_class_only_grows(app_engine: AsyncEngine) -> None:
         "select email from users",
         "delete from users",
         "update agent_runs set user_id = user_id",
-        "delete from audit_events",
-        "update audit_events set outcome = 'allow'",
+        "delete from audit.audit_events",
+        "update audit.audit_events set outcome = 'allow'",
     ],
 )
 async def test_worker_role_privileges(worker_engine: AsyncEngine, stmt: str) -> None:
@@ -939,7 +1203,11 @@ async def test_retention_purge(
     await age(old, 400)
     await age(stale, 100)
     counts = await purge(
-        worker_engine, content_days=90, metadata_days=365, open_webui_engine=owui_worker
+        worker_engine,
+        content_days=90,
+        metadata_days=365,
+        audit_days=365,
+        open_webui_engine=owui_worker,
     )
     assert counts["messages"] == 4
     assert (counts["model_calls"], counts["agent_runs"]) == (1, 1)
@@ -968,7 +1236,9 @@ async def test_retention_purge(
             text("update agent_runs set started_at = now() - interval '400 days' where id = :i"),
             {"i": old[2]},
         )
-    assert (await purge(worker_engine, content_days=90, metadata_days=365))["conversations"] == 1
+    assert (await purge(worker_engine, content_days=90, metadata_days=365, audit_days=365))[
+        "conversations"
+    ] == 1
 
 
 async def test_purge_failure_is_audited(
@@ -981,7 +1251,11 @@ async def test_purge_failure_is_audited(
         await conn.execute(text("drop table chat cascade"))
     with pytest.raises(DBAPIError):
         await purge(
-            worker_engine, content_days=90, metadata_days=365, open_webui_engine=owui_worker
+            worker_engine,
+            content_days=90,
+            metadata_days=365,
+            audit_days=365,
+            open_webui_engine=owui_worker,
         )
     async with app_engine.connect() as conn:
         outcomes = (

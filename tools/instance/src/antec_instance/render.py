@@ -68,6 +68,7 @@ def worker_env(manifest: Manifest) -> dict[str, str]:
     """Сроки для platform-worker (ADR-0012, п. 1)."""
     return {
         "PLATFORM_RETENTION_CONTENT_DAYS": str(manifest.retention.content_days),
+        "PLATFORM_RETENTION_AUDIT_DAYS": str(manifest.retention.audit_days),
         "PLATFORM_RETENTION_METADATA_DAYS": str(manifest.retention.metadata_days),
     }
 

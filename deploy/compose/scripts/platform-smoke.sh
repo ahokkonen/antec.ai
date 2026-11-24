@@ -30,7 +30,7 @@ calls_sql="select json_build_object(
   'prompt_tokens', c.prompt_tokens, 'completion_tokens', c.completion_tokens,
   'cost_usd', c.cost_usd, 'gateway_request_id', c.gateway_request_id,
   'roles', (select json_agg(m.role order by m.position) from messages m where m.model_call_id = c.id),
-  'audit', (select json_agg(a.outcome) from audit_events a
+  'audit', (select json_agg(a.outcome) from audit.audit_events a
             where a.request_id = c.id and a.action = 'model.call'))
 from (values ('completion', :'completion'), ('stream', :'stream')) as k(kind, id)
 join model_calls c on c.id = k.id::uuid"
@@ -94,8 +94,8 @@ if [[ -n "$agent_id" ]]; then
                 'gw', c.gateway_request_id)) from model_calls c where c.agent_run_id = r.id),
     'roles', (select json_agg(m.role order by m.position) from messages m
               join model_calls c on c.id = m.model_call_id where c.agent_run_id = r.id),
-    'audit', (select json_agg(a.action || ':' || a.outcome order by a.occurred_at, a.id)
-              from audit_events a where a.request_id = r.id))
+    'audit', (select json_agg(a.action || ':' || a.outcome order by a.seq)
+              from audit.audit_events a where a.request_id = r.id))
   from (values ('agent', :'agent'), ('agent_stream', :'agent_stream')) as k(kind, id)
   join agent_runs r on r.id = k.id::uuid"
   runs="$(pg_exec psql -X -q -v ON_ERROR_STOP=1 -At -d platform \
@@ -133,12 +133,12 @@ if [[ -n "$tool_time" ]]; then
     'run_status', (select r.status from agent_runs r where r.id = k.id::uuid),
     'parent', (select r.parent_run_id from agent_runs r where r.id = k.id::uuid),
     'audit', (select json_agg(a.action || ':' || a.outcome || ':' || coalesce(a.resource_id, '')
-                order by a.occurred_at, a.id)
-              from audit_events a where a.request_id = k.id::uuid
+                order by a.seq)
+              from audit.audit_events a where a.request_id = k.id::uuid
                 and a.action in ('tool.call', 'tool.call.started', 'tool.approval')),
-    'paired', (select coalesce(bool_and(exists (select 1 from audit_events d
-                 where d.call_id = a.call_id and d.action = 'tool.call' and d.id > a.id)), true)
-               from audit_events a where a.request_id = k.id::uuid
+    'paired', (select coalesce(bool_and(exists (select 1 from audit.audit_events d
+                 where d.call_id = a.call_id and d.action = 'tool.call' and d.seq > a.seq)), true)
+               from audit.audit_events a where a.request_id = k.id::uuid
                  and a.action = 'tool.call.started'),
     'kept', (select r.state is not null or r.pending::text like '%arguments%'
              from agent_runs r where r.id = k.id::uuid))
@@ -196,4 +196,6 @@ for name, ok in checks.items():
 sys.exit(0 if all(checks.values()) else 1)
 PY
 fi
+log "цепочка аудита и контрольные точки (ADR-0012)"
+"$(dirname "$0")/audit-verify.sh" >/dev/null || die "проверка аудита не пройдена"
 log "Platform API: проверка пройдена"

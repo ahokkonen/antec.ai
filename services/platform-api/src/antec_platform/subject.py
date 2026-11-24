@@ -26,6 +26,8 @@ from antec_platform.db import (
 from antec_platform.store import audit_row
 
 ACTOR = "platform-subject"
+# Служебные столбцы цепочки: не данные субъекта.
+_CHAIN = frozenset({"seq", "prev_hash", "hash"})
 
 
 class SubjectError(Exception):
@@ -125,7 +127,7 @@ async def export(
         .order_by(messages.c.created_at, messages.c.position),
         "model_calls": select(model_calls).where(model_calls.c.user_id == user_id),
         "agent_runs": select(agent_runs).where(agent_runs.c.user_id == user_id),
-        "audit_events": select(audit_events)
+        "audit_events": select(*[c for c in audit_events.c if c.name not in _CHAIN])
         .where(
             or_(
                 audit_events.c.actor_user_id == user_id,
