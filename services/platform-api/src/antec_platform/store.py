@@ -278,10 +278,11 @@ async def expire_pending(
     return len(rows)
 
 
-async def _update_step(conn: AsyncConnection, step_id: uuid.UUID, step: StepRecord) -> None:
-    await conn.execute(
+async def _update_step(conn: AsyncConnection, step_id: uuid.UUID, step: StepRecord) -> bool:
+    """Итог шага ровно один раз: False, если его уже записал другой путь (отмена, worker)."""
+    result = await conn.execute(
         update(model_calls)
-        .where(model_calls.c.id == step_id)
+        .where(model_calls.c.id == step_id, model_calls.c.status == "started")
         .values(
             status=step.status,
             http_status=step.http_status,
@@ -292,6 +293,7 @@ async def _update_step(conn: AsyncConnection, step_id: uuid.UUID, step: StepReco
             finished_at=step.finished_at or func.now(),
         )
     )
+    return result.rowcount == 1
 
 
 def _step_event(
@@ -693,8 +695,10 @@ class PgStore:
         if step.id is None:
             raise ValueError("шаг без id")
         async with self._engine.begin() as conn:
-            await _update_step(conn, step.id, step)
-            await conn.execute(insert(audit_events).values(_step_event(run, step, step.id, number)))
+            if await _update_step(conn, step.id, step):
+                await conn.execute(
+                    insert(audit_events).values(_step_event(run, step, step.id, number))
+                )
 
     async def finish_agent_run(
         self, run: AgentRunStart, outcome: RunOutcome, approval: Approval | None = None
@@ -742,7 +746,8 @@ class PgStore:
                     continue
                 if step.id is not None:
                     # Итог шага не записался по ходу запуска: вторая попытка.
-                    await _update_step(conn, step_id, step)
+                    if not await _update_step(conn, step_id, step):
+                        continue
                 else:
                     await conn.execute(
                         insert(model_calls).values(

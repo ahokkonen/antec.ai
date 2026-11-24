@@ -56,15 +56,17 @@ async def _open_webui_user(
         return None
     if antec_uid is None:
         async with engine.connect() as conn:
-            oids = list(
+            found_oids = list(
                 (
                     await conn.execute(
-                        select(identities.c.entra_oid).where(
-                            identities.c.user_id == user_id, identities.c.entra_oid.is_not(None)
-                        )
+                        select(identities.c.entra_oid).where(identities.c.user_id == user_id)
                     )
                 ).scalars()
             )
+        if not found_oids:
+            # Идентичностей нет только после erase: чаты уже удалены вместе с ними.
+            return None
+        oids = [oid for oid in found_oids if oid is not None]
         if len(oids) != 1:
             raise SubjectError(
                 "у пользователя нет единственного oid Entra: укажите --open-webui-uid "

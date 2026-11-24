@@ -1052,11 +1052,13 @@ async def test_subject_export_and_erase(
     assert "subject.export" in actions
     theirs = await subject_data.export(subject_engine, other.id)
     assert len(theirs["messages"]) == 1
-    # Повтор безопасен; без идентичности чаты можно найти только по явному antec_uid.
-    with pytest.raises(subject_data.SubjectError, match="open-webui-uid"):
-        await subject_data.erase(subject_engine, user.id, open_webui_engine=owui)
-    again = await subject_data.erase(subject_engine, user.id)
+    # Повтор безопасен (subject.sh reapply): идентичностей уже нет.
+    again = await subject_data.erase(subject_engine, user.id, open_webui_engine=owui)
     assert again["messages"] == 0
+    assert "open_webui_chats" not in again
+    # Локальный пользователь без oid Entra: аккаунт Open WebUI только по явному antec_uid.
+    with pytest.raises(subject_data.SubjectError, match="open-webui-uid"):
+        await subject_data.erase(subject_engine, other.id, open_webui_engine=owui)
     # Новый вход того же человека = новый пользователь.
     assert (await store.resolve_user(principal, uuid.uuid7())).id != user.id
     with pytest.raises(subject_data.SubjectError, match="нет"):
@@ -1087,6 +1089,8 @@ async def test_step_rows_before_and_after(app_engine: AsyncEngine) -> None:
     await store.finish_step(run, saved, 1)
     saved.saved = True
     await store.finish_agent_run(run, RunOutcome(status="ok", text="y", steps=[saved, unsaved]))
+    # Опоздавшая запись итога (повторная отмена): событие не дублируется.
+    await store.finish_step(run, unsaved, 2)
     async with app_engine.connect() as conn:
         rows = (
             await conn.execute(

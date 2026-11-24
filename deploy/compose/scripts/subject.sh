@@ -9,7 +9,12 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 LEDGER="${ANTEC_ERASURE_LEDGER:-$HOME/Library/Application Support/antec/erasures.log}"
-subject() { compose --profile bootstrap run --rm -T platform-subject subject "$@"; }
+# Сборка отдельно и в stderr: stdout команды только JSON.
+subject() {
+  compose --profile bootstrap build --quiet platform-subject >&2
+  docker compose --progress quiet --project-directory "$COMPOSE_DIR" -f "$COMPOSE_DIR/compose.yaml" \
+    --profile bootstrap run --rm -T --pull never platform-subject subject "$@"
+}
 usage() { die "использование: subject.sh find | export <id> | erase <id> | reapply"; }
 
 case "${1:-}" in
@@ -25,9 +30,9 @@ case "${1:-}" in
     log "удаление данных пользователя $2 необратимо"
     read -r -p "Повторите id для подтверждения: " confirm
     [[ "$confirm" == "$2" ]] || die "id не совпадает, ничего не удалено"
-    subject erase --user "${@:2}" </dev/null
-    # Строка журнала = аргументы команды: их достаточно для повтора.
-    printf '%s\n' "${*:2}" >> "$LEDGER" ;;
+    # До удаления: оборванное удаление тоже надо повторить. Строка = аргументы команды.
+    printf '%s\n' "${*:2}" >> "$LEDGER"
+    subject erase --user "${@:2}" </dev/null ;;
   reapply)
     [[ -f "$LEDGER" ]] || die "журнала удалений нет: $LEDGER"
     failed=0

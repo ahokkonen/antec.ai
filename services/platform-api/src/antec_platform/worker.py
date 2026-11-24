@@ -223,13 +223,22 @@ async def _purge_due(
         return _PURGE_RETRY
 
 
+async def _purge_loop(
+    settings: WorkerSettings, engine: AsyncEngine, open_webui_engine: AsyncEngine | None
+) -> None:
+    while True:
+        delay = await _purge_due(settings, engine, open_webui_engine)
+        await asyncio.sleep(delay.total_seconds())
+
+
 async def run(
     settings: WorkerSettings,
     engine: AsyncEngine,
     stop: asyncio.Event,
     open_webui_engine: AsyncEngine | None = None,
 ) -> None:
-    next_purge = dt.datetime.now(dt.UTC)
+    # Отдельной задачей: долгая очистка не задерживает проходы и отметку здоровья.
+    purging = asyncio.create_task(_purge_loop(settings, engine, open_webui_engine))
     abandon = dt.timedelta(seconds=settings.worker_abandon_seconds)
     # Полный поиск, пока проход не исчерпал хвост (пачка меньше предела).
     full = True
@@ -246,11 +255,11 @@ async def run(
             log.exception("проход platform-worker не выполнен")
             # За время сбоя незакрытое могло уйти глубже обычного поиска.
             full = True
-        if dt.datetime.now(dt.UTC) >= next_purge:
-            delay = await _purge_due(settings, engine, open_webui_engine)
-            next_purge = dt.datetime.now(dt.UTC) + delay
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), settings.worker_interval_seconds)
+    purging.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await purging
 
 
 async def serve(settings: WorkerSettings) -> None:
