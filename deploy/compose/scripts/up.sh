@@ -61,7 +61,7 @@ if ! bao_exec secrets list -format=json | python3 -c 'import json,sys; sys.exit(
 fi
 
 for policy in render-postgres render-keycloak render-litellm render-open-webui \
-    render-platform-api render-platform-migrate; do
+    render-platform-api render-platform-migrate render-platform-worker; do
   compose exec -T -e BAO_TOKEN openbao bao policy write "$policy" - \
     < "$COMPOSE_DIR/openbao/policies/$policy.hcl" >/dev/null
 done
@@ -70,13 +70,13 @@ if ! bao_exec kv get -mount=antec postgres >/dev/null 2>&1; then
   log "генерация паролей PostgreSQL в OpenBao (antec/postgres)"
   python3 - <<'PY' | compose exec -T -e BAO_TOKEN openbao bao kv put -mount=antec postgres - >/dev/null
 import json, secrets
-keys = ["superuser", "keycloak", "litellm", "openwebui", "platform", "dbos", "platform_app"]
+keys = ["superuser", "keycloak", "litellm", "openwebui", "platform", "dbos", "platform_app", "platform_worker"]
 print(json.dumps({k: secrets.token_urlsafe(32) for k in keys}))
 PY
 fi
 
-# Роль сервиса Platform API (ADR-0006, п. 9) появилась позже первых установок: дополняется.
-ensure_generated_secrets postgres platform_app
+# Роли Platform API (ADR-0006, п. 9; ADR-0012, п. 2) появились позже первых установок.
+ensure_generated_secrets postgres platform_app platform_worker
 
 # Секреты сервисов в OpenBao. Недостающие ключи дополняются, существующие не меняются;
 # ошибка чтения прерывает запуск (bao_kv_json). Пароль роли БД копируется из antec/postgres,
@@ -100,6 +100,7 @@ copy_db_password platform_app platform-api
 # Обмен токена для MCP-серверов (ADR-0010): секрет клиента platform-api задаёт realm как код.
 copy_secret_field keycloak platform_api_client_secret platform-api oidc_client_secret
 copy_db_password platform platform-migrate
+copy_db_password platform_worker platform-worker
 
 # Сервисы, работавшие до этого запуска: их нужно перезапустить, если изменились их секреты
 # (обёртки и Keycloak читают файлы секретов только при старте процесса).
@@ -132,10 +133,20 @@ render litellm
 render open-webui
 render platform-api
 render platform-migrate
+render platform-worker
 
 log "сборка и запуск PostgreSQL"
+postgres_before="$(compose ps -q postgres 2>/dev/null || true)"
 compose up -d --build --wait postgres
-ensure_platform_app_role
+# Пересозданный PostgreSQL рвёт соединения: пул Keycloak отдаёт их закрытыми ещё некоторое время,
+# и настройка realm ниже не получает токен. Остальные сервисы переподключаются сами.
+if [[ -n "$postgres_before" && "$(compose ps -q postgres)" != "$postgres_before" ]] \
+    && grep -qx keycloak <<<"$running_before"; then
+  log "PostgreSQL пересоздан: перезапуск Keycloak"
+  compose restart keycloak >/dev/null
+fi
+ensure_platform_role platform_app 30
+ensure_platform_role platform_worker 5
 log "сборка и запуск Keycloak (первый запуск около минуты)"
 start_service keycloak --build
 
@@ -163,6 +174,8 @@ compose build platform-api
 compose --profile bootstrap run --rm -T platform-migrate
 log "запуск Platform API"
 start_service platform-api
+log "запуск platform-worker"
+start_service platform-worker
 
 log "запуск Open WebUI (миграции БД при первом запуске)"
 start_service open-webui

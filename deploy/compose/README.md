@@ -15,7 +15,7 @@ digest из [`policy/allowed-versions.yaml`](../../policy/allowed-versions.yaml)
 - macOS с Docker Desktop (Compose v2 или новее); скрипты используют Связку ключей (`security`), `python3`
   и `uv` (рендер манифеста инсталляции).
 - Около 6,5 GB свободной памяти в VM Docker (лимиты: OpenBao 256 MB, PostgreSQL 1 GB, Keycloak,
-  LiteLLM и Open WebUI по 1,5 GB, Platform API 512 MB, Cerbos 256 MB; фактически около 2,8 GB).
+  LiteLLM и Open WebUI по 1,5 GB, Platform API 512 MB, Cerbos и platform-worker по 256 MB; фактически около 2,8 GB).
 - Свободные порты `127.0.0.1:8080` (Keycloak) и `127.0.0.1:3000` (Open WebUI).
 
 ## Команды
@@ -141,6 +141,7 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 | `cerbos` | `cerbos:0.57.0`, политики ядра `/policies/core` и инсталляции `/policies/instance` (scope, только чтение); без телеметрии, Admin API и аудита | `policy` (internal) | 256 MB |
 | `platform-migrate` | Одноразовые миграции БД `platform` ролью владельца схемы (профиль `bootstrap`) | `data` | 256 MB |
 | `platform-api` | `localhost/antec/platform-api:0.1.0`, фасад `/v1` (модели и агенты инсталляции, ADR-0010), роль БД `platform_app`; порт 8000 только внутри | `data`, `llm`, `platform`, `policy`, `mcp` (internal) | 512 MB |
+| `platform-worker` | Тот же образ, команда `worker` (ADR-0012): истёкшие ожидания и потерянные вызовы, роль БД `platform_worker` | `data` | 256 MB |
 | `open-webui` | `open-webui:v0.13.3`, вход через Keycloak; `http://localhost:3000` | `data`, `platform`, `ui` | 1,5 GB |
 | `mcp-demo` | Плагин dev-инсталляции (`instances/dev/plugins/mcp-demo`, `compose.override.yaml`): тестовый MCP-сервер 2026-07-28, токен по JWKS Keycloak | `mcp` (internal) | 128 MB |
 

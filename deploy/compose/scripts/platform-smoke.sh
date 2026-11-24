@@ -135,7 +135,13 @@ if [[ -n "$tool_time" ]]; then
     'audit', (select json_agg(a.action || ':' || a.outcome || ':' || coalesce(a.resource_id, '')
                 order by a.occurred_at, a.id)
               from audit_events a where a.request_id = k.id::uuid
-                and a.action in ('tool.call', 'tool.approval')))
+                and a.action in ('tool.call', 'tool.call.started', 'tool.approval')),
+    'paired', (select coalesce(bool_and(exists (select 1 from audit_events d
+                 where d.call_id = a.call_id and d.action = 'tool.call' and d.id > a.id)), true)
+               from audit_events a where a.request_id = k.id::uuid
+                 and a.action = 'tool.call.started'),
+    'kept', (select r.state is not null or r.pending::text like '%arguments%'
+             from agent_runs r where r.id = k.id::uuid))
   from json_each_text(:'ids'::json) as k(kind, id)
   where k.kind in ('tool_time', 'pause_deny', 'resume_deny', 'pause_ok', 'resume_ok',
                    'pause_api', 'resume_api', 'class_lab')"
@@ -156,6 +162,16 @@ checks = {
         any(a.startswith("tool.approval:deny") for a in audit["resume_deny"])
         and not any(a.startswith("tool.call") for a in audit["resume_deny"])
     ),
+    "начало каждого вызова записано до итога (ADR-0012)": all(
+        r.get("paired") for r in rows.values()
+    )
+    and all(
+        f"tool.call.started:allow:{tool}" in audit[kind]
+        for kind, tool in (("tool_time", "mcp-demo.get_time"), ("resume_ok", "mcp-demo.create_note"))
+    ),
+    "после решения состояние и аргументы удалены (ADR-0012)": not any(
+        rows[k].get("kept") for k in ("pause_deny", "pause_ok", "pause_api")
+    ),
     "подтверждение: статус approved, продолжение ссылается на паузу": (
         rows["pause_ok"]["run_status"] == "approved" and rows["resume_ok"]["parent"] is not None
     ),
@@ -169,7 +185,7 @@ checks = {
     # Отказ виден, только если модель попыталась вызвать инструмент; без попытки проверка
     # не падает (инвариант детерминированно проверяет «класс разговора»).
     "классы данных: agent-lab create_note не выполнен (ADR-0011)": (
-        "tool.call:allow:mcp-demo.create_note" not in audit.get("class_lab", [])
+        "tool.call.started:allow:mcp-demo.create_note" not in audit.get("class_lab", [])
     ),
     "mcp-demo: созданы 2 подтверждённые заметки (токен обмена принят)": notes >= 2,
 }
