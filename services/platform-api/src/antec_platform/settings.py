@@ -49,8 +49,10 @@ class DatabaseSettings(BaseSettings):
     database_pool_size: Annotated[int, Field(ge=1, le=50)] = 10
     # Роль сервиса, которой миграции выдают права (ADR-0006, п. 9).
     app_role: str = "platform_app"
+    # Роль фонового сервиса (ADR-0012, п. 2).
+    worker_role: str = "platform_worker"
 
-    @field_validator("app_role", "database_user", "database_name")
+    @field_validator("app_role", "worker_role", "database_user", "database_name")
     @classmethod
     def _identifier(cls, value: str) -> str:
         if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", value):
@@ -67,6 +69,18 @@ class DatabaseSettings(BaseSettings):
             port=self.database_port,
             database=self.database_name,
         )
+
+
+class WorkerSettings(DatabaseSettings):
+    """Фоновый сервис platform-worker (ADR-0012, п. 2)."""
+
+    database_user: str = "platform_worker"
+    database_pool_size: Annotated[int, Field(ge=1, le=50)] = 2
+    worker_interval_seconds: Annotated[float, Field(ge=1, le=3600)] = 60.0
+    # Незавершённое старше этого срока считается потерянным. Больше времени любого запроса.
+    worker_abandon_seconds: Annotated[int, Field(ge=600, le=86400)] = 3600
+    worker_heartbeat_file: Path = Path("/tmp/worker-alive")  # noqa: S108 - tmpfs контейнера
+    log_level: str = "INFO"
 
 
 class Settings(DatabaseSettings):

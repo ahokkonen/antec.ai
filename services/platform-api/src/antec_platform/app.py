@@ -63,11 +63,13 @@ log = logging.getLogger(__name__)
 CHAT_ID_HEADER = "x-openwebui-chat-id"
 _EXTERNAL_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 _ERROR_MESSAGE_LIMIT = 500
+_ERROR_CODE_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 _PROBES = frozenset({"/healthz", "/readyz"})
 # Подтверждение в чате (ADR-0010, п. 7): код без похожих символов (0/O, 1/I).
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _APPROVE_RE = re.compile(r"подтверждаю\s+([A-Za-z0-9]{4,8})[.!]?", re.IGNORECASE)
 _DENY_RE = re.compile(r"отмена[.!]?", re.IGNORECASE)
+_EXPIRED_TEXT = "Срок подтверждения истёк, действие не выполнено."
 # Итоги запуска, на которые клиент получает ответ (а не ошибку).
 _ANSWERED = frozenset({"ok", "awaiting_approval"})
 
@@ -341,6 +343,12 @@ def _external_id(request: Request) -> str | None:
     return None
 
 
+def _stored_error(err: ApiError) -> str:
+    """Ошибка для model_calls: код и статус. Текст шлюза может содержать ввод (ADR-0012, п. 5)."""
+    code = err.code if err.code and _ERROR_CODE_RE.fullmatch(err.code) else "upstream_error"
+    return f"{code}: HTTP {err.status}"
+
+
 async def _finish(deps: Deps, call: CallStart, result: CallResult) -> None:
     try:
         await deps.store.finish_call(call, result)
@@ -396,7 +404,7 @@ async def _complete(deps: Deps, call: CallStart, payload: dict[str, Any]) -> Res
                 status=status,
                 http_status=meta.status,
                 gateway_request_id=meta.request_id,
-                error=err.message,
+                error=_stored_error(err),
             ),
         )
         raise err
@@ -456,7 +464,7 @@ async def _stream(
                 status=status,
                 http_status=meta.status,
                 gateway_request_id=meta.request_id,
-                error=err.message,
+                error=_stored_error(err),
             ),
         )
         raise err
@@ -679,6 +687,10 @@ def _static_reply(model: str, rid: uuid.UUID, text: str, stream: bool) -> Respon
     )
 
 
+def _is_decision(prompt: str) -> bool:
+    return _decision(prompt, "") != "other"
+
+
 def _decision(prompt: str, code: str) -> str:
     """approve, deny, wrong_code или other: решает код Platform API, а не модель."""
     match = _APPROVE_RE.fullmatch(prompt.strip())
@@ -746,6 +758,13 @@ async def _agent_completion(
     parent: uuid.UUID | None = None
     if external_id is not None:
         pending = await deps.store.find_pending_run(user.id, conversation_id=conversation_id)
+        # Ответ на ожидание, которое platform-worker уже закрыл по сроку, модели не передаётся.
+        if (
+            pending is None
+            and _is_decision(prompt)
+            and await deps.store.last_run_expired(user.id, conversation_id=conversation_id)
+        ):
+            return _static_reply(agent.name, rid, _EXPIRED_TEXT, chat.stream)
         if pending is not None:
             kind = _decision(prompt, pending.code)
             expired = pending.expires_at <= dt.datetime.now(dt.UTC)
@@ -756,7 +775,7 @@ async def _agent_completion(
                 )
                 if kind != "other" and pending.agent == agent.name:
                     text = (
-                        "Срок подтверждения истёк, действие не выполнено."
+                        _EXPIRED_TEXT
                         if expired
                         else "Код подтверждения не совпадает, действие отменено."
                     )
@@ -941,6 +960,8 @@ async def agent_run_decision(request: Request) -> Response:
         raise ApiError(400, "decision: approve или deny", code="invalid_request", param="decision")
     rid = _request_id(request)
     pending = await deps.store.find_pending_run(user.id, run_id=run_id)
+    if pending is None and await deps.store.last_run_expired(user.id, run_id=run_id):
+        raise ApiError(409, "срок подтверждения истёк", code="approval_expired")
     if pending is None or pending.agent not in deps.agents:
         raise ApiError(404, "ожидающий запуск не найден", code="run_not_found")
     if pending.expires_at <= dt.datetime.now(dt.UTC):

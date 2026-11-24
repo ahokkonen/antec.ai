@@ -37,6 +37,7 @@ from antec_platform.db import (
 from antec_platform.migrate import upgrade
 from antec_platform.settings import DatabaseSettings
 from antec_platform.store import AgentRunStart, Approval, CallResult, CallStart, PgStore
+from antec_platform.worker import sweep
 
 pytestmark = [pytest.mark.db, pytest.mark.anyio]
 
@@ -46,6 +47,7 @@ if not ADMIN_URL:
 
 OWNER = "platform_test_owner"
 APP = "platform_test_app"
+WORKER = "platform_test_worker"
 
 
 def _settings(user: str, password: str, database: str) -> DatabaseSettings:
@@ -57,6 +59,7 @@ def _settings(user: str, password: str, database: str) -> DatabaseSettings:
         database_user=user,
         database_password=SecretStr(password),
         app_role=APP,
+        worker_role=WORKER,
     )
 
 
@@ -74,9 +77,12 @@ async def _admin(sql: list[str], database: str | None = None) -> None:
 
 
 class Db:
-    def __init__(self, owner: DatabaseSettings, app: DatabaseSettings) -> None:
+    def __init__(
+        self, owner: DatabaseSettings, app: DatabaseSettings, worker: DatabaseSettings
+    ) -> None:
         self.owner = owner
         self.app = app
+        self.worker = worker
 
 
 @pytest.fixture(scope="module")
@@ -87,16 +93,18 @@ def anyio_backend() -> str:
 @pytest.fixture(scope="module")
 async def db() -> AsyncIterator[Db]:
     name = f"platform_test_{secrets.token_hex(4)}"
-    owner_pw, app_pw = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
+    owner_pw, app_pw, worker_pw = (secrets.token_urlsafe(16) for _ in range(3))
     await _admin(
         [
             f"drop role if exists {APP}",
+            f"drop role if exists {WORKER}",
             f"drop role if exists {OWNER}",
             f"create role {OWNER} login password '{owner_pw}'",
             f"create role {APP} login password '{app_pw}'",
+            f"create role {WORKER} login password '{worker_pw}'",
             f"create database {name} owner {OWNER}",
             f"revoke all on database {name} from public",
-            f"grant connect on database {name} to {OWNER}, {APP}",
+            f"grant connect on database {name} to {OWNER}, {APP}, {WORKER}",
         ]
     )
     await _admin(
@@ -106,11 +114,9 @@ async def db() -> AsyncIterator[Db]:
     owner = _settings(OWNER, owner_pw, name)
     await asyncio.to_thread(upgrade, owner)
     try:
-        yield Db(owner, _settings(APP, app_pw, name))
+        yield Db(owner, _settings(APP, app_pw, name), _settings(WORKER, worker_pw, name))
     finally:
-        await _admin(
-            [f"drop database {name} with (force)", f"drop role {APP}", f"drop role {OWNER}"]
-        )
+        await _admin([f"drop database {name} with (force)", f"drop role {APP}, {WORKER}, {OWNER}"])
 
 
 @pytest.fixture
@@ -123,6 +129,13 @@ async def app_engine(db: Db) -> AsyncIterator[AsyncEngine]:
 @pytest.fixture
 async def owner_engine(db: Db) -> AsyncIterator[AsyncEngine]:
     engine = create_engine(db.owner)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture
+async def worker_engine(db: Db) -> AsyncIterator[AsyncEngine]:
+    engine = create_engine(db.worker)
     yield engine
     await engine.dispose()
 
@@ -515,6 +528,19 @@ async def test_pending_run_lifecycle_and_tool_audit(app_engine: AsyncEngine) -> 
     )
     assert first is not None
     assert second is None
+    # Продолжение получает состояние, а в БД его и аргументов больше нет (ADR-0012, п. 1).
+    assert first.state == {"messages": [{"kind": "request"}]}
+    assert first.pending[0].arguments == {"text": "хлеб"}
+    async with app_engine.connect() as conn:
+        left = (
+            await conn.execute(
+                select(agent_runs.c.state.is_(None).label("no_state"), agent_runs.c.pending).where(
+                    agent_runs.c.id == run.id
+                )
+            )
+        ).one()
+    assert left.no_state
+    assert left.pending == [{"call_id": "c1", "ref": "mcp-demo.create_note"}]
     assert await store.find_pending_run(user.id, conversation_id=conv) is None
 
     await store.record_tool_call(
@@ -602,3 +628,161 @@ async def test_conversation_class_only_grows(app_engine: AsyncEngine) -> None:
     assert await store.conversation_class(conv) == "confidential"
     await store.raise_conversation_class(conv, "restricted")
     assert await store.conversation_class(conv) == "restricted"
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "select content from messages",
+        "select state from agent_runs",
+        "select email from users",
+        "update agent_runs set user_id = user_id",
+        "delete from agent_runs",
+        "delete from audit_events",
+        "update audit_events set outcome = 'allow'",
+    ],
+)
+async def test_worker_role_privileges(worker_engine: AsyncEngine, stmt: str) -> None:
+    async with worker_engine.connect() as conn:
+        with pytest.raises(DBAPIError, match="permission denied"):
+            await conn.execute(text(stmt))
+
+
+async def test_worker_closes_unfinished(
+    app_engine: AsyncEngine, owner_engine: AsyncEngine, worker_engine: AsyncEngine
+) -> None:
+    """Истёкшее ожидание, потерянные вызов, запуск и инструмент; свежие не трогаются."""
+    store = PgStore(app_engine)
+    user = await store.resolve_user(_principal(f"worker-{uuid.uuid4()}"), uuid.uuid7())
+    conv = await store.ensure_conversation(user.id, "open-webui", None)
+
+    def call() -> CallStart:
+        return CallStart(
+            id=uuid.uuid7(),
+            user_id=user.id,
+            conversation_id=conv,
+            client_id="open-webui",
+            model="chat-fast",
+            stream=False,
+        )
+
+    def run() -> AgentRunStart:
+        return AgentRunStart(
+            id=uuid.uuid7(),
+            user_id=user.id,
+            conversation_id=conv,
+            client_id="open-webui",
+            agent="agent-notes",
+            model="chat-fast",
+            stream=False,
+        )
+
+    async def tool(call_id: uuid.UUID, *, started: bool) -> None:
+        await store.record_tool_call(
+            request_id=uuid.uuid7(),
+            user_id=user.id,
+            client_id="open-webui",
+            run_id=uuid.uuid7(),
+            agent="agent-notes",
+            ref="mcp-demo.create_note",
+            outcome="allow",
+            details={},
+            call_id=call_id,
+            started=started,
+        )
+
+    lost_call, lost_run, waiting = call(), run(), run()
+    await store.start_call(lost_call)
+    for item in (lost_run, waiting):
+        await store.start_agent_run(item)
+    await store.finish_agent_run(
+        waiting,
+        RunOutcome(
+            status="awaiting_approval",
+            steps=[StepRecord(status="ok")],
+            pending=[PendingCall("c1", "mcp-demo.create_note", {"text": "хлеб"})],
+            state={"messages": []},
+        ),
+        Approval(code="AAAA", expires_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=1)),
+    )
+    lost_tool, done_tool = uuid.uuid7(), uuid.uuid7()
+    await tool(lost_tool, started=True)
+    await tool(done_tool, started=True)
+    await tool(done_tool, started=False)
+
+    hour = dt.timedelta(hours=1)
+    first = await sweep(worker_engine, hour)
+    assert (first.expired, first.model_calls, first.agent_runs, first.tool_calls) == (1, 0, 0, 0)
+    async with owner_engine.begin() as conn:
+        for table, row_id in (("model_calls", lost_call.id), ("agent_runs", lost_run.id)):
+            await conn.execute(
+                text(f"update {table} set started_at = now() - interval '2 hours' where id = :i"),  # noqa: S608
+                {"i": row_id},
+            )
+    second = await sweep(worker_engine, hour)
+    assert (second.model_calls, second.agent_runs) == (1, 1)
+    # Аудит не изменить даже владельцем, поэтому порог вместо сдвига времени.
+    third = await sweep(worker_engine, dt.timedelta(0), dt.timedelta(days=1))
+    assert third.tool_calls == 1
+    again = await sweep(worker_engine, dt.timedelta(0))
+    assert (again.expired, again.tool_calls) == (0, 0)
+
+    async with app_engine.connect() as conn:
+        statuses = {
+            r.id: (r.status, r.error, r.no_state)
+            for r in (
+                await conn.execute(
+                    select(
+                        agent_runs.c.id,
+                        agent_runs.c.status,
+                        agent_runs.c.error,
+                        agent_runs.c.state.is_(None).label("no_state"),
+                    ).where(agent_runs.c.user_id == user.id)
+                )
+            ).all()
+        }
+        events = (
+            await conn.execute(
+                select(audit_events).where(audit_events.c.actor_client == "platform-worker")
+            )
+        ).all()
+    assert statuses[lost_run.id] == ("error", "abandoned", True)
+    assert statuses[waiting.id] == ("expired", None, True)
+    assert await store.last_run_expired(user.id, run_id=waiting.id)
+    assert not await store.last_run_expired(user.id, run_id=lost_run.id)
+    assert not await store.last_run_expired(uuid.uuid7(), run_id=waiting.id)
+    by_action = {e.action: e for e in events if e.actor_user_id == user.id}
+    assert by_action["model.call"].request_id == lost_call.id
+    assert by_action["agent.run"].details["reason"] == "abandoned"
+    assert by_action["tool.call.unknown"].call_id == lost_tool
+    expired = [e for e in events if e.resource_id == str(waiting.id)]
+    assert [(e.action, e.actor_user_id) for e in expired] == [("tool.approval", user.id)]
+
+
+async def test_one_result_per_tool_call(app_engine: AsyncEngine) -> None:
+    store = PgStore(app_engine)
+    call_id = uuid.uuid7()
+
+    async def record() -> None:
+        await store.record_tool_call(
+            request_id=uuid.uuid7(),
+            user_id=uuid.uuid7(),
+            client_id="open-webui",
+            run_id=uuid.uuid7(),
+            agent="agent-notes",
+            ref="mcp-demo.get_time",
+            outcome="allow",
+            details={},
+            call_id=call_id,
+        )
+
+    await record()
+    with pytest.raises(DBAPIError):
+        await record()
+
+
+async def test_sql_error_hides_parameters(app_engine: AsyncEngine) -> None:
+    async with app_engine.connect() as conn:
+        with pytest.raises(DBAPIError) as info:
+            await conn.execute(text("insert into nope values (:a)"), {"a": "СЕКРЕТ"})
+    assert "СЕКРЕТ" not in str(info.value)

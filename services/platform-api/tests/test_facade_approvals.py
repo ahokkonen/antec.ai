@@ -207,6 +207,27 @@ async def test_pending_of_other_agent_is_superseded(
     assert harness.runtime.resumes[-1] is None
 
 
+async def test_expired_by_worker(harness: Harness, make_token: TokenFactory) -> None:
+    """Ожидание уже закрыл platform-worker: поздний ответ не уходит модели (ADR-0012)."""
+    token = make_token()
+    code = await _pause(harness, token)
+    ((run_id, _item),) = harness.store.pending.items()
+    del harness.store.pending[run_id]
+    harness.store.resolved.append((run_id, "expired"))
+    started = len(harness.runtime.started)
+    for answer in (f"подтверждаю {code}", "отмена"):
+        resp = await harness.client.post(
+            "/v1/chat/completions", json=_ask(answer), headers=_auth(token)
+        )
+        assert "истёк" in resp.json()["choices"][0]["message"]["content"]
+    assert len(harness.runtime.started) == started
+    decision = await harness.client.post(
+        f"/v1/agent-runs/{run_id}/decision", json={"decision": "approve"}, headers=_auth(token)
+    )
+    assert decision.status_code == 409
+    assert decision.json()["error"]["code"] == "approval_expired"
+
+
 async def test_stale_pending_in_other_conversation_expires(
     harness: Harness, make_token: TokenFactory
 ) -> None:

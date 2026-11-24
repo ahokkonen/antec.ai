@@ -3,7 +3,7 @@
 Статус: черновик для MVP. Обновлено: 2026-11-22.
 Решения: [ADR-0001](../adr/0001-llm-gateway-litellm.md), [ADR-0002](../adr/0002-chat-ui-open-webui.md),
 [ADR-0003](../adr/0003-postgresql-single-datastore.md), [ADR-0004](../adr/0004-dependency-pinning-and-supply-chain.md),
-[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md), [ADR-0009](../adr/0009-authorization-cerbos.md), [ADR-0008](../adr/0008-plugin-contract-and-instance-template.md), [ADR-0010](../adr/0010-agent-runtime.md), [ADR-0011](../adr/0011-data-classes-and-model-routing.md).
+[ADR-0005](../adr/0005-core-and-instance-repositories.md), [ADR-0006](../adr/0006-platform-api-data-model.md), [ADR-0009](../adr/0009-authorization-cerbos.md), [ADR-0008](../adr/0008-plugin-contract-and-instance-template.md), [ADR-0010](../adr/0010-agent-runtime.md), [ADR-0011](../adr/0011-data-classes-and-model-routing.md), [ADR-0012](../adr/0012-audit-retention-pii.md).
 
 ## Главная идея
 
@@ -126,6 +126,7 @@ flowchart LR
    обменивает токен пользователя на токен с аудиторией этого MCP-сервера (token exchange V2, ADR-0007).
    Отправка письма, создание события, запись в Git ждут подтверждения человеком (состояние в
    `agent_runs` Platform API, ADR-0010).
+   Аудит вызова пишется до него: нет записи = нет вызова (ADR-0012).
 7. Выходные гардрейлы, ответ в UI. История, аудит и расходы записываются в PostgreSQL Platform API.
 
 Coding-агенты ходят в LiteLLM напрямую с личным виртуальным ключом, который выпускает Platform API

@@ -62,6 +62,7 @@ services:
       - open-webui-secrets:/out/open-webui
       - platform-api-secrets:/out/platform-api
       - platform-migrate-secrets:/out/platform-migrate
+      - platform-worker-secrets:/out/platform-worker
     networks: [secrets]
     depends_on:
       openbao:
@@ -73,7 +74,9 @@ services:
       context: ./images/postgres
     image: localhost/antec/postgres:18.7-pgvector0.8.7
     pull_policy: build
-    command: ["postgres", "-c", "max_connections=250", "-c", "password_encryption=scram-sha-256"]
+    command: ["postgres", "-c", "max_connections=250", "-c", "password_encryption=scram-sha-256",
+      # Без строк DETAIL: в них значения нарушивших ограничение строк (ADR-0012, п. 5).
+      "-c", "log_error_verbosity=terse"]
     # entrypoint образа делает chown PGDATA и сбрасывает root через gosu
     cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]
     environment:
@@ -299,6 +302,39 @@ services:
       cerbos:
         condition: service_healthy
 
+  # Фоновые задачи Platform API (ADR-0012, п. 2): истёкшие ожидания и потерянные вызовы. Только
+  # БД: ключей шлюза и клиента Keycloak у него нет.
+  platform-worker:
+    <<: *hardening
+    build:
+      context: ../../services/platform-api
+    image: localhost/antec/platform-api:0.1.0
+    pull_policy: build
+    command: ["worker"]
+    environment:
+      PLATFORM_DATABASE_USER: platform_worker
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,uid=65534,gid=65534
+    volumes:
+      - platform-worker-secrets:/run/antec-secrets:ro
+    networks: [data]
+    mem_limit: 256m
+    healthcheck:
+      # Отметка обновляется только успешным проходом (раз в минуту).
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, time; assert time.time() - os.stat('/tmp/worker-alive').st_mtime < 300"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Веб-чат (ADR-0002): единственное подключение = фасад Platform API с токеном пользователя
   # из Keycloak (auth_type system_oauth, ADR-0006, п. 3).
   open-webui:
@@ -468,3 +504,4 @@ volumes:
   open-webui-secrets:
   platform-api-secrets:
   platform-migrate-secrets:
+  platform-worker-secrets:

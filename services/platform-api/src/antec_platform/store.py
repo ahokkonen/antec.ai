@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
 
-from sqlalchemy import func, insert, select, text, update
+from sqlalchemy import func, insert, null, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -147,6 +147,14 @@ class Store(Protocol):
         run_id: uuid.UUID | None = None,
     ) -> PendingRun | None: ...
 
+    async def last_run_expired(
+        self,
+        user_id: uuid.UUID,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        run_id: uuid.UUID | None = None,
+    ) -> bool: ...
+
     async def resolve_pending_run(
         self,
         run_id: uuid.UUID,
@@ -168,6 +176,8 @@ class Store(Protocol):
         ref: str,
         outcome: str,
         details: dict[str, Any],
+        call_id: uuid.UUID | None = None,
+        started: bool = False,
     ) -> None: ...
 
     async def expire_pending_runs(
@@ -181,7 +191,7 @@ class Store(Protocol):
     ) -> None: ...
 
 
-def _audit(
+def audit_row(
     *,
     action: str,
     outcome: str,
@@ -191,6 +201,7 @@ def _audit(
     resource_type: str | None = None,
     resource_id: str | None = None,
     details: dict[str, Any] | None = None,
+    call_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     return {
         "id": uuid.uuid7(),
@@ -202,7 +213,65 @@ def _audit(
         "resource_type": resource_type,
         "resource_id": resource_id,
         "details": details or {},
+        "call_id": call_id,
     }
+
+
+def _closed(pending: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Ожидающие вызовы после решения: без аргументов (ADR-0012, п. 1)."""
+    return [{"call_id": c.get("call_id"), "ref": c.get("ref")} for c in pending or []]
+
+
+async def expire_pending(
+    conn: AsyncConnection,
+    *,
+    request_id: uuid.UUID,
+    actor_client: str,
+    user_id: uuid.UUID | None = None,
+    limit: int = 500,
+) -> int:
+    """Истёкшие ожидания = expired, состояние и аргументы удаляются, событие tool.approval.
+
+    Вызывается запросом пользователя (его ожидания) и platform-worker (все). Блокировка строк
+    с skip locked: решение, принимаемое в этот момент, не перебивается.
+    """
+    stmt = select(
+        agent_runs.c.id, agent_runs.c.user_id, agent_runs.c.agent, agent_runs.c.pending
+    ).where(
+        agent_runs.c.status == "awaiting_approval",
+        agent_runs.c.approval_expires_at <= func.now(),
+    )
+    if user_id is not None:
+        stmt = stmt.where(agent_runs.c.user_id == user_id)
+    rows = (await conn.execute(stmt.limit(limit).with_for_update(skip_locked=True))).all()
+    for row in rows:
+        await conn.execute(
+            update(agent_runs)
+            .where(agent_runs.c.id == row.id)
+            .values(status="expired", state=null(), pending=_closed(row.pending))
+        )
+    if rows:
+        await conn.execute(
+            insert(audit_events),
+            [
+                audit_row(
+                    action="tool.approval",
+                    outcome="deny",
+                    request_id=request_id,
+                    actor_user_id=row.user_id,
+                    actor_client=actor_client,
+                    resource_type="agent_run",
+                    resource_id=str(row.id),
+                    details={
+                        "decision": "expired",
+                        "agent": row.agent,
+                        "tools": [c["ref"] for c in row.pending or []],
+                    },
+                )
+                for row in rows
+            ],
+        )
+    return len(rows)
 
 
 class PgStore:
@@ -259,9 +328,7 @@ class PgStore:
         if principal.entra_tid and principal.entra_oid:
             moved = (
                 await conn.execute(
-                    select(
-                        identities.c.id, identities.c.user_id, identities.c.subject, users.c.status
-                    )
+                    select(identities.c.id, identities.c.user_id, users.c.status)
                     .join(users, users.c.id == identities.c.user_id)
                     .where(
                         identities.c.entra_tid == principal.entra_tid,
@@ -283,7 +350,7 @@ class PgStore:
                 )
                 await conn.execute(
                     insert(audit_events).values(
-                        _audit(
+                        audit_row(
                             action="identity.rebound",
                             outcome="allow",
                             request_id=request_id,
@@ -291,7 +358,7 @@ class PgStore:
                             actor_client=principal.client_id,
                             resource_type="identity",
                             resource_id=str(moved.id),
-                            details={"previous_subject": moved.subject, "idp": principal.idp},
+                            details={"idp": principal.idp},
                         )
                     )
                 )
@@ -318,7 +385,7 @@ class PgStore:
         )
         await conn.execute(
             insert(audit_events).values(
-                _audit(
+                audit_row(
                     action="user.created",
                     outcome="allow",
                     request_id=request_id,
@@ -384,13 +451,15 @@ class PgStore:
             ).scalar_one_or_none()
             await conn.execute(
                 insert(audit_events).values(
-                    _audit(
+                    audit_row(
                         action="auth.token",
                         outcome="deny",
                         request_id=request_id,
                         actor_user_id=user_id,
                         actor_client=principal.client_id or None,
-                        details={"reason": reason, "subject": principal.subject},
+                        # Идентификатор IdP только там, где нашего id ещё нет (ADR-0012, п. 5).
+                        details={"reason": reason}
+                        | ({"subject": principal.subject} if user_id is None else {}),
                     )
                 )
             )
@@ -423,7 +492,7 @@ class PgStore:
         async with self._engine.begin() as conn:
             await conn.execute(
                 insert(audit_events).values(
-                    _audit(
+                    audit_row(
                         action="policy.deny",
                         outcome="deny",
                         request_id=request_id,
@@ -516,7 +585,7 @@ class PgStore:
             )
             await conn.execute(
                 insert(audit_events).values(
-                    _audit(
+                    audit_row(
                         action="model.call",
                         outcome="allow" if result.status in ("ok", "cancelled") else "error",
                         request_id=call.id,
@@ -586,12 +655,15 @@ class PgStore:
                     steps=len(outcome.steps),
                     prompt_tokens=outcome.prompt_tokens,
                     completion_tokens=outcome.completion_tokens,
-                    error=outcome.error,
+                    # Текст ошибки может содержать ввод: хранится только код (ADR-0012).
+                    error=outcome.error_code,
                     finished_at=func.now(),
                     **waiting,
                 )
             )
             step_ids: list[uuid.UUID] = []
+            # Аудит последним в транзакции (ADR-0012, п. 4): строки разговоров уже обновлены.
+            events: list[dict[str, Any]] = []
             for number, step in enumerate(outcome.steps, start=1):
                 step_id = uuid.uuid7()
                 step_ids.append(step_id)
@@ -614,30 +686,28 @@ class PgStore:
                         finished_at=step.finished_at or func.now(),
                     )
                 )
-                await conn.execute(
-                    insert(audit_events).values(
-                        _audit(
-                            action="model.call",
-                            outcome="allow" if step.status in ("ok", "cancelled") else "error",
-                            request_id=run.id,
-                            actor_user_id=run.user_id,
-                            actor_client=run.client_id,
-                            resource_type="model",
-                            resource_id=run.model,
-                            details={
-                                "status": step.status,
-                                "http_status": step.http_status,
-                                "stream": run.stream,
-                                "conversation_id": str(run.conversation_id),
-                                "agent": run.agent,
-                                "agent_run_id": str(run.id),
-                                "data_class": run.data_class,
-                                "step": number,
-                                "model_call_id": str(step_id),
-                                "prompt_tokens": step.prompt_tokens,
-                                "completion_tokens": step.completion_tokens,
-                            },
-                        )
+                events.append(
+                    audit_row(
+                        action="model.call",
+                        outcome="allow" if step.status in ("ok", "cancelled") else "error",
+                        request_id=run.id,
+                        actor_user_id=run.user_id,
+                        actor_client=run.client_id,
+                        resource_type="model",
+                        resource_id=run.model,
+                        details={
+                            "status": step.status,
+                            "http_status": step.http_status,
+                            "stream": run.stream,
+                            "conversation_id": str(run.conversation_id),
+                            "agent": run.agent,
+                            "agent_run_id": str(run.id),
+                            "data_class": run.data_class,
+                            "step": number,
+                            "model_call_id": str(step_id),
+                            "prompt_tokens": step.prompt_tokens,
+                            "completion_tokens": step.completion_tokens,
+                        },
                     )
                 )
             history = list(run.new_messages)
@@ -663,32 +733,31 @@ class PgStore:
                 .where(conversations.c.id == run.conversation_id)
                 .values(updated_at=func.now())
             )
-            await conn.execute(
-                insert(audit_events).values(
-                    _audit(
-                        action="agent.run",
-                        outcome="allow" if ok else "error",
-                        request_id=run.id,
-                        actor_user_id=run.user_id,
-                        actor_client=run.client_id,
-                        resource_type="agent",
-                        resource_id=run.agent,
-                        details={
-                            "status": outcome.status,
-                            "model": run.model,
-                            "stream": run.stream,
-                            "conversation_id": str(run.conversation_id),
-                            "data_class": run.data_class,
-                            "steps": len(outcome.steps),
-                            "prompt_tokens": outcome.prompt_tokens,
-                            "completion_tokens": outcome.completion_tokens,
-                            "error_code": outcome.error_code,
-                            "pending_tools": [c.ref for c in outcome.pending],
-                            "parent_run_id": str(run.parent_run_id) if run.parent_run_id else None,
-                        },
-                    )
+            events.append(
+                audit_row(
+                    action="agent.run",
+                    outcome="allow" if ok else "error",
+                    request_id=run.id,
+                    actor_user_id=run.user_id,
+                    actor_client=run.client_id,
+                    resource_type="agent",
+                    resource_id=run.agent,
+                    details={
+                        "status": outcome.status,
+                        "model": run.model,
+                        "stream": run.stream,
+                        "conversation_id": str(run.conversation_id),
+                        "data_class": run.data_class,
+                        "steps": len(outcome.steps),
+                        "prompt_tokens": outcome.prompt_tokens,
+                        "completion_tokens": outcome.completion_tokens,
+                        "error_code": outcome.error_code,
+                        "pending_tools": [c.ref for c in outcome.pending],
+                        "parent_run_id": str(run.parent_run_id) if run.parent_run_id else None,
+                    },
                 )
             )
+            await conn.execute(insert(audit_events), events)
 
     async def find_pending_run(
         self,
@@ -710,6 +779,24 @@ class PgStore:
             row = (await conn.execute(stmt)).first()
         return _pending(row) if row is not None else None
 
+    async def last_run_expired(
+        self,
+        user_id: uuid.UUID,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        run_id: uuid.UUID | None = None,
+    ) -> bool:
+        """Последний запуск (в разговоре или по id) уже закрыт по сроку, обычно platform-worker."""
+        stmt = select(agent_runs.c.status).where(agent_runs.c.user_id == user_id)
+        if conversation_id is not None:
+            stmt = stmt.where(agent_runs.c.conversation_id == conversation_id)
+        if run_id is not None:
+            stmt = stmt.where(agent_runs.c.id == run_id)
+        stmt = stmt.order_by(agent_runs.c.started_at.desc()).limit(1)
+        async with self._engine.connect() as conn:
+            status = (await conn.execute(stmt)).scalar_one_or_none()
+        return status == "expired"
+
     async def resolve_pending_run(
         self,
         run_id: uuid.UUID,
@@ -719,7 +806,7 @@ class PgStore:
         client_id: str,
         request_id: uuid.UUID,
     ) -> PendingRun | None:
-        """Решение по ожиданию ровно один раз: UPDATE только из awaiting_approval.
+        """Решение по ожиданию ровно один раз: блокировка строки только в awaiting_approval.
 
         Два одновременных подтверждения: выигрывает одно, второе получает None. Решение
         записывается событием tool.approval (кто, что, по каким инструментам).
@@ -729,22 +816,27 @@ class PgStore:
         async with self._engine.begin() as conn:
             row = (
                 await conn.execute(
-                    update(agent_runs)
+                    select(agent_runs)
                     .where(
                         agent_runs.c.id == run_id,
                         agent_runs.c.user_id == user_id,
                         agent_runs.c.status == "awaiting_approval",
                     )
-                    .values(status=status)
-                    .returning(*agent_runs.c)
+                    .with_for_update()
                 )
             ).first()
             if row is None:
                 return None
+            # Состояние и аргументы больше не нужны: продолжение получает их из этой строки.
+            await conn.execute(
+                update(agent_runs)
+                .where(agent_runs.c.id == run_id)
+                .values(status=status, state=null(), pending=_closed(row.pending))
+            )
             pending = _pending(row)
             await conn.execute(
                 insert(audit_events).values(
-                    _audit(
+                    audit_row(
                         action="tool.approval",
                         outcome="allow" if status == "approved" else "deny",
                         request_id=request_id,
@@ -773,13 +865,18 @@ class PgStore:
         ref: str,
         outcome: str,
         details: dict[str, Any],
+        call_id: uuid.UUID | None = None,
+        started: bool = False,
     ) -> None:
-        """Вызов инструмента (ADR-0010, п. 6): без аргументов и результата (ADR-0012)."""
+        """Начало (`started`) или итог вызова инструмента (ADR-0012, п. 3).
+
+        Без аргументов, результата и текстов ошибок (ADR-0012, п. 5).
+        """
         async with self._engine.begin() as conn:
             await conn.execute(
                 insert(audit_events).values(
-                    _audit(
-                        action="tool.call",
+                    audit_row(
+                        action="tool.call.started" if started else "tool.call",
                         outcome=outcome,
                         request_id=request_id,
                         actor_user_id=user_id,
@@ -787,6 +884,7 @@ class PgStore:
                         resource_type="tool",
                         resource_id=ref,
                         details={"agent": agent, "agent_run_id": str(run_id), **details},
+                        call_id=call_id,
                     )
                 )
             )
@@ -796,43 +894,13 @@ class PgStore:
     ) -> int:
         """Истёкшие ожидания пользователя = expired (ADR-0010, п. 7), во всех разговорах.
 
-        Вызывается при каждом запросе пользователя к агенту: ожидание, на которое никто не
-        ответил, не остаётся awaiting_approval навсегда. Каждое решение = событие
-        tool.approval. Очистка состояния по сроку хранения: ADR-0012.
+        Вызывается при каждом запросе пользователя к агенту; ожидания тех, кто не вернулся,
+        закрывает platform-worker (ADR-0012, п. 2).
         """
         async with self._engine.begin() as conn:
-            rows = (
-                await conn.execute(
-                    update(agent_runs)
-                    .where(
-                        agent_runs.c.user_id == user_id,
-                        agent_runs.c.status == "awaiting_approval",
-                        agent_runs.c.approval_expires_at <= func.now(),
-                    )
-                    .values(status="expired")
-                    .returning(agent_runs.c.id, agent_runs.c.agent, agent_runs.c.pending)
-                )
-            ).all()
-            for row in rows:
-                await conn.execute(
-                    insert(audit_events).values(
-                        _audit(
-                            action="tool.approval",
-                            outcome="deny",
-                            request_id=request_id,
-                            actor_user_id=user_id,
-                            actor_client=client_id,
-                            resource_type="agent_run",
-                            resource_id=str(row.id),
-                            details={
-                                "decision": "expired",
-                                "agent": row.agent,
-                                "tools": [c["ref"] for c in row.pending or []],
-                            },
-                        )
-                    )
-                )
-        return len(rows)
+            return await expire_pending(
+                conn, request_id=request_id, actor_client=client_id, user_id=user_id
+            )
 
     async def conversation_class(self, conversation_id: uuid.UUID) -> str | None:
         async with self._engine.connect() as conn:

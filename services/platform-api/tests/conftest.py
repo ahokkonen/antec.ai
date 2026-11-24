@@ -170,6 +170,9 @@ class FakeStore:
     pending: dict[uuid.UUID, tuple[uuid.UUID, PendingRun]] = field(default_factory=dict)
     resolved: list[tuple[uuid.UUID, str]] = field(default_factory=list)
     tool_calls: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list)
+    tool_starts: list[tuple[str, uuid.UUID | None]] = field(default_factory=list)
+    tool_call_ids: list[uuid.UUID | None] = field(default_factory=list)
+    audit_down: bool = False
 
     async def ping(self) -> None:
         return None
@@ -252,6 +255,22 @@ class FakeStore:
             return run
         return None
 
+    async def last_run_expired(
+        self,
+        user_id: uuid.UUID,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        run_id: uuid.UUID | None = None,
+    ) -> bool:
+        runs = [
+            r
+            for r, _ in self.runs_finished
+            if r.user_id == user_id
+            and (conversation_id is None or r.conversation_id == conversation_id)
+            and (run_id is None or r.id == run_id)
+        ]
+        return bool(runs) and (runs[-1].id, "expired") in self.resolved
+
     async def resolve_pending_run(
         self,
         run_id: uuid.UUID,
@@ -302,8 +321,16 @@ class FakeStore:
         ref: str,
         outcome: str,
         details: dict[str, Any],
+        call_id: uuid.UUID | None = None,
+        started: bool = False,
     ) -> None:
+        if self.audit_down:
+            raise RuntimeError("нет БД")
+        if started:
+            self.tool_starts.append((ref, call_id))
+            return
         self.tool_calls.append((ref, outcome, details))
+        self.tool_call_ids.append(call_id)
 
 
 @dataclass

@@ -310,18 +310,20 @@ print(json.dumps({"master_key": docs[0]["data"]["data"]["master_key"],
                   "models": models}))' "$(instance_models_json)"
 }
 
-# Роль platform_app (ADR-0006, п. 9): создаётся, если её нет, пароль приводится к OpenBao.
-# Пароль читается psql из файла секретов внутри контейнера postgres (не argv, не окружение).
-# Права на таблицы выдают миграции (владелец схемы platform).
-ensure_platform_app_role() {
-  pg_exec psql -X -q -v ON_ERROR_STOP=1 -d postgres >/dev/null <<'SQL'
-\set pw `cat /run/antec-secrets/platform_app`
-select 'create role platform_app login connection limit 30'
-  where not exists (select 1 from pg_roles where rolname = 'platform_app') \gexec
-alter role platform_app login connection limit 30 password :'pw';
-grant connect on database platform to platform_app;
+# Роль сервиса Platform API (ADR-0006, п. 9; ADR-0012, п. 2): создаётся, если её нет, пароль
+# приводится к OpenBao. Пароль читается psql из файла секретов внутри контейнера postgres (не
+# argv, не окружение). Права на таблицы выдают миграции (владелец схемы platform).
+ensure_platform_role() { # роль лимит_соединений
+  { printf '\\set role %s\n\\set lim %s\n\\set pw `cat /run/antec-secrets/%s`\n' "$1" "$2" "$1"
+    cat <<'SQL'
+select format('create role %I login', :'role')
+  where not exists (select 1 from pg_roles where rolname = :'role') \gexec
+alter role :"role" login connection limit :lim password :'pw';
+grant connect on database platform to :"role";
+\connect platform
+grant usage on schema public to :"role";
 SQL
-  pg_exec psql -X -q -v ON_ERROR_STOP=1 -d platform -c 'grant usage on schema public to platform_app' >/dev/null
+  } | pg_exec psql -X -q -v ON_ERROR_STOP=1 -d postgres >/dev/null
 }
 
 # Сверка аккаунтов Open WebUI с Keycloak (open-webui/sync-identities.sql, ADR-0018): перенос

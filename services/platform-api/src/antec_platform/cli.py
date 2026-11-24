@@ -1,4 +1,4 @@
-"""Точка входа: `antec-platform serve` (сервис) и `antec-platform migrate` (миграции БД)."""
+"""Точка входа `antec-platform`: serve (сервис), worker (фоновые задачи), migrate (миграции БД)."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--host", default="0.0.0.0")  # noqa: S104 - внутри контейнера
     serve.add_argument("--port", type=int, default=8000)
     sub.add_parser("migrate", help="применить миграции БД (роль владельца схемы)")
+    sub.add_parser("worker", help="фоновый сервис: истечение ожиданий, потерянные вызовы")
     args = parser.parse_args(argv)
 
     if args.command == "migrate":
@@ -28,6 +29,17 @@ def main(argv: list[str] | None = None) -> int:
 
         logs.configure("INFO")
         upgrade(DatabaseSettings())  # пароль из файла секрета
+        return 0
+
+    if args.command == "worker":
+        import asyncio
+
+        from antec_platform.settings import WorkerSettings
+        from antec_platform.worker import serve as serve_worker
+
+        worker_settings = WorkerSettings()  # пароль из файла секрета
+        logs.configure(worker_settings.log_level)
+        asyncio.run(serve_worker(worker_settings))
         return 0
 
     from antec_platform.main import build_app

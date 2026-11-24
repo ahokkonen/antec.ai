@@ -326,7 +326,8 @@ class PydanticAIRun:
                 StepRecord(
                     status=status,
                     http_status=exc.status_code,
-                    error=message,
+                    # Текст шлюза может содержать ввод: в БД только код (ADR-0012, п. 5).
+                    error=f"upstream_error: HTTP {exc.status_code}",
                     started_at=_last_request_at(messages),
                 )
             )

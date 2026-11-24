@@ -153,14 +153,18 @@ llm_keys="$(service_secrets litellm db_password master_key salt_key)"
 owui_keys="$(service_secrets open-webui db_password webui_secret_key oauth_client_secret)"
 papi_keys="$(service_secrets platform-api db_password litellm_key)"
 pmig_keys="$(service_secrets platform-migrate db_password)"
+pwrk_keys="$(service_secrets platform-worker db_password)"
 unset BAO_TOKEN
 # Роли PostgreSQL и их БД: роль на каждую БД и роль сервиса Platform API (ADR-0006, п. 9).
-# Бэкапы установок до ADR-0006 роли platform_app не содержат: она проверяется, если есть в OpenBao.
+# Бэкапы старых установок не содержат ролей platform_app (до ADR-0006) и platform_worker (до
+# ADR-0012): роль проверяется, если есть в OpenBao.
 ROLES=("${DATABASES[@]}")
-role_db() { if [[ "$1" == platform_app ]]; then echo platform; else echo "$1"; fi; }
-if printf '%s' "$secrets_json" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["data"]["data"].get("platform_app") else 1)'; then
-  ROLES+=(platform_app)
-fi
+role_db() { if [[ "$1" == platform_app || "$1" == platform_worker ]]; then echo platform; else echo "$1"; fi; }
+for role in platform_app platform_worker; do
+  if printf '%s' "$secrets_json" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["data"]["data"].get(sys.argv[1]) else 1)' "$role"; then
+    ROLES+=("$role")
+  fi
+done
 keys="$(printf '%s' "$secrets_json" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)["data"]["data"]
@@ -187,7 +191,9 @@ for entry in "keycloak:keycloak:$kc_keys" "litellm:litellm:$llm_keys" "open-webu
   fi
   [[ "$state" == "ok" || "$state" == "нет" ]] || die "в восстановленном OpenBao antec/$path $state"
 done
-log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей, antec/keycloak: $kc_keys, antec/litellm: $llm_keys, antec/open-webui: $owui_keys, antec/platform-api: $papi_keys, antec/platform-migrate: $pmig_keys"
+[[ "$pwrk_keys" == "ok" || "$pwrk_keys" == "нет" ]] \
+  || die "в восстановленном OpenBao antec/platform-worker $pwrk_keys"
+log "  OpenBao: снапшот восстановлен, распечатан исходным ключом установки $installation, antec/postgres: $keys ключей, antec/keycloak: $kc_keys, antec/litellm: $llm_keys, antec/open-webui: $owui_keys, antec/platform-api: $papi_keys, antec/platform-migrate: $pmig_keys, antec/platform-worker: $pwrk_keys"
 
 # --- Роли: пароли из восстановленного OpenBao и вход каждой роли в свою БД по SCRAM ---
 # Бэкап ролей снят без паролей; источник истины паролей OpenBao. SQL с паролями идёт через stdin.

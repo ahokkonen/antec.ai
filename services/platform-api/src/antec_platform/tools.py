@@ -4,13 +4,17 @@
 1. список инструментов агента = белый список манифеста ∩ `tools/list` сервера;
 2. перед вызовом проверка в PDP: ресурс `tool`, id `<server>.<tool>`, действие `call`;
 3. токен пользователя меняется на токен с аудиторией сервера (RFC 8693, ADR-0007);
-4. вызов `tools/call` и событие аудита `tool.call` (без аргументов и результата: ADR-0012).
+4. `tool.call.started` в аудит до вызова: нет записи = нет вызова (ADR-0012, п. 3);
+5. вызов `tools/call` и событие `tool.call` с тем же `call_id`, в том числе при отмене.
+
+В аудит не идут аргументы, результаты и тексты ошибок (ADR-0012, п. 5).
 
 Транспорт MCP и обмен токена за контрактами `McpClient` и `TokenExchanger` (adapters/).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -30,6 +34,9 @@ TOOL_KIND = "tool"
 # Текст модели при отказе (права или класс данных): причина только в аудите.
 DENIED_TEXT = "вызов инструмента запрещён (права пользователя или класс данных)"
 CALL = "call"
+AUDIT_FAILED_TEXT = "вызов инструмента не выполнен: аудит недоступен"
+# Записи итога, начатые при отмене запуска: ссылка не даёт сборщику мусора убрать задачу.
+_PENDING_AUDIT: set[asyncio.Task[None]] = set()
 _MODEL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 
@@ -38,7 +45,15 @@ class ToolConfigError(Exception):
 
 
 class ToolError(Exception):
-    """Инструмент не выполнен (сеть, протокол, обмен токена); текст безопасно показать модели."""
+    """Инструмент не выполнен (сеть, протокол, обмен токена); текст безопасно показать модели.
+
+    Текст может прийти от MCP-сервера и содержать данные пользователя, поэтому в аудит идёт
+    только `code` (ADR-0012, п. 5).
+    """
+
+    def __init__(self, message: str, code: str = "tool_error") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +130,8 @@ class ToolAudit(Protocol):
         ref: str,
         outcome: str,
         details: dict[str, Any],
+        call_id: uuid.UUID | None = None,
+        started: bool = False,
     ) -> None: ...
 
     async def raise_conversation_class(
@@ -230,7 +247,9 @@ class ToolBroker:
             try:
                 remote = await self._client.list_tools(server, await self._token(server))
             except ToolError as exc:
-                log.warning("MCP-сервер %s: список инструментов недоступен: %s", server.name, exc)
+                log.warning(
+                    "MCP-сервер %s: список инструментов недоступен: %s", server.name, exc.code
+                )
                 continue
             offered = {t.name: t for t in remote}
             for tool in wanted:
@@ -291,6 +310,7 @@ class ToolBroker:
             return ToolCallResult(DENIED_TEXT, is_error=True)
         server_name, _, tool = ref.partition(".")
         server = self._servers[server_name]
+        call_id = uuid.uuid7()
         started = time.monotonic()
         details: dict[str, Any] = {
             "read_only": read_only,
@@ -298,35 +318,73 @@ class ToolBroker:
             "data_class": self.data_class(ref),
         }
         try:
-            result = await self._client.call_tool(
-                server, await self._token(server), tool, arguments
-            )
+            token = await self._token(server)
         except ToolError as exc:
-            details |= {"error": str(exc), "duration_ms": _ms(started)}
-            await self._record(ref, "error", details)
+            details |= {"error_code": exc.code, "duration_ms": _ms(started)}
+            await self._record(ref, "error", details, call_id)
             return ToolCallResult(f"инструмент недоступен: {exc}", is_error=True)
-        details |= {"is_error": result.is_error, "duration_ms": _ms(started)}
-        await self._record(ref, "error" if result.is_error else "allow", details)
-        # Данные инструмента теперь в разговоре: его класс не ниже класса инструмента
-        # (ADR-0011): следующая модель в этом разговоре должна быть допущена к нему.
-        if self._conversation_id is not None and rank(details["data_class"]) > rank(
-            self._default_class
-        ):
-            await self._audit.raise_conversation_class(self._conversation_id, details["data_class"])
+        try:
+            # До вызова: данные инструмента попадут в разговор (ADR-0011), даже если запуск
+            # прервётся раньше ответа; действие без записи о начале не выполняется.
+            if self._conversation_id is not None and rank(details["data_class"]) > rank(
+                self._default_class
+            ):
+                await self._audit.raise_conversation_class(
+                    self._conversation_id, details["data_class"]
+                )
+            await self._write(ref, "allow", details, call_id, started=True)
+        except Exception:
+            log.exception("аудит недоступен, инструмент %s не вызван", ref)
+            return ToolCallResult(AUDIT_FAILED_TEXT, is_error=True)
+        outcome, error = "error", "unknown"
+        try:
+            result = await self._client.call_tool(server, token, tool, arguments)
+            outcome, error = ("error", "is_error") if result.is_error else ("allow", "")
+        except ToolError as exc:
+            error = exc.code
+            return ToolCallResult(f"инструмент недоступен: {exc}", is_error=True)
+        except asyncio.CancelledError:
+            # Запрос мог дойти до сервера: выполнено действие или нет, неизвестно.
+            error = "cancelled"
+            raise
+        finally:
+            details |= {"duration_ms": _ms(started)}
+            if error:
+                details["error_code"] = error
+            task = asyncio.create_task(self._record(ref, outcome, details, call_id))
+            _PENDING_AUDIT.add(task)
+            task.add_done_callback(_PENDING_AUDIT.discard)
+            await asyncio.shield(task)
         return result
 
-    async def _record(self, ref: str, outcome: str, details: dict[str, Any]) -> None:
+    async def _write(
+        self,
+        ref: str,
+        outcome: str,
+        details: dict[str, Any],
+        call_id: uuid.UUID | None = None,
+        *,
+        started: bool = False,
+    ) -> None:
+        await self._audit.record_tool_call(
+            request_id=self._request_id,
+            user_id=self._user_id,
+            client_id=self._client_id,
+            run_id=self.run_id,
+            agent=self._agent,
+            ref=ref,
+            outcome=outcome,
+            details=dict(details),
+            call_id=call_id,
+            started=started,
+        )
+
+    async def _record(
+        self, ref: str, outcome: str, details: dict[str, Any], call_id: uuid.UUID | None = None
+    ) -> None:
+        """Отказ или итог: сбой записи только в журнал; итог без записи закроет worker."""
         try:
-            await self._audit.record_tool_call(
-                request_id=self._request_id,
-                user_id=self._user_id,
-                client_id=self._client_id,
-                run_id=self.run_id,
-                agent=self._agent,
-                ref=ref,
-                outcome=outcome,
-                details=details,
-            )
+            await self._write(ref, outcome, details, call_id)
         except Exception:
             log.exception("не удалось записать аудит инструмента %s", ref)
 
