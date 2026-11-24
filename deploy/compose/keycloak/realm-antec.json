@@ -26,7 +26,7 @@
   "otpPolicyDigits": 6,
   "otpPolicyPeriod": 30,
   "eventsEnabled": true,
-  "eventsExpiration": 2592000,
+  "eventsExpiration": 31536000,
   "adminEventsEnabled": true,
   "adminEventsDetailsEnabled": false,
   "internationalizationEnabled": true,

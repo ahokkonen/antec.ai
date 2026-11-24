@@ -61,7 +61,7 @@ if ! bao_exec secrets list -format=json | python3 -c 'import json,sys; sys.exit(
 fi
 
 for policy in render-postgres render-keycloak render-litellm render-open-webui \
-    render-platform-api render-platform-migrate render-platform-worker; do
+    render-platform-api render-platform-migrate render-platform-worker render-platform-subject; do
   compose exec -T -e BAO_TOKEN openbao bao policy write "$policy" - \
     < "$COMPOSE_DIR/openbao/policies/$policy.hcl" >/dev/null
 done
@@ -70,13 +70,13 @@ if ! bao_exec kv get -mount=antec postgres >/dev/null 2>&1; then
   log "генерация паролей PostgreSQL в OpenBao (antec/postgres)"
   python3 - <<'PY' | compose exec -T -e BAO_TOKEN openbao bao kv put -mount=antec postgres - >/dev/null
 import json, secrets
-keys = ["superuser", "keycloak", "litellm", "openwebui", "platform", "dbos", "platform_app", "platform_worker"]
+keys = ["superuser", "keycloak", "litellm", "openwebui", "platform", "dbos", "platform_app", "platform_worker", "platform_subject"]
 print(json.dumps({k: secrets.token_urlsafe(32) for k in keys}))
 PY
 fi
 
 # Роли Platform API (ADR-0006, п. 9; ADR-0012, п. 2) появились позже первых установок.
-ensure_generated_secrets postgres platform_app platform_worker
+ensure_generated_secrets postgres platform_app platform_worker platform_subject
 
 # Секреты сервисов в OpenBao. Недостающие ключи дополняются, существующие не меняются;
 # ошибка чтения прерывает запуск (bao_kv_json). Пароль роли БД копируется из antec/postgres,
@@ -101,6 +101,7 @@ copy_db_password platform_app platform-api
 copy_secret_field keycloak platform_api_client_secret platform-api oidc_client_secret
 copy_db_password platform platform-migrate
 copy_db_password platform_worker platform-worker
+copy_db_password platform_subject platform-subject
 
 # Сервисы, работавшие до этого запуска: их нужно перезапустить, если изменились их секреты
 # (обёртки и Keycloak читают файлы секретов только при старте процесса).
@@ -134,6 +135,7 @@ render open-webui
 render platform-api
 render platform-migrate
 render platform-worker
+render platform-subject
 
 log "сборка и запуск PostgreSQL"
 postgres_before="$(compose ps -q postgres 2>/dev/null || true)"
@@ -146,7 +148,8 @@ if [[ -n "$postgres_before" && "$(compose ps -q postgres)" != "$postgres_before"
   compose restart keycloak >/dev/null
 fi
 ensure_platform_role platform_app 30
-ensure_platform_role platform_worker 5
+ensure_platform_role platform_worker 5 openwebui
+ensure_platform_role platform_subject 5 openwebui
 log "сборка и запуск Keycloak (первый запуск около минуты)"
 start_service keycloak --build
 
@@ -174,11 +177,13 @@ compose build platform-api
 compose --profile bootstrap run --rm -T platform-migrate
 log "запуск Platform API"
 start_service platform-api
-log "запуск platform-worker"
-start_service platform-worker
 
 log "запуск Open WebUI (миграции БД при первом запуске)"
 start_service open-webui
+# Таблицы создают миграции Open WebUI, поэтому права и worker после его запуска (ADR-0012).
+pg_exec psql -X -q -d openwebui < "$COMPOSE_DIR/open-webui/retention-grants.sql" >/dev/null
+log "запуск platform-worker"
+start_service platform-worker
 log "сверка аккаунтов Open WebUI с Keycloak"
 sync_open_webui_identities
 unset BAO_TOKEN

@@ -351,6 +351,23 @@ def ensure_realm_sessions(admin: Admin, spec: Json) -> None:
         admin.call("PUT", f"/{REALM}", changed)
 
 
+def ensure_event_retention(admin: Admin, secrets_in: Json) -> None:
+    """Срок событий входа и админ-событий = retention.audit_days манифеста (ADR-0012, п. 1).
+
+    Атрибуты передаются целиком: PUT с частью атрибутов удаляет остальные.
+    """
+    seconds = int(secrets_in["audit_days"]) * 86400
+    current = admin.call("GET", f"/{REALM}")
+    attributes = dict(current.get("attributes") or {})
+    if current.get("eventsExpiration") == seconds and attributes.get(
+        "adminEventsExpiration"
+    ) == str(seconds):
+        return
+    log(f"realm {REALM}: срок событий {secrets_in['audit_days']} дней")
+    attributes["adminEventsExpiration"] = str(seconds)
+    admin.call("PUT", f"/{REALM}", {"eventsExpiration": seconds, "attributes": attributes})
+
+
 def ensure_realm(admin: Admin, secrets_in: Json) -> None:
     """Создаёт realm и недостающие объекты из realm-antec.json; существующие не меняет.
 
@@ -365,6 +382,7 @@ def ensure_realm(admin: Admin, secrets_in: Json) -> None:
         log(f"создание realm {REALM} из keycloak/realm-antec.json")
         admin.call("POST", "", spec)
     ensure_realm_sessions(admin, spec)
+    ensure_event_retention(admin, secrets_in)
     have_scopes = {sc["name"] for sc in admin.call("GET", f"/{REALM}/client-scopes")}
     for scope in scopes:
         if scope["name"] not in have_scopes:

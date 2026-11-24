@@ -123,6 +123,15 @@ deploy/compose/scripts/policies-check.sh
 Компиляция и тесты политик Cerbos ядра и инсталляции вместе (аргумент: каталог инсталляции, по
 умолчанию `instances/dev`), тем же образом, что на стенде.
 
+```bash
+deploy/compose/scripts/subject.sh export <id пользователя> > subject.json
+```
+
+Права субъекта данных (ADR-0012, п. 7): `find` (id по email со stdin), `export`, `erase` (с подтверждением,
+необратимо) и `reapply` (повторить удаления из журнала `~/Library/Application Support/antec/erasures.log`
+после восстановления из бэкапа). Выгрузка содержит персональные данные. Бэкапы старше 35 дней
+удаляются вручную.
+
 Подключиться к PostgreSQL:
 
 ```bash
@@ -141,7 +150,8 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 | `cerbos` | `cerbos:0.57.0`, политики ядра `/policies/core` и инсталляции `/policies/instance` (scope, только чтение); без телеметрии, Admin API и аудита | `policy` (internal) | 256 MB |
 | `platform-migrate` | Одноразовые миграции БД `platform` ролью владельца схемы (профиль `bootstrap`) | `data` | 256 MB |
 | `platform-api` | `localhost/antec/platform-api:0.1.0`, фасад `/v1` (модели и агенты инсталляции, ADR-0010), роль БД `platform_app`; порт 8000 только внутри | `data`, `llm`, `platform`, `policy`, `mcp` (internal) | 512 MB |
-| `platform-worker` | Тот же образ, команда `worker` (ADR-0012): истёкшие ожидания и потерянные вызовы, роль БД `platform_worker` | `data` | 256 MB |
+| `platform-worker` | Тот же образ, команда `worker` (ADR-0012): истёкшие ожидания, потерянные вызовы, очистка по срокам (и чатов Open WebUI), роль БД `platform_worker` | `data` | 256 MB |
+| `platform-subject` | Одноразовые `subject export` и `erase` (профиль `bootstrap`, `scripts/subject.sh`), роль БД `platform_subject` | `data` | 512 MB |
 | `open-webui` | `open-webui:v0.13.3`, вход через Keycloak; `http://localhost:3000` | `data`, `platform`, `ui` | 1,5 GB |
 | `mcp-demo` | Плагин dev-инсталляции (`instances/dev/plugins/mcp-demo`, `compose.override.yaml`): тестовый MCP-сервер 2026-07-28, токен по JWKS Keycloak | `mcp` (internal) | 128 MB |
 

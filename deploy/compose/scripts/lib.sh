@@ -63,10 +63,12 @@ tree_sha() { # каталоги...
     find "$d" -type f | LC_ALL=C sort | while read -r f; do printf '%s\n' "$f"; cat "$f"; done
   done | shasum -a 256 | cut -c1-16
 }
-export ANTEC_LITELLM_CONFIG_SHA ANTEC_OPEN_WEBUI_CONFIG_SHA ANTEC_CERBOS_CONFIG_SHA ANTEC_PLATFORM_CONFIG_SHA
+export ANTEC_WORKER_CONFIG_SHA ANTEC_LITELLM_CONFIG_SHA ANTEC_OPEN_WEBUI_CONFIG_SHA ANTEC_CERBOS_CONFIG_SHA ANTEC_PLATFORM_CONFIG_SHA
 compute_config_shas() {
   ANTEC_LITELLM_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/litellm/config.yaml" \
-    "$COMPOSE_DIR/common/env-from-files.sh" "$ANTEC_INSTANCE_RENDERED/litellm/models.yaml")"
+    "$COMPOSE_DIR/common/env-from-files.sh" "$ANTEC_INSTANCE_RENDERED/litellm/models.yaml" \
+    "$ANTEC_INSTANCE_RENDERED/litellm.env")"
+  ANTEC_WORKER_CONFIG_SHA="$(config_sha "$ANTEC_INSTANCE_RENDERED/platform-worker.env")"
   ANTEC_OPEN_WEBUI_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/common/env-from-files.sh")"
   # Конфигурация Cerbos и все файлы политик ядра и инсталляции в стабильном порядке.
   ANTEC_CERBOS_CONFIG_SHA="$( { config_sha "$COMPOSE_DIR/cerbos/config.yaml"
@@ -104,6 +106,8 @@ die() { printf '\033[31m[antec] ошибка:\033[0m %s\n' "$*" >&2; exit 1; }
 # них не работает ни одна команда compose, поэтому их нет = рендер сейчас.
 if [[ ! -f "$ANTEC_INSTANCE_RENDERED/platform-api.env" \
   || ! -f "$ANTEC_INSTANCE_RENDERED/litellm/models.yaml" \
+  || ! -f "$ANTEC_INSTANCE_RENDERED/litellm.env" \
+  || ! -f "$ANTEC_INSTANCE_RENDERED/platform-worker.env" \
   || ! -f "$ANTEC_INSTANCE_RENDERED/instance.json" \
   || ! -f "$ANTEC_INSTANCE_RENDERED/platform-api/agents.json" \
   || ! -f "$ANTEC_INSTANCE_RENDERED/platform-api/models.json" ]]; then
@@ -285,7 +289,10 @@ kc = docs[0]["data"]["data"]
 entra = docs[1]["data"]["data"] if docs[1] else None
 kc["entra"] = {k: entra[k] for k in ("tenant_id", "client_id")} if entra else None
 # Аудитории MCP-серверов инсталляции: клиенты Keycloak для обмена токена (ADR-0010).
-kc["mcp_audiences"] = json.load(open(sys.argv[1])).get("mcp_audiences", [])
+instance = json.load(open(sys.argv[1]))
+kc["mcp_audiences"] = instance.get("mcp_audiences", [])
+# Срок событий Keycloak, дни (ADR-0012).
+kc["audit_days"] = instance["audit_days"]
 print(json.dumps(kc))' "$ANTEC_INSTANCE_RENDERED/instance.json"
 }
 
@@ -313,7 +320,7 @@ print(json.dumps({"master_key": docs[0]["data"]["data"]["master_key"],
 # Роль сервиса Platform API (ADR-0006, п. 9; ADR-0012, п. 2): создаётся, если её нет, пароль
 # приводится к OpenBao. Пароль читается psql из файла секретов внутри контейнера postgres (не
 # argv, не окружение). Права на таблицы выдают миграции (владелец схемы platform).
-ensure_platform_role() { # роль лимит_соединений
+ensure_platform_role() { # роль лимит_соединений [дополнительная БД]
   { printf '\\set role %s\n\\set lim %s\n\\set pw `cat /run/antec-secrets/%s`\n' "$1" "$2" "$1"
     cat <<'SQL'
 select format('create role %I login', :'role')
@@ -323,6 +330,7 @@ grant connect on database platform to :"role";
 \connect platform
 grant usage on schema public to :"role";
 SQL
+    if [[ -n "${3:-}" ]]; then printf 'grant connect on database %s to :"role";\n' "$3"; fi
   } | pg_exec psql -X -q -v ON_ERROR_STOP=1 -d postgres >/dev/null
 }
 
