@@ -214,6 +214,7 @@ async def _purge_due(
             engine,
             content_days=settings.retention_content_days,
             metadata_days=settings.retention_metadata_days,
+            audit_days=settings.retention_audit_days,
             open_webui_engine=open_webui_engine,
         )
         log.info("очистка по срокам: %s", counts)

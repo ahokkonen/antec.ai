@@ -15,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     Numeric,
     Table,
@@ -173,9 +174,14 @@ messages = Table(
     Index("ix_messages_created_at", "created_at"),
 )
 
+# Отдельная схема и владелец platform_audit (ADR-0012, п. 4): таблицу переносит и меняет
+# deploy/compose/postgres/audit.sql, а не миграции platform. Имя всегда со схемой: владелец БД
+# мог бы подставить свою audit_events через search_path.
+audit_metadata = MetaData(schema="audit", naming_convention=metadata.naming_convention)
+
 audit_events = Table(
     "audit_events",
-    metadata,
+    audit_metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("occurred_at", DateTime(timezone=True), nullable=False, server_default=NOW),
     Column("actor_user_id", UUID(as_uuid=True)),
@@ -188,6 +194,10 @@ audit_events = Table(
     Column("details", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     # Один вызов инструмента: tool.call.started до него и tool.call после (ADR-0012, п. 3).
     Column("call_id", UUID(as_uuid=True)),
+    # Цепочка: номер и хэши задаёт триггер БД; вставка их не передаёт.
+    Column("seq", BigInteger),
+    Column("prev_hash", LargeBinary),
+    Column("hash", LargeBinary),
     CheckConstraint("outcome in ('allow', 'deny', 'error')", name="outcome"),
     Index("ix_audit_events_occurred_at", "occurred_at"),
     Index(

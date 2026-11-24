@@ -1,7 +1,7 @@
 """Очистка по срокам хранения (ADR-0012, п. 1): суточная задача platform-worker.
 
 Порядок по внешним ключам: сообщения, вызовы моделей, запуски агентов, пустые разговоры. Пачка =
-транзакция. Аудит здесь не удаляется: только функцией владельца схемы (ADR-0012, п. 4).
+транзакция. Аудит удаляет только функция владельца его схемы audit.purge (ADR-0012, п. 4).
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import ColumnElement, Table, delete, func, insert, select
+from sqlalchemy import ColumnElement, Integer, Table, delete, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from antec_platform.adapters import open_webui
@@ -34,11 +34,25 @@ async def _purge(engine: AsyncEngine, table: Table, expired: ColumnElement[bool]
             return total
 
 
+async def _purge_audit(engine: AsyncEngine, audit_days: int) -> int:
+    """Начало цепочки аудита функцией владельца схемы (она же проверяет минимум 180 дней)."""
+    total = 0
+    while True:
+        async with engine.begin() as conn:
+            deleted: int = (
+                await conn.execute(select(func.audit.purge(audit_days, _BATCH, type_=Integer)))
+            ).scalar_one()
+        total += deleted
+        if deleted < _BATCH:
+            return total
+
+
 async def purge(
     engine: AsyncEngine,
     *,
     content_days: int,
     metadata_days: int,
+    audit_days: int,
     open_webui_engine: AsyncEngine | None = None,
 ) -> dict[str, int]:
     """Удаляет просроченное; событие retention.purge, если что-то удалено или был сбой."""
@@ -77,6 +91,7 @@ async def purge(
             counts["open_webui_chats"] = await open_webui.purge_chats(
                 open_webui_engine, content_days
             )
+        counts["audit_events"] = await _purge_audit(engine, audit_days)
         outcome = "allow"
     finally:
         if outcome == "error" or any(counts.values()):
@@ -94,6 +109,7 @@ async def purge(
                                 "deleted": counts,
                                 "content_days": content_days,
                                 "metadata_days": metadata_days,
+                                "audit_days": audit_days,
                             },
                         )
                     )
