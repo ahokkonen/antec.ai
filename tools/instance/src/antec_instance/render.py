@@ -24,6 +24,8 @@ AGENTS = "platform-api/agents.json"
 MCP_SERVERS = "platform-api/mcp_servers.json"
 MODELS = "platform-api/models.json"
 PLATFORM_ENV = "platform-api.env"
+WORKER_ENV = "platform-worker.env"
+LITELLM_ENV = "litellm.env"
 SUMMARY = "instance.json"
 # Прежняя раскладка (до подкаталогов): удаляется, чтобы не осталось устаревших копий.
 _LEGACY = ("litellm-models.yaml", "agents.json")
@@ -62,6 +64,23 @@ def platform_env(manifest: Manifest) -> dict[str, str]:
     return env
 
 
+def worker_env(manifest: Manifest) -> dict[str, str]:
+    """Сроки для platform-worker (ADR-0012, п. 1)."""
+    return {
+        "PLATFORM_RETENTION_CONTENT_DAYS": str(manifest.retention.content_days),
+        "PLATFORM_RETENTION_METADATA_DAYS": str(manifest.retention.metadata_days),
+    }
+
+
+def litellm_env(manifest: Manifest) -> dict[str, str]:
+    """Срок SpendLogs: litellm/config.yaml ссылается на переменную (ADR-0012, п. 1)."""
+    return {"ANTEC_SPEND_LOGS_RETENTION": f"{manifest.retention.audit_days}d"}
+
+
+def _env_file(env: dict[str, str]) -> str:
+    return _HEADER + "".join(f"{k}={v}\n" for k, v in env.items())
+
+
 def summary(manifest: Manifest) -> dict[str, Any]:
     return {
         "schema_version": manifest.schema_version,
@@ -70,6 +89,8 @@ def summary(manifest: Manifest) -> dict[str, Any]:
         "models": [m.name for m in manifest.models],
         "agents": [a.name for a in manifest.agents],
         # Аудитории token exchange: клиенты Keycloak для MCP-серверов (ADR-0010, п. 6).
+        # Срок событий Keycloak (ADR-0012, п. 1).
+        "audit_days": manifest.retention.audit_days,
         "mcp_audiences": [s.audience for s in manifest.mcp_servers],
     }
 
@@ -124,7 +145,9 @@ def render(manifest: Manifest, instance_dir: Path, out_dir: Path) -> list[Path]:
     files = {
         LITELLM_MODELS: _HEADER
         + yaml.safe_dump(litellm_models(manifest), sort_keys=False, allow_unicode=True),
-        PLATFORM_ENV: _HEADER + "".join(f"{k}={v}\n" for k, v in platform_env(manifest).items()),
+        PLATFORM_ENV: _env_file(platform_env(manifest)),
+        WORKER_ENV: _env_file(worker_env(manifest)),
+        LITELLM_ENV: _env_file(litellm_env(manifest)),
         SUMMARY: json.dumps(summary(manifest), ensure_ascii=False, indent=2) + "\n",
         # Всегда, даже пустой: Platform API читает файл при старте.
         AGENTS: json.dumps(agents, ensure_ascii=False, indent=2) + "\n",

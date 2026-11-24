@@ -236,6 +236,17 @@ class DataSettings(_Strict):
     default_class: DataClass = "internal"
 
 
+class Retention(_Strict):
+    """Сроки хранения, дни (ADR-0012, п. 1). Значения подтверждает DPIA (ADR-0015)."""
+
+    # Тексты сообщений и чаты Open WebUI.
+    content_days: Annotated[int, Field(ge=30, le=180)] = 90
+    # Вызовы моделей, запуски агентов, пустые разговоры.
+    metadata_days: Annotated[int, Field(ge=180, le=730)] = 365
+    # Аудит, расходы LiteLLM, события Keycloak.
+    audit_days: Annotated[int, Field(ge=180, le=730)] = 365
+
+
 def _v3_fields(data: dict[str, Any]) -> list[str]:
     found = ["data"] if "data" in data else []
     for i, model in enumerate(data.get("models") or []):
@@ -251,13 +262,14 @@ def _v3_fields(data: dict[str, Any]) -> list[str]:
 
 
 class Manifest(_Strict):
-    schema_version: Literal[1, 2, 3]
+    schema_version: Literal[1, 2, 3, 4]
     instance: InstanceInfo
     core: CoreRef
     models: Annotated[list[Model], Field(min_length=1)]
     mcp_servers: list[McpServer] = []
     agents: list[Agent] = []
     data: DataSettings = DataSettings()
+    retention: Retention = Retention()
     settings: Settings = Settings()
 
     @model_validator(mode="before")
@@ -270,8 +282,11 @@ class Manifest(_Strict):
             raise ValueError("раздел agents есть только в schema_version: 2 и выше (ADR-0010)")
         if version in (1, 2) and (fields := _v3_fields(data)):
             raise ValueError(
-                f"классы данных ({', '.join(fields)}) есть только в schema_version: 3 (ADR-0011)"
+                f"классы данных ({', '.join(fields)}) есть только в schema_version: 3 "
+                "и выше (ADR-0011)"
             )
+        if "retention" in data and version in (1, 2, 3):
+            raise ValueError("раздел retention есть только в schema_version: 4 (ADR-0012)")
         return data
 
     def tool_class(self, server: str, tool: str) -> str:

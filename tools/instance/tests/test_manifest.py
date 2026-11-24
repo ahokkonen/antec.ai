@@ -53,7 +53,7 @@ def test_minimal_manifest() -> None:
 @pytest.mark.parametrize(
     ("path", "value", "needle"),
     [
-        ("schema_version", 4, "schema_version"),
+        ("schema_version", 5, "schema_version"),
         ("instance.id", "Acme", "instance.id"),
         ("instance.id", "a.b", "instance.id"),
         ("models.0.litellm.api_key", "sk-plain-secret", "os.environ"),
@@ -215,3 +215,22 @@ def test_data_classes_match_platform_api() -> None:
     ]
     assert tuple(ast.literal_eval(value)) == DATA_CLASSES
     assert get_args(DataClass) == DATA_CLASSES
+
+
+def test_retention_v4() -> None:
+    m = parse_manifest({**BASE, "schema_version": 4})
+    assert (m.retention.content_days, m.retention.audit_days) == (90, 365)
+    m = parse_manifest({**BASE, "schema_version": 4, "retention": {"content_days": 30}})
+    assert (m.retention.content_days, m.retention.metadata_days) == (30, 365)
+
+
+def test_retention_needs_v4() -> None:
+    assert "schema_version: 4" in _problems({**BASE, "schema_version": 3, "retention": {}})
+
+
+@pytest.mark.parametrize(
+    "retention",
+    [{"content_days": 29}, {"content_days": 181}, {"metadata_days": 90}, {"audit_days": 731}],
+)
+def test_retention_bounds(retention: dict[str, int]) -> None:
+    assert "retention" in _problems({**BASE, "schema_version": 4, "retention": retention})
