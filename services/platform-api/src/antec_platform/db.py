@@ -227,5 +227,12 @@ def create_engine(
         pool_recycle=1800,
         # Параметры запросов (тексты сообщений) не попадают в тексты ошибок (ADR-0012, п. 5).
         hide_parameters=True,
-        connect_args={"server_settings": {"application_name": application_name}},
+        connect_args={
+            "server_settings": {
+                "application_name": application_name,
+                # Цепочка аудита заблокирована до конца транзакции: потерянный клиент не должен
+                # держать её до таймаута TCP (ADR-0012, п. 4).
+                "idle_in_transaction_session_timeout": "60000",
+            }
+        },
     )

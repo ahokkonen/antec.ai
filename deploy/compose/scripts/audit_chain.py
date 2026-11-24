@@ -4,6 +4,7 @@
 
     audit_chain.py verify  CHECKPOINTS          строки выгрузки (EXPORT_SQL) на stdin; итог JSON
     audit_chain.py payload CHECKPOINTS HEAD     данные новой точки (JSON одной строкой)
+    audit_chain.py last    CHECKPOINTS [SHA]    sha256 последней строки; SHA = ожидаемый (OpenBao)
     audit_chain.py batch   CHECKPOINTS          тело transit/verify: подписи всех точек
     audit_chain.py append  CHECKPOINTS PAYLOAD  подпись со stdin, точка дописывается в файл
 
@@ -41,6 +42,8 @@ FIELDS = (
     "details",
 )
 MIN_RETENTION = dt.timedelta(days=180)
+# Время точки с хоста, время события из БД: запас на расхождение часов.
+CLOCK_SLACK = dt.timedelta(days=1)
 
 
 class ChainError(Exception):
@@ -110,7 +113,10 @@ def verify(lines: Iterable[str], points: list[Json], now: dt.datetime) -> Json:
         if at >= base and hashes.get(at) != point["hash"]:
             raise ChainError(f"событие {at}: хэш не совпадает с контрольной точкой {point['at']}")
         # События после точки моложе 180 дней удалить по сроку не могли.
-        if not recent_checked and dt.datetime.fromisoformat(point["at"]) >= now - MIN_RETENTION:
+        if (
+            not recent_checked
+            and dt.datetime.fromisoformat(point["at"]) >= now - MIN_RETENTION + CLOCK_SLACK
+        ):
             recent_checked = True
             if base > at:
                 raise ChainError(f"удалены события моложе 180 дней: {at + 1}..{base}")
@@ -135,6 +141,18 @@ def payload(points_path: Path, result: Json) -> str:
         "seq": result["seq"],
     }
     return json.dumps(body, sort_keys=True, separators=(",", ":"))
+
+
+def last(path: Path, expected: str) -> str:
+    """sha256 последней строки. Файл не короче, чем отмечено в OpenBao.
+
+    Отметка пишется после строки, поэтому при обрыве она может отставать на одну строку.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    tail = [hashlib.sha256(line.encode()).hexdigest() for line in lines[-2:]]
+    if expected and expected not in tail:
+        raise ChainError("файл контрольных точек удалён, обрезан или заменён (отметка в OpenBao)")
+    return tail[-1] if tail else ""
 
 
 def batch(points: list[Json]) -> str:
@@ -171,6 +189,8 @@ def main(argv: list[str]) -> int:
             print(json.dumps(result))
         elif command == "payload":
             print(payload(path, json.loads(argv[2])))
+        elif command == "last":
+            print(last(path, argv[2] if len(argv) > 2 else ""))
         elif command == "batch":
             print(batch(load(path)))
         elif command == "append":

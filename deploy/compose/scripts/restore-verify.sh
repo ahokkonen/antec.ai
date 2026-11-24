@@ -156,7 +156,14 @@ pmig_keys="$(service_secrets platform-migrate db_password)"
 # Аудит (ADR-0012, п. 4): подписи точек ключом из восстановленного OpenBao, цепочка в
 # восстановленной БД. В бэкапах до ADR-0012 точек нет.
 points="$dir/audit-checkpoints.jsonl"
+if [[ ! -s "$points" && "$(rx psql -X -At -d platform \
+    -c "select to_regclass('audit.chain_head') is not null")" == t ]]; then
+  die "в бэкапе есть схема audit, но нет контрольных точек ($points)"
+fi
 if [[ -s "$points" ]]; then
+  mark="$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN "$bao_name" \
+    bao kv get -mount=antec -field=last "$AUDIT_KEY")" || die "в снапшоте OpenBao нет отметки точек аудита"
+  audit_chain last "$points" "$mark" >/dev/null || die "файл точек аудита в бэкапе неполный"
   audit_verify_signatures "$points" docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN \
     "$bao_name" bao || die "подписи контрольных точек аудита не подтверждены"
   audit_state="$(rx psql -X -q -At -d platform < "$COMPOSE_DIR/postgres/audit-export.sql" \

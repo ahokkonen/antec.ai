@@ -375,10 +375,22 @@ if bad or len(got) != need:
     sys.exit(f"аудит: подпись контрольных точек не подтверждена: {bad or len(got)}")' "$file"
 }
 
+# Отметка последней точки в OpenBao: файл точек нельзя незаметно удалить или обрезать.
+# Пусто = точек ещё не было. Ошибка чтения прерывает (bao_kv_json).
+audit_mark_from_json() {
+  python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print(doc["data"]["data"]["last"] if doc else "")'
+}
+
 # Проверка цепочки и точек стенда; итог JSON на stdout. Нужен BAO_TOKEN.
 audit_verify() {
-  local file
+  local file doc mark
   file="$(audit_points_file)"
+  doc="$(bao_kv_json "$AUDIT_KEY")" || return 1
+  mark="$(audit_mark_from_json <<<"$doc")" || return 1
+  audit_chain last "$file" "$mark" >/dev/null || return 1
   audit_verify_signatures "$file" compose exec -T -e BAO_TOKEN openbao bao || return 1
   pg_exec psql -X -q -At -d platform < "$COMPOSE_DIR/postgres/audit-export.sql" \
     | audit_chain verify "$file"
@@ -403,5 +415,6 @@ audit_checkpoint() {
     | BAO_TOKEN="$token" compose exec -T -e BAO_TOKEN openbao \
         bao write -field=signature "transit/sign/$AUDIT_KEY" -)"
   printf '%s' "$signature" | audit_chain append "$file" "$raw"
+  bao_exec kv put -mount=antec "$AUDIT_KEY" last="$(audit_chain last "$file")" >/dev/null
   log "контрольная точка аудита: событие $(json_field seq <<<"$result"), файл $file"
 }

@@ -449,6 +449,16 @@ async def test_chain_is_verified_independently(
     assert chain.verify(lines, points, now)["checkpoints"] == 2
     assert len(json.loads(chain.batch(points))["batch_input"]) == 2
     first, second = path.read_text().splitlines()
+    mark = chain.last(path, "")
+    path.write_text(first + "\n")
+    with pytest.raises(chain.ChainError, match="обрезан"):
+        chain.last(path, mark)
+    # Обрыв между строкой и отметкой: отметка отстаёт на одну строку.
+    behind = chain.last(path, "")
+    path.write_text(first + "\n" + second + "\n")
+    assert chain.last(path, behind) == mark
+    with pytest.raises(chain.ChainError, match="удалён"):
+        chain.last(tmp_path / "absent", mark)
     path.write_text(second + "\n")
     with pytest.raises(chain.ChainError, match="цепочка контрольных точек"):
         chain.load(path)

@@ -186,7 +186,7 @@ compose --profile bootstrap run --rm -T platform-migrate
 # пишущие в прежнюю таблицу, останавливаются: их итоги успевают записаться.
 if [[ "$(pg_exec psql -X -At -d platform -c "select to_regclass('audit.audit_events') is null")" == t ]]; then
   log "перенос аудита в схему audit: остановка Platform API и platform-worker"
-  compose stop -t 60 platform-api platform-worker >/dev/null 2>&1 || true
+  compose stop -t 60 platform-api platform-worker >/dev/null
 fi
 pg_exec psql -X -q -v ON_ERROR_STOP=1 -d platform < "$COMPOSE_DIR/postgres/audit.sql" >/dev/null
 log "запуск Platform API"
