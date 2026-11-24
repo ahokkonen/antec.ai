@@ -51,13 +51,22 @@ class DatabaseSettings(BaseSettings):
     app_role: str = "platform_app"
     # Роль фонового сервиса (ADR-0012, п. 2).
     worker_role: str = "platform_worker"
+    # Роль одноразовых команд subject export и erase (ADR-0012, п. 7).
+    subject_role: str = "platform_subject"
+    # БД Open WebUI на том же сервере (чаты по сроку и по запросу субъекта); пусто = её нет.
+    open_webui_database: str | None = None
 
-    @field_validator("app_role", "worker_role", "database_user", "database_name")
+    @field_validator("app_role", "worker_role", "subject_role", "database_user", "database_name")
     @classmethod
     def _identifier(cls, value: str) -> str:
         if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", value):
             raise ValueError("ожидается идентификатор PostgreSQL в нижнем регистре")
         return value
+
+    @field_validator("open_webui_database", mode="before")
+    @classmethod
+    def _no_open_webui(cls, value: object) -> object:
+        return None if value == "" else value
 
     def url(self) -> URL:
         # URL.create экранирует пароль; в строку подключения и логи он не попадает.
@@ -79,8 +88,18 @@ class WorkerSettings(DatabaseSettings):
     worker_interval_seconds: Annotated[float, Field(ge=1, le=3600)] = 60.0
     # Незавершённое старше этого срока считается потерянным. Больше времени любого запроса.
     worker_abandon_seconds: Annotated[int, Field(ge=600, le=86400)] = 3600
+    # Сроки хранения (манифест, раздел retention; ADR-0012, п. 1), дни.
+    retention_content_days: Annotated[int, Field(ge=30, le=180)] = 90
+    retention_metadata_days: Annotated[int, Field(ge=180, le=730)] = 365
     worker_heartbeat_file: Path = Path("/tmp/worker-alive")  # noqa: S108 - tmpfs контейнера
     log_level: str = "INFO"
+
+
+class SubjectSettings(DatabaseSettings):
+    """Одноразовые команды субъекта данных (ADR-0012, п. 7)."""
+
+    database_user: str = "platform_subject"
+    database_pool_size: Annotated[int, Field(ge=1, le=50)] = 2
 
 
 class Settings(DatabaseSettings):

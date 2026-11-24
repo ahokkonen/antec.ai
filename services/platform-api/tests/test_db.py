@@ -14,6 +14,7 @@ import secrets
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from alembic.autogenerate import compare_metadata
@@ -24,6 +25,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from antec_platform import subject as subject_data
 from antec_platform.agents import PendingCall, RunOutcome, StepRecord
 from antec_platform.auth import Principal
 from antec_platform.db import (
@@ -35,6 +37,7 @@ from antec_platform.db import (
     model_calls,
 )
 from antec_platform.migrate import upgrade
+from antec_platform.retention import purge
 from antec_platform.settings import DatabaseSettings
 from antec_platform.store import AgentRunStart, Approval, CallResult, CallStart, PgStore
 from antec_platform.worker import sweep
@@ -48,6 +51,7 @@ if not ADMIN_URL:
 OWNER = "platform_test_owner"
 APP = "platform_test_app"
 WORKER = "platform_test_worker"
+SUBJECT = "platform_test_subject"
 
 
 def _settings(user: str, password: str, database: str) -> DatabaseSettings:
@@ -60,6 +64,7 @@ def _settings(user: str, password: str, database: str) -> DatabaseSettings:
         database_password=SecretStr(password),
         app_role=APP,
         worker_role=WORKER,
+        subject_role=SUBJECT,
     )
 
 
@@ -78,11 +83,16 @@ async def _admin(sql: list[str], database: str | None = None) -> None:
 
 class Db:
     def __init__(
-        self, owner: DatabaseSettings, app: DatabaseSettings, worker: DatabaseSettings
+        self,
+        owner: DatabaseSettings,
+        app: DatabaseSettings,
+        worker: DatabaseSettings,
+        subject: DatabaseSettings,
     ) -> None:
         self.owner = owner
         self.app = app
         self.worker = worker
+        self.subject = subject
 
 
 @pytest.fixture(scope="module")
@@ -93,18 +103,20 @@ def anyio_backend() -> str:
 @pytest.fixture(scope="module")
 async def db() -> AsyncIterator[Db]:
     name = f"platform_test_{secrets.token_hex(4)}"
-    owner_pw, app_pw, worker_pw = (secrets.token_urlsafe(16) for _ in range(3))
+    owner_pw, app_pw, worker_pw, subject_pw = (secrets.token_urlsafe(16) for _ in range(4))
     await _admin(
         [
             f"drop role if exists {APP}",
             f"drop role if exists {WORKER}",
+            f"drop role if exists {SUBJECT}",
             f"drop role if exists {OWNER}",
             f"create role {OWNER} login password '{owner_pw}'",
             f"create role {APP} login password '{app_pw}'",
             f"create role {WORKER} login password '{worker_pw}'",
+            f"create role {SUBJECT} login password '{subject_pw}'",
             f"create database {name} owner {OWNER}",
             f"revoke all on database {name} from public",
-            f"grant connect on database {name} to {OWNER}, {APP}, {WORKER}",
+            f"grant connect on database {name} to {OWNER}, {APP}, {WORKER}, {SUBJECT}",
         ]
     )
     await _admin(
@@ -114,9 +126,16 @@ async def db() -> AsyncIterator[Db]:
     owner = _settings(OWNER, owner_pw, name)
     await asyncio.to_thread(upgrade, owner)
     try:
-        yield Db(owner, _settings(APP, app_pw, name), _settings(WORKER, worker_pw, name))
+        yield Db(
+            owner,
+            _settings(APP, app_pw, name),
+            _settings(WORKER, worker_pw, name),
+            _settings(SUBJECT, subject_pw, name),
+        )
     finally:
-        await _admin([f"drop database {name} with (force)", f"drop role {APP}, {WORKER}, {OWNER}"])
+        await _admin(
+            [f"drop database {name} with (force)", f"drop role {APP}, {WORKER}, {SUBJECT}, {OWNER}"]
+        )
 
 
 @pytest.fixture
@@ -138,6 +157,59 @@ async def worker_engine(db: Db) -> AsyncIterator[AsyncEngine]:
     engine = create_engine(db.worker)
     yield engine
     await engine.dispose()
+
+
+@pytest.fixture
+async def subject_engine(db: Db) -> AsyncIterator[AsyncEngine]:
+    engine = create_engine(db.subject)
+    yield engine
+    await engine.dispose()
+
+
+# Таблицы Open WebUI 0.13.3, к которым обращается adapters/open_webui.py (столбцы как в его БД).
+_OPEN_WEBUI_DDL = [
+    'create table "user" (id text primary key, oauth json)',
+    "create table chat (id varchar primary key, user_id varchar, title text, created_at bigint, "
+    "updated_at bigint, chat json, summary text)",
+    "create table chat_message (id text primary key, chat_id text not null "
+    "references chat(id) on delete cascade, content json)",
+    "create table shared_chat (id text primary key, chat_id text not null "
+    "references chat(id) on delete cascade)",
+    "create table automation_run (id text primary key, chat_id text)",
+    "create table comment (id text primary key, resource_type text, resource_id text)",
+    "create table comment_reaction (id text primary key, comment_id text)",
+    "create table notification (id text primary key, resource_type text, resource_id text)",
+    "create table chat_view_state (user_id text, chat_id text)",
+    "create table chatidtag (id varchar primary key, chat_id varchar)",
+]
+_GRANTS = Path(__file__).parents[3] / "deploy/compose/open-webui/retention-grants.sql"
+
+
+@pytest.fixture
+async def open_webui(db: Db) -> AsyncIterator[tuple[AsyncEngine, AsyncEngine, AsyncEngine]]:
+    """БД как у Open WebUI с настоящим файлом прав: движки админа, worker, subject."""
+    name = f"openwebui_test_{secrets.token_hex(4)}"
+    await _admin([f"create database {name}"])
+    sql = (
+        _GRANTS.read_text().replace("platform_worker", WORKER).replace("platform_subject", SUBJECT)
+    )
+    grants = [
+        s.strip()
+        for s in "\n".join(
+            line for line in sql.splitlines() if not line.startswith(("--", "\\"))
+        ).split(";")
+        if s.strip() and s.strip() not in ("BEGIN", "COMMIT")
+    ]
+    await _admin([*_OPEN_WEBUI_DDL, *grants], database=name)
+    admin = create_async_engine(make_url(ADMIN_URL or "").set(database=name), poolclass=NullPool)
+    worker = create_engine(db.worker, database=name)
+    subject = create_engine(db.subject, database=name)
+    try:
+        yield admin, worker, subject
+    finally:
+        for engine in (admin, worker, subject):
+            await engine.dispose()
+        await _admin([f"drop database {name} with (force)"])
 
 
 def _principal(sub: str, oid: str | None = None) -> Principal:
@@ -636,8 +708,8 @@ async def test_conversation_class_only_grows(app_engine: AsyncEngine) -> None:
         "select content from messages",
         "select state from agent_runs",
         "select email from users",
+        "delete from users",
         "update agent_runs set user_id = user_id",
-        "delete from agent_runs",
         "delete from audit_events",
         "update audit_events set outcome = 'allow'",
     ],
@@ -757,6 +829,281 @@ async def test_worker_closes_unfinished(
     assert by_action["tool.call.unknown"].call_id == lost_tool
     expired = [e for e in events if e.resource_id == str(waiting.id)]
     assert [(e.action, e.actor_user_id) for e in expired] == [("tool.approval", user.id)]
+
+
+async def _seed_chat(
+    admin: AsyncEngine, chat_id: str, user: str, created: int, updated: int
+) -> None:
+    async with admin.begin() as conn:
+        await conn.execute(
+            text(
+                "insert into chat (id, user_id, title, created_at, updated_at, chat) "
+                "values (:i, :u, 't', extract(epoch from now())::bigint - :c * 86400, "
+                "extract(epoch from now())::bigint - :p * 86400, '{}')"
+            ),
+            {"i": chat_id, "u": user, "c": created, "p": updated},
+        )
+        for stmt in (
+            "insert into chat_message values (:i, :i, '{}')",
+            "insert into shared_chat values (:i, :i)",
+            "insert into automation_run values (:i, :i)",
+            "insert into comment values (:i, 'chat', :i)",
+            "insert into comment_reaction values (:i, :i)",
+            "insert into notification values (:i, 'chat', :i)",
+            "insert into chat_view_state values (:i, :i)",
+            "insert into chatidtag values (:i, :i)",
+        ):
+            await conn.execute(text(stmt), {"i": chat_id})
+
+
+async def _chat_rows(admin: AsyncEngine, table: str) -> list[str]:
+    column = {"chat": "id", "comment": "resource_id", "notification": "resource_id"}.get(
+        table, "comment_id" if table == "comment_reaction" else "chat_id"
+    )
+    async with admin.connect() as conn:
+        rows = await conn.execute(
+            text(f"select {column} from {table} where {column} is not null order by 1")  # noqa: S608
+        )
+        return list(rows.scalars())
+
+
+_CHAT_TABLES = (
+    "chat",
+    "chat_message",
+    "shared_chat",
+    "automation_run",
+    "comment",
+    "comment_reaction",
+    "notification",
+    "chat_view_state",
+    "chatidtag",
+)
+
+
+async def test_retention_purge(
+    app_engine: AsyncEngine,
+    owner_engine: AsyncEngine,
+    worker_engine: AsyncEngine,
+    open_webui: tuple[AsyncEngine, AsyncEngine, AsyncEngine],
+) -> None:
+    admin, owui_worker, _ = open_webui
+    await _seed_chat(admin, "idle", "u1", 100, 91)
+    await _seed_chat(admin, "ancient", "u1", 181, 1)
+    await _seed_chat(admin, "active", "u1", 120, 1)
+    store = PgStore(app_engine)
+    user = await store.resolve_user(_principal(f"purge-{uuid.uuid4()}"), uuid.uuid7())
+
+    async def history(chat: str) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+        conv = await store.ensure_conversation(user.id, "open-webui", chat)
+        run = AgentRunStart(
+            id=uuid.uuid7(),
+            user_id=user.id,
+            conversation_id=conv,
+            client_id="open-webui",
+            agent="agent-notes",
+            model="chat-fast",
+            stream=False,
+            new_messages=[{"role": "user", "content": "x"}],
+        )
+        await store.start_agent_run(run)
+        await store.finish_agent_run(
+            run, RunOutcome(status="ok", text="y", steps=[StepRecord(status="ok")])
+        )
+        child = replace(run, id=uuid.uuid7(), parent_run_id=run.id, new_messages=[])
+        await store.start_agent_run(child)
+        await store.finish_agent_run(child, RunOutcome(status="ok"))
+        return conv, run.id, child.id
+
+    old, stale, fresh = await history("old"), await history("stale"), await history("fresh")
+
+    async def age(ids: tuple[uuid.UUID, uuid.UUID, uuid.UUID], days: int) -> None:
+        conv, *runs = ids
+        async with owner_engine.begin() as conn:
+            p = {"c": conv, "d": dt.timedelta(days=days)}
+            for stmt in (
+                "update messages set created_at = now() - cast(:d as interval) "
+                "where conversation_id = :c",
+                "update model_calls set started_at = now() - cast(:d as interval) "
+                "where conversation_id = :c",
+                "update conversations set updated_at = now() - cast(:d as interval) where id = :c",
+            ):
+                await conn.execute(text(stmt), p)
+            # Продолжение моложе границы: ссылка на удалённый запуск становится пустой.
+            await conn.execute(
+                text(
+                    "update agent_runs set started_at = now() - cast(:d as interval) where id = :i"
+                ),
+                {"i": runs[0], "d": dt.timedelta(days=days)},
+            )
+
+    await age(old, 400)
+    await age(stale, 100)
+    counts = await purge(
+        worker_engine, content_days=90, metadata_days=365, open_webui_engine=owui_worker
+    )
+    assert counts["messages"] == 4
+    assert (counts["model_calls"], counts["agent_runs"]) == (1, 1)
+    # У old остался свежий запуск-продолжение, поэтому разговор ещё нужен.
+    assert counts["conversations"] == 0
+    assert counts["open_webui_chats"] == 2
+    for table in _CHAT_TABLES:
+        assert await _chat_rows(admin, table) == ["active"], table
+    async with app_engine.connect() as conn:
+        left = set((await conn.execute(select(messages.c.conversation_id).distinct())).scalars())
+        parent = (
+            await conn.execute(select(agent_runs.c.parent_run_id).where(agent_runs.c.id == old[2]))
+        ).scalar_one()
+        event = (
+            await conn.execute(
+                select(audit_events).where(audit_events.c.action == "retention.purge")
+            )
+        ).one()
+    assert fresh[0] in left
+    assert not {old[0], stale[0]} & left
+    assert parent is None
+    assert event.outcome == "allow"
+    assert event.details["deleted"]["messages"] == 4
+    async with owner_engine.begin() as conn:
+        await conn.execute(
+            text("update agent_runs set started_at = now() - interval '400 days' where id = :i"),
+            {"i": old[2]},
+        )
+    assert (await purge(worker_engine, content_days=90, metadata_days=365))["conversations"] == 1
+
+
+async def test_purge_failure_is_audited(
+    worker_engine: AsyncEngine,
+    app_engine: AsyncEngine,
+    open_webui: tuple[AsyncEngine, AsyncEngine, AsyncEngine],
+) -> None:
+    admin, owui_worker, _ = open_webui
+    async with admin.begin() as conn:
+        await conn.execute(text("drop table chat cascade"))
+    with pytest.raises(DBAPIError):
+        await purge(
+            worker_engine, content_days=90, metadata_days=365, open_webui_engine=owui_worker
+        )
+    async with app_engine.connect() as conn:
+        outcomes = (
+            await conn.execute(
+                select(audit_events.c.outcome)
+                .where(audit_events.c.action == "retention.purge")
+                .order_by(audit_events.c.id.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+    assert outcomes == "error"
+
+
+async def test_subject_export_and_erase(
+    app_engine: AsyncEngine,
+    subject_engine: AsyncEngine,
+    open_webui: tuple[AsyncEngine, AsyncEngine, AsyncEngine],
+) -> None:
+    admin, _, owui = open_webui
+    store = PgStore(app_engine)
+    oid = f"oid-{uuid.uuid4()}"
+    principal = _principal(f"subject-{uuid.uuid4()}", oid)
+    user = await store.resolve_user(principal, uuid.uuid7())
+    other = await store.resolve_user(_principal(f"other-{uuid.uuid4()}"), uuid.uuid7())
+    for who, chat in ((user, "mine"), (other, "theirs")):
+        conv = await store.ensure_conversation(who.id, "open-webui", chat)
+        call = CallStart(
+            id=uuid.uuid7(),
+            user_id=who.id,
+            conversation_id=conv,
+            client_id="open-webui",
+            model="chat-fast",
+            stream=False,
+            new_messages=[{"role": "user", "content": "личное"}],
+        )
+        await store.start_call(call)
+        await store.finish_call(call, CallResult(status="ok"))
+    async with admin.begin() as conn:
+        for owui_id, sub in (("w1", oid), ("w2", "another")):
+            await conn.execute(
+                text(
+                    "insert into \"user\" values (:i, json_build_object('oidc', "
+                    "json_build_object('sub', cast(:s as text))))"
+                ),
+                {"i": owui_id, "s": sub},
+            )
+    await _seed_chat(admin, "mine", "w1", 1, 1)
+    await _seed_chat(admin, "theirs", "w2", 1, 1)
+
+    data = await subject_data.export(subject_engine, user.id, open_webui_engine=owui)
+    assert [m["content"]["content"] for m in data["messages"]] == ["личное"]
+    assert [c["id"] for c in data["open_webui_chats"]] == ["mine"]
+    assert data["user"][0]["email"] == "a@example.test"
+    assert all(e["actor_user_id"] == user.id for e in data["audit_events"])
+
+    counts = await subject_data.erase(subject_engine, user.id, open_webui_engine=owui)
+    assert (counts["messages"], counts["identities"], counts["open_webui_chats"]) == (1, 1, 1)
+    for table in _CHAT_TABLES:
+        assert await _chat_rows(admin, table) == ["theirs"], table
+    after = await subject_data.export(subject_engine, user.id)
+    assert after["messages"] == after["identities"] == []
+    row = after["user"][0]
+    assert (row["display_name"], row["email"], row["status"]) == (None, None, "disabled")
+    assert len(after["model_calls"]) == 1
+    assert [c["external_id"] for c in after["conversations"]] == [None]
+    actions = [e["action"] for e in after["audit_events"]]
+    assert "subject.erase" in actions
+    assert "subject.export" in actions
+    theirs = await subject_data.export(subject_engine, other.id)
+    assert len(theirs["messages"]) == 1
+    # Повтор безопасен; без идентичности чаты можно найти только по явному antec_uid.
+    with pytest.raises(subject_data.SubjectError, match="open-webui-uid"):
+        await subject_data.erase(subject_engine, user.id, open_webui_engine=owui)
+    again = await subject_data.erase(subject_engine, user.id)
+    assert again["messages"] == 0
+    # Новый вход того же человека = новый пользователь.
+    assert (await store.resolve_user(principal, uuid.uuid7())).id != user.id
+    with pytest.raises(subject_data.SubjectError, match="нет"):
+        await subject_data.erase(subject_engine, uuid.uuid7())
+
+
+async def test_step_rows_before_and_after(app_engine: AsyncEngine) -> None:
+    """Шаг виден до вызова модели; итог с аудитом сразу, finish_agent_run его не дублирует."""
+    store = PgStore(app_engine)
+    user = await store.resolve_user(_principal(f"steps-{uuid.uuid4()}"), uuid.uuid7())
+    conv = await store.ensure_conversation(user.id, "open-webui", None)
+    run = AgentRunStart(
+        id=uuid.uuid7(),
+        user_id=user.id,
+        conversation_id=conv,
+        client_id="open-webui",
+        agent="agent-notes",
+        model="chat-fast",
+        stream=False,
+        new_messages=[{"role": "user", "content": "x"}],
+    )
+    await store.start_agent_run(run)
+    saved = StepRecord(status="ok", prompt_tokens=3, id=uuid.uuid7())
+    unsaved = StepRecord(status="error", id=uuid.uuid7())
+    for step in (saved, unsaved):
+        assert step.id is not None
+        await store.start_step(run, step.id)
+    await store.finish_step(run, saved, 1)
+    saved.saved = True
+    await store.finish_agent_run(run, RunOutcome(status="ok", text="y", steps=[saved, unsaved]))
+    async with app_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(model_calls.c.id, model_calls.c.status).where(
+                    model_calls.c.agent_run_id == run.id
+                )
+            )
+        ).all()
+        events = (
+            await conn.execute(
+                select(audit_events.c.details)
+                .where(audit_events.c.request_id == run.id, audit_events.c.action == "model.call")
+                .order_by(audit_events.c.id)
+            )
+        ).scalars()
+        assert [e["model_call_id"] for e in events] == [str(saved.id), str(unsaved.id)]
+    assert {r.id: r.status for r in rows} == {saved.id: "ok", unsaved.id: "error"}
 
 
 async def test_one_result_per_tool_call(app_engine: AsyncEngine) -> None:

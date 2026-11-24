@@ -1,16 +1,52 @@
-"""Точка входа `antec-platform`: serve (сервис), worker (фоновые задачи), migrate (миграции БД)."""
+"""Точка входа `antec-platform`: serve (сервис), worker (фон), migrate (БД), subject (GDPR)."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
+import uuid
 
 import uvicorn
 
 from antec_platform import logs
 
 log = logging.getLogger("antec_platform")
+
+
+async def _subject(args: argparse.Namespace) -> int:
+    from antec_platform import subject
+    from antec_platform.db import create_engine
+    from antec_platform.settings import SubjectSettings
+
+    settings = SubjectSettings()  # пароль из файла секрета
+    engine = create_engine(settings, subject.ACTOR)
+    open_webui_engine = None
+    if settings.open_webui_database and not getattr(args, "skip_open_webui", False):
+        open_webui_engine = create_engine(settings, subject.ACTOR, settings.open_webui_database)
+    result: object
+    try:
+        if args.subject_command == "find":
+            result = await subject.find(engine, sys.stdin.readline())
+        else:
+            command = subject.export if args.subject_command == "export" else subject.erase
+            result = await command(
+                engine,
+                args.user,
+                open_webui_engine=open_webui_engine,
+                antec_uid=args.open_webui_uid,
+            )
+    except subject.SubjectError as exc:
+        print(f"ошибка: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        await engine.dispose()
+        if open_webui_engine is not None:
+            await open_webui_engine.dispose()
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2, default=str)
+    print()
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,6 +57,15 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--port", type=int, default=8000)
     sub.add_parser("migrate", help="применить миграции БД (роль владельца схемы)")
     sub.add_parser("worker", help="фоновый сервис: истечение ожиданий, потерянные вызовы")
+    subject_parser = sub.add_parser("subject", help="права субъекта данных (ADR-0012, п. 7)")
+    subject_sub = subject_parser.add_subparsers(dest="subject_command", required=True)
+    subject_sub.add_parser("find", help="пользователь по email со stdin")
+    for name, text in (("export", "выгрузка JSON в stdout"), ("erase", "удаление данных")):
+        cmd = subject_sub.add_parser(name, help=text)
+        cmd.add_argument("--user", type=uuid.UUID, required=True, help="id пользователя")
+        group = cmd.add_mutually_exclusive_group()
+        group.add_argument("--open-webui-uid", help="antec_uid локального пользователя")
+        group.add_argument("--skip-open-webui", action="store_true")
     args = parser.parse_args(argv)
 
     if args.command == "migrate":
@@ -30,6 +75,12 @@ def main(argv: list[str] | None = None) -> int:
         logs.configure("INFO")
         upgrade(DatabaseSettings())  # пароль из файла секрета
         return 0
+
+    if args.command == "subject":
+        import asyncio
+
+        logs.configure("INFO")
+        return asyncio.run(_subject(args))
 
     if args.command == "worker":
         import asyncio

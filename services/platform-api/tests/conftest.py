@@ -25,6 +25,7 @@ from antec_platform.agents import (
     Resume,
     RunOutcome,
     StepRecord,
+    StepSink,
     ToolSession,
     Turn,
 )
@@ -173,6 +174,8 @@ class FakeStore:
     tool_starts: list[tuple[str, uuid.UUID | None]] = field(default_factory=list)
     tool_call_ids: list[uuid.UUID | None] = field(default_factory=list)
     audit_down: bool = False
+    steps_started: list[uuid.UUID] = field(default_factory=list)
+    steps_finished: list[tuple[int, str]] = field(default_factory=list)
 
     async def ping(self) -> None:
         return None
@@ -218,6 +221,12 @@ class FakeStore:
 
     async def start_agent_run(self, run: AgentRunStart) -> None:
         self.runs_started.append(run)
+
+    async def start_step(self, run: AgentRunStart, step_id: uuid.UUID) -> None:
+        self.steps_started.append(step_id)
+
+    async def finish_step(self, run: AgentRunStart, step: StepRecord, number: int) -> None:
+        self.steps_finished.append((number, step.status))
 
     async def finish_agent_run(
         self, run: AgentRunStart, outcome: RunOutcome, approval: Approval | None = None
@@ -383,6 +392,7 @@ class FakeRuntime:
         prompt: str | None,
         tools: ToolSession | None = None,
         resume: Resume | None = None,
+        steps: StepSink | None = None,
     ) -> FakeRun:
         self.started.append((agent, user_id, history, prompt))
         self.resumes.append(resume)

@@ -14,7 +14,8 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx2
@@ -47,8 +48,11 @@ from pydantic_ai.messages import (
     TextPartDelta,
     UserPromptPart,
 )
+from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
+from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import UsageLimits
 
@@ -58,6 +62,7 @@ from antec_platform.agents import (
     Resume,
     RunOutcome,
     StepRecord,
+    StepSink,
     ToolSession,
     Turn,
 )
@@ -67,6 +72,8 @@ log = logging.getLogger(__name__)
 
 _ERROR_LIMIT = 500
 _DONE = object()
+# Записи итога шагов, начатые при отмене: ссылка не даёт сборщику мусора убрать задачу.
+_PENDING_STEPS: set[asyncio.Task[None]] = set()
 
 
 class PydanticAIRuntime:
@@ -110,6 +117,7 @@ class PydanticAIRuntime:
         prompt: str | None,
         tools: ToolSession | None = None,
         resume: Resume | None = None,
+        steps: StepSink | None = None,
     ) -> PydanticAIRun:
         return PydanticAIRun(
             self._agents[agent.name],
@@ -120,6 +128,7 @@ class PydanticAIRuntime:
             self._timeout,
             tools=tools,
             resume=resume,
+            sink=steps,
         )
 
     async def aclose(self) -> None:
@@ -136,38 +145,85 @@ def _history(turns: list[Turn]) -> list[ModelMessage]:
     return out
 
 
-def _steps(messages: list[ModelMessage]) -> list[StepRecord]:
-    """Шаги = ответы модели этого запуска (прерванный ответ без частей не считается).
+def _step_status(http_status: int) -> str:
+    return "rejected" if 400 <= http_status < 500 else "error"
 
-    Ответ, оборванный отменой или сбоем (state не complete), записывается как cancelled, а не
-    ok. Начало шага = время запроса к модели, конец = время ответа.
-    """
-    steps = []
-    requested_at: dt.datetime | None = None
-    for msg in messages:
-        if isinstance(msg, ModelRequest):
-            requested_at = msg.timestamp
-        elif isinstance(msg, ModelResponse) and msg.parts:
-            complete = msg.state == "complete"
-            steps.append(
-                StepRecord(
-                    status="ok" if complete else "cancelled",
-                    http_status=200,
-                    prompt_tokens=msg.usage.input_tokens,
-                    completion_tokens=msg.usage.output_tokens,
-                    gateway_request_id=(msg.provider_response_id or "")[:128] or None,
-                    started_at=requested_at,
-                    finished_at=msg.timestamp,
-                )
+
+class _AuditedModel(WrapperModel):
+    """Модель одного запуска: каждый вызов записан до него, итог после (ADR-0012, п. 3)."""
+
+    def __init__(self, wrapped: Model, steps: list[StepRecord], sink: StepSink | None) -> None:
+        super().__init__(wrapped)
+        self._steps = steps
+        self._sink = sink
+
+    @asynccontextmanager
+    async def _step(self) -> AsyncIterator[StepRecord]:
+        step = StepRecord(
+            status="cancelled", id=await self._sink.begin() if self._sink is not None else None
+        )
+        step.started_at = dt.datetime.now(dt.UTC)
+        self._steps.append(step)
+        try:
+            yield step
+        except ModelHTTPError as exc:
+            step.status, step.http_status = _step_status(exc.status_code), exc.status_code
+            # Текст шлюза может содержать ввод: в БД только код (ADR-0012, п. 5).
+            step.error = f"upstream_error: HTTP {exc.status_code}"
+            raise
+        except Exception as exc:
+            if step.status != "ok":
+                step.status, step.error = "error", type(exc).__name__
+            raise
+        finally:
+            step.finished_at = dt.datetime.now(dt.UTC)
+            if self._sink is not None:
+                # Отмена запуска не должна оборвать запись итога.
+                task = asyncio.create_task(self._sink.finish(step))
+                _PENDING_STEPS.add(task)
+                task.add_done_callback(_PENDING_STEPS.discard)
+                await asyncio.shield(task)
+
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        async with self._step() as step:
+            response = await self.wrapped.request(
+                messages, model_settings, model_request_parameters
             )
-    return steps
+            _fill(step, response)
+            return response
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[Any] | None = None,
+    ) -> AsyncGenerator[StreamedResponse]:
+        async with (
+            self._step() as step,
+            self.wrapped.request_stream(
+                messages, model_settings, model_request_parameters, run_context
+            ) as stream,
+        ):
+            try:
+                yield stream
+            finally:
+                _fill(step, stream.get())
 
 
-def _last_request_at(messages: list[ModelMessage]) -> dt.datetime | None:
-    for msg in reversed(messages):
-        if isinstance(msg, ModelRequest):
-            return msg.timestamp
-    return None
+def _fill(step: StepRecord, response: ModelResponse) -> None:
+    """Итог из ответа: оборванный (state не complete) = cancelled, а не ok."""
+    step.status = "ok" if response.state == "complete" else "cancelled"
+    step.http_status = 200
+    step.prompt_tokens = response.usage.input_tokens
+    step.completion_tokens = response.usage.output_tokens
+    step.gateway_request_id = (response.provider_response_id or "")[:128] or None
 
 
 def _http_error_message(exc: ModelHTTPError) -> str:
@@ -216,6 +272,12 @@ def _tool(defn: ToolDefinition, session: ToolSession, approved_by: str | None) -
     )
 
 
+def _agent_model(agent: Agent[None, str | DeferredToolRequests]) -> Model:
+    if not isinstance(agent.model, Model):
+        raise TypeError("модель агента задаётся при создании рантайма")
+    return agent.model
+
+
 class PydanticAIRun:
     def __init__(
         self,
@@ -228,9 +290,13 @@ class PydanticAIRun:
         *,
         tools: ToolSession | None,
         resume: Resume | None,
+        sink: StepSink | None = None,
     ) -> None:
+        # Шаги по мере вызовов модели; итог запуска ссылается на этот же список.
+        self._steps: list[StepRecord] = []
+        self._sink = sink
         self._queue: asyncio.Queue[Any] = asyncio.Queue()
-        self._result = RunOutcome(status="cancelled")
+        self._result = RunOutcome(status="cancelled", steps=self._steps)
         self._task = asyncio.create_task(
             self._drive(agent, spec, user_id, _history(history), prompt, timeout, tools, resume)
         )
@@ -249,7 +315,6 @@ class PydanticAIRun:
         resume: Resume | None,
     ) -> None:
         text: list[str] = []
-        messages: list[ModelMessage] = []
         output: str | DeferredToolRequests | None = None
         all_messages: list[ModelMessage] = []
         refs: dict[str, str] = {}
@@ -280,25 +345,23 @@ class PydanticAIRun:
                     request_limit=spec.max_steps, tool_calls_limit=spec.max_tool_calls
                 ),
                 timeout=limit_seconds,
+                model=_AuditedModel(_agent_model(agent), self._steps, self._sink),
             ) as events:
-                try:
-                    async for event in events:
-                        delta = _text_delta(event)
-                        if delta:
-                            text.append(delta)
-                            self._queue.put_nowait(delta)
-                        if isinstance(event, AgentRunResultEvent):
-                            output = event.result.output
-                            if isinstance(output, str):
-                                text = [output]
-                            all_messages = event.result.all_messages()
-                finally:
-                    messages = list(events.new_messages())
+                async for event in events:
+                    delta = _text_delta(event)
+                    if delta:
+                        text.append(delta)
+                        self._queue.put_nowait(delta)
+                    if isinstance(event, AgentRunResultEvent):
+                        output = event.result.output
+                        if isinstance(output, str):
+                            text = [output]
+                        all_messages = event.result.all_messages()
             if isinstance(output, DeferredToolRequests):
                 self._result = RunOutcome(
                     status="awaiting_approval",
                     text="".join(text),
-                    steps=_steps(messages),
+                    steps=self._steps,
                     pending=[
                         PendingCall(
                             call_id=call.tool_call_id,
@@ -312,25 +375,13 @@ class PydanticAIRun:
                     },
                 )
             else:
-                self._result = RunOutcome(status="ok", text="".join(text), steps=_steps(messages))
+                self._result = RunOutcome(status="ok", text="".join(text), steps=self._steps)
         except asyncio.CancelledError:
-            self._result = RunOutcome(
-                status="cancelled", text="".join(text), steps=_steps(messages)
-            )
+            self._result = RunOutcome(status="cancelled", text="".join(text), steps=self._steps)
             raise
         except ModelHTTPError as exc:
             message = _http_error_message(exc)
-            status = "rejected" if 400 <= exc.status_code < 500 else "error"
-            steps = _steps(messages)
-            steps.append(
-                StepRecord(
-                    status=status,
-                    http_status=exc.status_code,
-                    # Текст шлюза может содержать ввод: в БД только код (ADR-0012, п. 5).
-                    error=f"upstream_error: HTTP {exc.status_code}",
-                    started_at=_last_request_at(messages),
-                )
-            )
+            status = _step_status(exc.status_code)
             # Как у ChatGateway: 4xx шлюза (бюджет, параметры) клиенту как есть; отказ в ключе
             # Platform API (401, 403, 407) и 5xx = 502 без текста шлюза.
             client_status, code = exc.status_code, "upstream_error"
@@ -346,7 +397,7 @@ class PydanticAIRun:
             self._result = RunOutcome(
                 status=status,
                 text="".join(text),
-                steps=steps,
+                steps=self._steps,
                 error=message,
                 http_status=client_status,
                 error_code=code,
@@ -355,7 +406,7 @@ class PydanticAIRun:
             self._result = RunOutcome(
                 status="error",
                 text="".join(text),
-                steps=_steps(messages),
+                steps=self._steps,
                 error=f"превышен лимит агента: {exc}"[:_ERROR_LIMIT],
                 http_status=422,
                 error_code="agent_limit_exceeded",
@@ -364,7 +415,7 @@ class PydanticAIRun:
             self._result = RunOutcome(
                 status="error",
                 text="".join(text),
-                steps=_steps(messages),
+                steps=self._steps,
                 error="агент не уложился во время запроса",
                 http_status=504,
                 error_code="agent_timeout",
@@ -374,7 +425,7 @@ class PydanticAIRun:
             self._result = RunOutcome(
                 status="error",
                 text="".join(text),
-                steps=_steps(messages),
+                steps=self._steps,
                 error=f"ошибка агента: {type(exc).__name__}",
                 http_status=502,
                 error_code="agent_error",
@@ -384,7 +435,7 @@ class PydanticAIRun:
             self._result = RunOutcome(
                 status="error",
                 text="".join(text),
-                steps=_steps(messages),
+                steps=self._steps,
                 error=f"внутренняя ошибка агента: {type(exc).__name__}",
                 http_status=500,
                 error_code="internal_error",

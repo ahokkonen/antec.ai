@@ -84,6 +84,7 @@ conversations = Table(
     ),
     UniqueConstraint("user_id", "client_id", "external_id"),
     Index("ix_conversations_user_id_updated_at", "user_id", "updated_at"),
+    Index("ix_conversations_updated_at", "updated_at"),
 )
 
 agent_runs = Table(
@@ -108,7 +109,7 @@ agent_runs = Table(
     Column("pending", JSONB),
     Column("approval_code", Text),
     Column("approval_expires_at", DateTime(timezone=True)),
-    Column("parent_run_id", UUID(as_uuid=True), ForeignKey("agent_runs.id")),
+    Column("parent_run_id", UUID(as_uuid=True), ForeignKey("agent_runs.id", ondelete="SET NULL")),
     CheckConstraint(
         "status in ('started', 'ok', 'error', 'cancelled', 'rejected', 'awaiting_approval', "
         "'approved', 'denied', 'expired')",
@@ -117,6 +118,8 @@ agent_runs = Table(
     Index("ix_agent_runs_user_id_started_at", "user_id", "started_at"),
     Index("ix_agent_runs_conversation_id", "conversation_id"),
     Index("ix_agent_runs_conversation_id_status", "conversation_id", "status"),
+    Index("ix_agent_runs_started_at", "started_at"),
+    Index("ix_agent_runs_parent_run_id", "parent_run_id"),
     # Незавершённые запуски для platform-worker (ADR-0012, п. 2).
     Index(
         "ix_agent_runs_open",
@@ -144,11 +147,12 @@ model_calls = Table(
     Column("started_at", DateTime(timezone=True), nullable=False, server_default=NOW),
     Column("finished_at", DateTime(timezone=True)),
     # Шаг запуска агента (ADR-0010, п. 5); пусто у прямых вызовов модели.
-    Column("agent_run_id", UUID(as_uuid=True), ForeignKey("agent_runs.id")),
+    Column("agent_run_id", UUID(as_uuid=True), ForeignKey("agent_runs.id", ondelete="SET NULL")),
     CheckConstraint("status in ('started', 'ok', 'error', 'cancelled', 'rejected')", name="status"),
     Index("ix_model_calls_user_id_started_at", "user_id", "started_at"),
     Index("ix_model_calls_conversation_id", "conversation_id"),
     Index("ix_model_calls_agent_run_id", "agent_run_id"),
+    Index("ix_model_calls_started_at", "started_at"),
     Index("ix_model_calls_open", "started_at", postgresql_where=text("status = 'started'")),
 )
 
@@ -165,6 +169,8 @@ messages = Table(
     CheckConstraint("role in ('system', 'developer', 'user', 'assistant', 'tool')", name="role"),
     UniqueConstraint("model_call_id", "position"),
     Index("ix_messages_conversation_id_created_at", "conversation_id", "created_at"),
+    # Очистка по сроку (ADR-0012, п. 1).
+    Index("ix_messages_created_at", "created_at"),
 )
 
 audit_events = Table(
@@ -201,10 +207,10 @@ audit_events = Table(
 
 
 def create_engine(
-    settings: DatabaseSettings, application_name: str = "platform-api"
+    settings: DatabaseSettings, application_name: str = "platform-api", database: str | None = None
 ) -> AsyncEngine:
     return create_async_engine(
-        settings.url(),
+        settings.url() if database is None else settings.url().set(database=database),
         pool_size=settings.database_pool_size,
         max_overflow=0,
         pool_pre_ping=True,

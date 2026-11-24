@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,7 +16,7 @@ import httpx2
 import pytest
 
 from antec_platform.adapters.pydantic_ai import PydanticAIRuntime
-from antec_platform.agents import AgentDefinition, RunOutcome, Turn
+from antec_platform.agents import AgentDefinition, RunOutcome, StepRecord, Turn
 
 pytestmark = pytest.mark.anyio
 
@@ -166,38 +167,62 @@ async def test_cancel() -> None:
     assert outcome.status == "cancelled"
 
 
-def test_steps_status_and_times() -> None:
-    """Оборванный ответ = cancelled; время шага = от запроса до ответа (ADR-0010, п. 5)."""
-    import datetime as dt
+@dataclass
+class Sink:
+    log: list[str] = field(default_factory=list)
+    steps: list[StepRecord] = field(default_factory=list)
+    down: bool = False
 
-    from pydantic_ai.messages import (
-        ModelMessage,
-        ModelRequest,
-        ModelResponse,
-        TextPart,
-        UserPromptPart,
-    )
-    from pydantic_ai.usage import RequestUsage
+    async def begin(self) -> uuid.UUID:
+        if self.down:
+            raise RuntimeError("нет БД")
+        self.log.append("begin")
+        return uuid.uuid7()
 
-    from antec_platform.adapters.pydantic_ai import _steps
+    async def finish(self, step: StepRecord) -> None:
+        self.log.append(f"finish:{step.status}")
+        self.steps.append(step)
 
-    t0 = dt.datetime(2026, 11, 22, 12, 0, tzinfo=dt.UTC)
-    t1 = t0 + dt.timedelta(seconds=3)
-    messages: list[ModelMessage] = [
-        ModelRequest(parts=[UserPromptPart(content="q")], timestamp=t0),
-        ModelResponse(
-            parts=[TextPart(content="a")],
-            usage=RequestUsage(input_tokens=5, output_tokens=1),
-            timestamp=t1,
-        ),
-        ModelRequest(parts=[UserPromptPart(content="q2")], timestamp=t1),
-        ModelResponse(parts=[TextPart(content="об")], timestamp=t1, state="interrupted"),
-        ModelResponse(parts=[], state="interrupted"),
-    ]
-    first, second = _steps(messages)
-    assert (first.status, first.started_at, first.finished_at) == ("ok", t0, t1)
-    assert (first.prompt_tokens, first.completion_tokens) == (5, 1)
-    assert second.status == "cancelled"
+
+async def _with_sink(gw: Gateway, sink: Sink, cancel: bool = False) -> RunOutcome:
+    rt = _runtime(gw)
+    try:
+        run = rt.start(AGENT, "user-1", [], "Привет", steps=sink)
+        if cancel:
+            await asyncio.sleep(0.05)
+            run.cancel()
+        _ = [d async for d in run.deltas()]
+        return await asyncio.wait_for(run.outcome(), 2)
+    finally:
+        await rt.aclose()
+
+
+async def test_step_is_recorded_before_and_after_call() -> None:
+    sink = Sink()
+    outcome = await _with_sink(Gateway(), sink)
+    assert sink.log == ["begin", "finish:ok"]
+    (step,) = outcome.steps
+    assert step is sink.steps[0]
+    assert step.id is not None
+    assert step.started_at is not None
+    assert step.finished_at is not None
+    assert step.started_at <= step.finished_at
+
+
+async def test_no_step_record_no_model_call() -> None:
+    gw = Gateway()
+    outcome = await _with_sink(gw, Sink(down=True))
+    assert outcome.status == "error"
+    assert gw.requests == []
+
+
+async def test_cancelled_and_rejected_steps_are_recorded() -> None:
+    cancelled, rejected = Sink(), Sink()
+    await _with_sink(Gateway(delay=5), cancelled, cancel=True)
+    assert cancelled.log == ["begin", "finish:cancelled"]
+    await _with_sink(Gateway(status=400), rejected)
+    assert rejected.log == ["begin", "finish:rejected"]
+    assert rejected.steps[0].error == "upstream_error: HTTP 400"
 
 
 def test_banner_disabled_by_adapters_package() -> None:

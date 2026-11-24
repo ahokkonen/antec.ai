@@ -30,6 +30,7 @@ from antec_platform.agents import (
     AgentRuntime,
     Resume,
     RunOutcome,
+    StepRecord,
     Turn,
     agent_input,
 )
@@ -635,6 +636,32 @@ class _RunContext:
         return "\n".join(lines)
 
 
+@dataclass(slots=True)
+class _RunSteps:
+    """Шаги запуска в model_calls и аудите по мере вызовов модели (ADR-0012, п. 3)."""
+
+    store: Store
+    run: AgentRunStart
+    count: int = 0
+    numbers: dict[uuid.UUID, int] = field(default_factory=dict)
+
+    async def begin(self) -> uuid.UUID:
+        step_id = uuid.uuid7()
+        await self.store.start_step(self.run, step_id)
+        self.count += 1
+        self.numbers[step_id] = self.count
+        return step_id
+
+    async def finish(self, step: StepRecord) -> None:
+        if step.id is None:
+            return
+        try:
+            await self.store.finish_step(self.run, step, self.numbers[step.id])
+            step.saved = True
+        except Exception:
+            log.exception("не удалось записать итог шага %s", step.id)
+
+
 def _approval_code() -> str:
     return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(4))
 
@@ -855,7 +882,9 @@ async def _run_agent(
         data_class=data_class,
     )
     await deps.store.start_agent_run(run)
-    handle = deps.runtime.start(agent, str(user.id), history, prompt, tools, resume)
+    handle = deps.runtime.start(
+        agent, str(user.id), history, prompt, tools, resume, _RunSteps(deps.store, run)
+    )
     ctx = _RunContext(deps, run, handle, _approval_code(), chat_confirm)
     base = {"id": f"chatcmpl-{run.id.hex}", "created": int(time.time()), "model": agent.name}
     deltas = handle.deltas()
