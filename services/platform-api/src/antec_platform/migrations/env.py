@@ -28,7 +28,7 @@ def _run(connection: Connection, settings: DatabaseSettings) -> None:
 
 async def _main() -> None:
     settings: DatabaseSettings = config.attributes["settings"]
-    engine = create_async_engine(settings.url(), poolclass=NullPool)
+    engine = create_async_engine(settings.url(), poolclass=NullPool, hide_parameters=True)
     try:
         async with engine.connect() as conn:
             await conn.run_sync(_run, settings)

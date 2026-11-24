@@ -117,6 +117,12 @@ agent_runs = Table(
     Index("ix_agent_runs_user_id_started_at", "user_id", "started_at"),
     Index("ix_agent_runs_conversation_id", "conversation_id"),
     Index("ix_agent_runs_conversation_id_status", "conversation_id", "status"),
+    # Незавершённые запуски для platform-worker (ADR-0012, п. 2).
+    Index(
+        "ix_agent_runs_open",
+        "started_at",
+        postgresql_where=text("status in ('started', 'awaiting_approval')"),
+    ),
 )
 
 model_calls = Table(
@@ -143,6 +149,7 @@ model_calls = Table(
     Index("ix_model_calls_user_id_started_at", "user_id", "started_at"),
     Index("ix_model_calls_conversation_id", "conversation_id"),
     Index("ix_model_calls_agent_run_id", "agent_run_id"),
+    Index("ix_model_calls_open", "started_at", postgresql_where=text("status = 'started'")),
 )
 
 messages = Table(
@@ -173,18 +180,36 @@ audit_events = Table(
     Column("outcome", Text, nullable=False),
     Column("request_id", UUID(as_uuid=True)),
     Column("details", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    # Один вызов инструмента: tool.call.started до него и tool.call после (ADR-0012, п. 3).
+    Column("call_id", UUID(as_uuid=True)),
     CheckConstraint("outcome in ('allow', 'deny', 'error')", name="outcome"),
     Index("ix_audit_events_occurred_at", "occurred_at"),
+    Index(
+        "uq_audit_events_call_id_action",
+        "call_id",
+        "action",
+        unique=True,
+        postgresql_where=text("call_id is not null"),
+    ),
+    Index(
+        "ix_audit_events_tool_started",
+        "occurred_at",
+        postgresql_where=text("action = 'tool.call.started'"),
+    ),
     Index("ix_audit_events_actor_user_id_occurred_at", "actor_user_id", "occurred_at"),
 )
 
 
-def create_engine(settings: DatabaseSettings) -> AsyncEngine:
+def create_engine(
+    settings: DatabaseSettings, application_name: str = "platform-api"
+) -> AsyncEngine:
     return create_async_engine(
         settings.url(),
         pool_size=settings.database_pool_size,
         max_overflow=0,
         pool_pre_ping=True,
         pool_recycle=1800,
-        connect_args={"server_settings": {"application_name": "platform-api"}},
+        # Параметры запросов (тексты сообщений) не попадают в тексты ошибок (ADR-0012, п. 5).
+        hide_parameters=True,
+        connect_args={"server_settings": {"application_name": application_name}},
     )

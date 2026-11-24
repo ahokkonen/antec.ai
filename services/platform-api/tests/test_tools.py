@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from conftest import FakePolicy, FakeStore
 from antec_platform.agents import AgentDefinition
 from antec_platform.policy import Subject
 from antec_platform.tools import (
+    AUDIT_FAILED_TEXT,
     McpServerSpec,
     McpToolSpec,
     RemoteTool,
@@ -160,6 +162,71 @@ async def test_call_error_is_audited_as_error() -> None:
     result = await _broker(mcp, policy, store).call("mcp-demo.get_time", True, {}, None)
     assert result.is_error
     assert store.tool_calls[-1][1] == "error"
+
+
+def _allow_all(policy: FakePolicy) -> FakePolicy:
+    async def allow(subject: Subject, action: str, resources: list[Any]) -> list[bool]:
+        return [True] * len(resources)
+
+    policy.check = allow  # type: ignore[method-assign]
+    return policy
+
+
+async def test_start_is_audited_before_call_with_same_id() -> None:
+    mcp, store = FakeMcp(), FakeStore()
+    broker = _broker(mcp, _allow_all(FakePolicy()), store)
+    await broker.call("mcp-demo.create_note", False, {"text": "x"}, "u1")
+    ((ref, call_id),) = store.tool_starts
+    assert ref == "mcp-demo.create_note"
+    assert call_id is not None
+    assert store.tool_call_ids == [call_id]
+
+
+async def test_no_audit_no_call() -> None:
+    mcp, store = FakeMcp(), FakeStore(audit_down=True)
+    broker = _broker(mcp, _allow_all(FakePolicy()), store)
+    result = await broker.call("mcp-demo.create_note", False, {"text": "x"}, "u1")
+    assert (result.text, result.is_error) == (AUDIT_FAILED_TEXT, True)
+    assert mcp.calls == []
+
+
+async def test_cancelled_call_is_audited() -> None:
+    """Клиент ушёл во время вызова: итог записан, отмена не проглочена."""
+    entered = asyncio.Event()
+
+    class SlowMcp(FakeMcp):
+        async def call_tool(
+            self, server: McpServerSpec, token: str, name: str, arguments: dict[str, Any]
+        ) -> ToolCallResult:
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("недостижимо")
+
+    store = FakeStore()
+    broker = _broker(SlowMcp(), _allow_all(FakePolicy()), store)
+    task = asyncio.create_task(broker.call("mcp-demo.create_note", False, {"text": "x"}, "u1"))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    ((_ref, outcome, details),) = store.tool_calls
+    assert (outcome, details["error_code"]) == ("error", "cancelled")
+    assert store.tool_call_ids == [store.tool_starts[0][1]]
+
+
+async def test_error_text_is_not_audited() -> None:
+    class LeakyMcp(FakeMcp):
+        async def call_tool(
+            self, server: McpServerSpec, token: str, name: str, arguments: dict[str, Any]
+        ) -> ToolCallResult:
+            raise ToolError("секретный текст пользователя", "mcp_error")
+
+    store = FakeStore()
+    broker = _broker(LeakyMcp(), _allow_all(FakePolicy()), store)
+    result = await broker.call("mcp-demo.get_time", True, {}, None)
+    assert "секретный" in result.text
+    assert "секретный" not in json.dumps(store.tool_calls[0][2], ensure_ascii=False)
+    assert store.tool_calls[0][2]["error_code"] == "mcp_error"
 
 
 def test_load_mcp_servers(tmp_path: Path) -> None:

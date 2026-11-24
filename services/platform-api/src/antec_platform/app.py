@@ -63,6 +63,7 @@ log = logging.getLogger(__name__)
 CHAT_ID_HEADER = "x-openwebui-chat-id"
 _EXTERNAL_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 _ERROR_MESSAGE_LIMIT = 500
+_ERROR_CODE_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 _PROBES = frozenset({"/healthz", "/readyz"})
 # Подтверждение в чате (ADR-0010, п. 7): код без похожих символов (0/O, 1/I).
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -341,6 +342,12 @@ def _external_id(request: Request) -> str | None:
     return None
 
 
+def _stored_error(err: ApiError) -> str:
+    """Ошибка для model_calls: код и статус. Текст шлюза может содержать ввод (ADR-0012, п. 5)."""
+    code = err.code if err.code and _ERROR_CODE_RE.fullmatch(err.code) else "upstream_error"
+    return f"{code}: HTTP {err.status}"
+
+
 async def _finish(deps: Deps, call: CallStart, result: CallResult) -> None:
     try:
         await deps.store.finish_call(call, result)
@@ -396,7 +403,7 @@ async def _complete(deps: Deps, call: CallStart, payload: dict[str, Any]) -> Res
                 status=status,
                 http_status=meta.status,
                 gateway_request_id=meta.request_id,
-                error=err.message,
+                error=_stored_error(err),
             ),
         )
         raise err
@@ -456,7 +463,7 @@ async def _stream(
                 status=status,
                 http_status=meta.status,
                 gateway_request_id=meta.request_id,
-                error=err.message,
+                error=_stored_error(err),
             ),
         )
         raise err

@@ -33,16 +33,22 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 Инструменты агентов (MCP-серверы манифеста, `PLATFORM_MCP_SERVERS_FILE`): свой MCP-клиент
 2026-07-28 (`adapters/mcp.py`, типы `mcp-types`), перед вызовом `call` на `tool` в Cerbos, токен
 пользователя меняется в Keycloak на токен с аудиторией сервера (`adapters/keycloak.py`,
-`PLATFORM_OIDC_TOKEN_URL`, секрет `platform_oidc_client_secret`); аудит `tool.call` без
-аргументов и результата. Всё, что не `read_only` в манифесте, только после подтверждения:
+`PLATFORM_OIDC_TOKEN_URL`, секрет `platform_oidc_client_secret`); аудит `tool.call.started` до вызова
+(нет записи = нет вызова) и `tool.call` после, без аргументов, результата и текстов ошибок
+([ADR-0012](../../docs/adr/0012-audit-retention-pii.md)). Всё, что не `read_only` в манифесте, только после подтверждения:
 агент отвечает «подтверждаю <код>» или «отмена» (тот же разговор, `X-OpenWebUI-Chat-Id`), срок
 `PLATFORM_APPROVAL_TTL_SECONDS`; решение пишется событием `tool.approval`, запуск продолжается
-от сохранённого состояния (`agent_runs.state`).
+от сохранённого состояния (`agent_runs.state`, удаляется вместе с решением).
 
 Классы данных ([ADR-0011](../../docs/adr/0011-data-classes-and-model-routing.md)): допуски моделей
 `PLATFORM_MODELS_FILE`, класс ввода `PLATFORM_DEFAULT_DATA_CLASS`; класс разговора растёт с
-каждым выполненным вызовом инструмента выше класса ввода. Модель, агент или инструмент выше
+каждым начатым вызовом инструмента выше класса ввода. Модель, агент или инструмент выше
 допуска отклоняются до вызова (403 `data_class_forbidden`, аудит с причиной `data_class`).
+
+Фоновый сервис (`antec-platform worker`, [ADR-0012](../../docs/adr/0012-audit-retention-pii.md), п. 2): роль
+`platform_worker`, раз в `PLATFORM_WORKER_INTERVAL_SECONDS` (60) закрывает истёкшие ожидания, вызовы и
+запуски в `started` дольше `PLATFORM_WORKER_ABANDON_SECONDS` (3600, причина `abandoned`) и вызовы
+инструментов без итога (`tool.call.unknown`).
 
 ## Код
 
@@ -51,6 +57,7 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 | `app.py` | Маршруты фасада, поток SSE, журнал запросов |
 | `auth.py` | JWKS с кэшем, проверка токена, `Principal` |
 | `chat.py` | Белый список параметров, новые сообщения, разбор событий SSE |
+| `worker.py` | Фоновые задачи: истечение ожиданий, потерянные вызовы (ADR-0012) |
 | `store.py` | Пользователи, разговоры, вызовы, аудит (PostgreSQL) |
 | `db.py`, `migrations/` | Схема (SQLAlchemy Core) и миграции Alembic |
 | `policy.py` | Контракт `PolicyClient`: субъект, действие, ресурсы |

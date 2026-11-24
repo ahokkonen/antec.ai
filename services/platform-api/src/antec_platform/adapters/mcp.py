@@ -87,20 +87,22 @@ class HttpMcpClient:
                 status = resp.status_code
                 ctype = resp.headers.get("content-type", "").split(";")[0].strip()
                 if status in (401, 403):
-                    raise ToolError(f"MCP-сервер отклонил токен: HTTP {status}")
+                    raise ToolError(f"MCP-сервер отклонил токен: HTTP {status}", "unauthorized")
                 content = bytearray()
                 async for chunk in resp.aiter_bytes():
                     content += chunk
                     if len(content) > MAX_RESPONSE_BYTES:
                         raise ToolError(f"ответ MCP-сервера больше {MAX_RESPONSE_BYTES} байт")
         except httpx.TimeoutException as exc:
-            raise ToolError("MCP-сервер не ответил вовремя") from exc
+            raise ToolError("MCP-сервер не ответил вовремя", "timeout") from exc
         except httpx.HTTPError as exc:
-            raise ToolError(f"MCP-сервер недоступен: {type(exc).__name__}") from exc
+            raise ToolError(f"MCP-сервер недоступен: {type(exc).__name__}", "unavailable") from exc
         message = _response_message(bytes(content), ctype, status, rid)
         if "error" in message:
             err = message["error"] if isinstance(message["error"], dict) else {}
-            raise ToolError(f"MCP-ошибка {err.get('code')}: {str(err.get('message'))[:200]}")
+            raise ToolError(
+                f"MCP-ошибка {err.get('code')}: {str(err.get('message'))[:200]}", "mcp_error"
+            )
         if status != 200:
             raise ToolError(f"MCP-сервер вернул HTTP {status}")
         result = message.get("result")
