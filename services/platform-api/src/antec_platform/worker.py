@@ -205,6 +205,8 @@ async def run(settings: WorkerSettings, engine: AsyncEngine, stop: asyncio.Event
         except Exception:
             # Отметка не обновляется: healthcheck покажет, что проходы не выполняются.
             log.exception("проход platform-worker не выполнен")
+            # За время сбоя незакрытое могло уйти глубже обычного поиска.
+            full = True
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), settings.worker_interval_seconds)
 

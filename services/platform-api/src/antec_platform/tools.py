@@ -247,7 +247,9 @@ class ToolBroker:
             try:
                 remote = await self._client.list_tools(server, await self._token(server))
             except ToolError as exc:
-                log.warning("MCP-сервер %s: список инструментов недоступен: %s", server.name, exc)
+                log.warning(
+                    "MCP-сервер %s: список инструментов недоступен: %s", server.name, exc.code
+                )
                 continue
             offered = {t.name: t for t in remote}
             for tool in wanted:

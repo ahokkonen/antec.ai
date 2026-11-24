@@ -147,6 +147,14 @@ class Store(Protocol):
         run_id: uuid.UUID | None = None,
     ) -> PendingRun | None: ...
 
+    async def last_run_expired(
+        self,
+        user_id: uuid.UUID,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        run_id: uuid.UUID | None = None,
+    ) -> bool: ...
+
     async def resolve_pending_run(
         self,
         run_id: uuid.UUID,
@@ -250,15 +258,13 @@ async def expire_pending(
                     action="tool.approval",
                     outcome="deny",
                     request_id=request_id,
-                    # Решил срок, а не пользователь; чей запуск, видно по agent_run и details.
-                    actor_user_id=user_id,
+                    actor_user_id=row.user_id,
                     actor_client=actor_client,
                     resource_type="agent_run",
                     resource_id=str(row.id),
                     details={
                         "decision": "expired",
                         "agent": row.agent,
-                        "user_id": str(row.user_id),
                         "tools": [c["ref"] for c in row.pending or []],
                     },
                 )
@@ -772,6 +778,24 @@ class PgStore:
         async with self._engine.connect() as conn:
             row = (await conn.execute(stmt)).first()
         return _pending(row) if row is not None else None
+
+    async def last_run_expired(
+        self,
+        user_id: uuid.UUID,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        run_id: uuid.UUID | None = None,
+    ) -> bool:
+        """Последний запуск (в разговоре или по id) уже закрыт по сроку, обычно platform-worker."""
+        stmt = select(agent_runs.c.status).where(agent_runs.c.user_id == user_id)
+        if conversation_id is not None:
+            stmt = stmt.where(agent_runs.c.conversation_id == conversation_id)
+        if run_id is not None:
+            stmt = stmt.where(agent_runs.c.id == run_id)
+        stmt = stmt.order_by(agent_runs.c.started_at.desc()).limit(1)
+        async with self._engine.connect() as conn:
+            status = (await conn.execute(stmt)).scalar_one_or_none()
+        return status == "expired"
 
     async def resolve_pending_run(
         self,

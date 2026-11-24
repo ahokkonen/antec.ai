@@ -28,6 +28,9 @@ def describe_exception(exc: BaseException | None) -> str:
         frames = traceback.extract_tb(exc.__traceback__)
         where = " < ".join(f"{f.filename}:{f.lineno} {f.name}" for f in reversed(frames))
         parts.append(f"{type(exc).__module__}.{type(exc).__qualname__} at {where}")
+        if isinstance(exc, BaseExceptionGroup):
+            inner = "; ".join(describe_exception(e) for e in exc.exceptions)
+            parts[-1] += f" [{inner}]"
         exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
     return " | caused by ".join(parts)
 

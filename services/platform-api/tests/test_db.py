@@ -748,12 +748,15 @@ async def test_worker_closes_unfinished(
         ).all()
     assert statuses[lost_run.id] == ("error", "abandoned", True)
     assert statuses[waiting.id] == ("expired", None, True)
+    assert await store.last_run_expired(user.id, run_id=waiting.id)
+    assert not await store.last_run_expired(user.id, run_id=lost_run.id)
+    assert not await store.last_run_expired(uuid.uuid7(), run_id=waiting.id)
     by_action = {e.action: e for e in events if e.actor_user_id == user.id}
     assert by_action["model.call"].request_id == lost_call.id
     assert by_action["agent.run"].details["reason"] == "abandoned"
     assert by_action["tool.call.unknown"].call_id == lost_tool
     expired = [e for e in events if e.resource_id == str(waiting.id)]
-    assert [(e.action, e.actor_user_id) for e in expired] == [("tool.approval", None)]
+    assert [(e.action, e.actor_user_id) for e in expired] == [("tool.approval", user.id)]
 
 
 async def test_one_result_per_tool_call(app_engine: AsyncEngine) -> None:

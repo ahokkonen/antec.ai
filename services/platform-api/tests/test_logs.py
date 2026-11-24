@@ -24,3 +24,13 @@ def test_exception_text_is_not_logged() -> None:
     assert "builtins.ValueError" in exc_text
     assert "caused by builtins.KeyError" in exc_text
     assert "test_logs.py" in exc_text
+
+
+def test_exception_group_members_are_logged() -> None:
+    try:
+        raise ExceptionGroup("г", [KeyError("секрет")])
+    except ExceptionGroup:
+        record = logging.LogRecord("x", logging.ERROR, "f.py", 1, "сбой", None, sys.exc_info())
+    line = JsonFormatter().format(record)
+    assert "builtins.KeyError" in line
+    assert "секрет" not in line
