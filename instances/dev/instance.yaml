@@ -1,5 +1,5 @@
 # Dev-инсталляция ядра (ADR-0008, п. 7): локальный стенд deploy/compose и CI.
-schema_version: 3
+schema_version: 4
 instance:
   id: dev
   name: "antec.ai dev"
@@ -66,6 +66,12 @@ agents:
 # Классы данных (ADR-0011): класс ввода пользователя.
 data:
   default_class: internal
+
+# Сроки хранения, дни (ADR-0012): тексты 30-180, метаданные и аудит 180-730.
+retention:
+  content_days: 90
+  metadata_days: 365
+  audit_days: 365
 
 settings:
   # antec-smoke: только стенд (scripts/platform-smoke.sh).

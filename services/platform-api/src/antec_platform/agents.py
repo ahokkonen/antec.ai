@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import uuid
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +59,9 @@ class StepRecord:
     # Время шага по рантайму; пусто = время записи итога.
     started_at: dt.datetime | None = None
     finished_at: dt.datetime | None = None
+    # id строки model_calls, записанной до вызова (ADR-0012, п. 3), и записан ли уже итог.
+    id: uuid.UUID | None = None
+    saved: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +130,16 @@ class ToolSession(Protocol):
     ) -> ToolCallResult: ...
 
 
+class StepSink(Protocol):
+    """Запись шагов по мере выполнения (ADR-0012, п. 3): начало до вызова модели, итог после."""
+
+    async def begin(self) -> uuid.UUID:
+        """Строка model_calls до вызова. Исключение = модель не вызывается."""
+
+    async def finish(self, step: StepRecord) -> None:
+        """Итог шага; сбой записи не прерывает запуск (итог допишет finish_agent_run или worker)."""
+
+
 @dataclass(frozen=True, slots=True)
 class Resume:
     """Продолжение запуска после решения человека: состояние и решения по вызовам."""
@@ -144,6 +158,7 @@ class AgentRuntime(Protocol):
         prompt: str | None,
         tools: ToolSession | None = None,
         resume: Resume | None = None,
+        steps: StepSink | None = None,
     ) -> AgentRun: ...
 
     async def aclose(self) -> None: ...

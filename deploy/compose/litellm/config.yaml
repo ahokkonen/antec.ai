@@ -36,5 +36,7 @@ general_settings:
   user_header_mappings:
     - header_name: X-OpenWebUI-User-Id
       litellm_user_role: customer
+  # Срок строк расходов из манифеста инсталляции (retention.audit_days, ADR-0012, п. 1).
+  maximum_spend_logs_retention_period: os.environ/ANTEC_SPEND_LOGS_RETENTION
   # Пул соединений с PostgreSQL: лимит роли litellm 50 (ADR-0017).
   database_connection_pool_limit: 20

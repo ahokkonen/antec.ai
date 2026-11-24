@@ -7,6 +7,7 @@
 #   render.sh platform-api      секреты Platform API в /out/platform-api (uid 65534)
 #   render.sh platform-migrate  пароль владельца схемы platform в /out/platform-migrate (uid 65534)
 #   render.sh platform-worker   пароль роли platform_worker в /out/platform-worker (uid 65534)
+#   render.sh platform-subject  пароль роли platform_subject в /out/platform-subject (uid 65534)
 # Токен приходит через stdin (`compose run -T`), живёт 5 минут и умеет читать только
 # пути своей цели. Значения не печатаются и не попадают в argv и окружение контейнера.
 set -eu
@@ -45,7 +46,7 @@ remove() { # итоговый
 case "$target" in
   postgres)
     out=/out/postgres
-    keys="superuser keycloak litellm openwebui platform dbos platform_app platform_worker"
+    keys="superuser keycloak litellm openwebui platform dbos platform_app platform_worker platform_subject"
     trap 'rm -f "$out"/.*.new' EXIT
     for key in $keys; do
       fetch postgres "$key" "$out/.$key.new"
@@ -162,7 +163,7 @@ case "$target" in
     done
     owner=65534:65534
     ;;
-  platform-migrate|platform-worker)
+  platform-migrate|platform-worker|platform-subject)
     out=/out/$target
     trap 'rm -f "$out"/.*.new' EXIT
     fetch "$target" db_password "$out/.platform_database_password.new"
@@ -170,7 +171,7 @@ case "$target" in
     owner=65534:65534
     ;;
   *)
-    echo "render: использование: render.sh postgres|keycloak|litellm|open-webui|platform-api|platform-migrate|platform-worker" >&2
+    echo "render: использование: render.sh postgres|keycloak|litellm|open-webui|platform-api|platform-migrate|platform-worker|platform-subject" >&2
     exit 2
     ;;
 esac

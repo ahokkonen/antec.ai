@@ -1,6 +1,6 @@
 # Манифест инсталляции __INSTANCE_NAME__ (ADR-0008). Схема v1: tools/instance ядра.
 # Проверка: uv run --project core/tools/instance --locked antec-instance validate .
-schema_version: 3
+schema_version: 4
 instance:
   # id = scope политик Cerbos инсталляции (policies/), менять нельзя.
   id: __INSTANCE_ID__
@@ -53,6 +53,12 @@ agents: []
 # restricted, у инструментов data_class = default_class.
 data:
   default_class: internal
+
+# Сроки хранения, дни (ADR-0012): тексты 30-180, метаданные и аудит 180-730.
+retention:
+  content_days: 90
+  metadata_days: 365
+  audit_days: 365
 
 # Параметры Platform API, которые может менять инсталляция.
 settings:

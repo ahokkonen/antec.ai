@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from antec_platform.agents import PendingCall, RunOutcome
+from antec_platform.agents import PendingCall, RunOutcome, StepRecord
 from antec_platform.auth import Principal
 from antec_platform.db import (
     agent_runs,
@@ -134,6 +134,10 @@ class Store(Protocol):
     async def finish_call(self, call: CallStart, result: CallResult) -> None: ...
 
     async def start_agent_run(self, run: AgentRunStart) -> None: ...
+
+    async def start_step(self, run: AgentRunStart, step_id: uuid.UUID) -> None: ...
+
+    async def finish_step(self, run: AgentRunStart, step: StepRecord, number: int) -> None: ...
 
     async def finish_agent_run(
         self, run: AgentRunStart, outcome: RunOutcome, approval: Approval | None = None
@@ -272,6 +276,51 @@ async def expire_pending(
             ],
         )
     return len(rows)
+
+
+async def _update_step(conn: AsyncConnection, step_id: uuid.UUID, step: StepRecord) -> bool:
+    """Итог шага ровно один раз: False, если его уже записал другой путь (отмена, worker)."""
+    result = await conn.execute(
+        update(model_calls)
+        .where(model_calls.c.id == step_id, model_calls.c.status == "started")
+        .values(
+            status=step.status,
+            http_status=step.http_status,
+            prompt_tokens=step.prompt_tokens,
+            completion_tokens=step.completion_tokens,
+            gateway_request_id=step.gateway_request_id,
+            error=step.error,
+            finished_at=step.finished_at or func.now(),
+        )
+    )
+    return result.rowcount == 1
+
+
+def _step_event(
+    run: AgentRunStart, step: StepRecord, step_id: uuid.UUID, number: int
+) -> dict[str, Any]:
+    return audit_row(
+        action="model.call",
+        outcome="allow" if step.status in ("ok", "cancelled") else "error",
+        request_id=run.id,
+        actor_user_id=run.user_id,
+        actor_client=run.client_id,
+        resource_type="model",
+        resource_id=run.model,
+        details={
+            "status": step.status,
+            "http_status": step.http_status,
+            "stream": run.stream,
+            "conversation_id": str(run.conversation_id),
+            "agent": run.agent,
+            "agent_run_id": str(run.id),
+            "data_class": run.data_class,
+            "step": number,
+            "model_call_id": str(step_id),
+            "prompt_tokens": step.prompt_tokens,
+            "completion_tokens": step.completion_tokens,
+        },
+    )
 
 
 class PgStore:
@@ -625,6 +674,32 @@ class PgStore:
                 )
             )
 
+    async def start_step(self, run: AgentRunStart, step_id: uuid.UUID) -> None:
+        """Вызов модели агентом до самого вызова (ADR-0012, п. 3)."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                insert(model_calls).values(
+                    id=step_id,
+                    user_id=run.user_id,
+                    conversation_id=run.conversation_id,
+                    client_id=run.client_id,
+                    model=run.model,
+                    stream=run.stream,
+                    status="started",
+                    agent_run_id=run.id,
+                )
+            )
+
+    async def finish_step(self, run: AgentRunStart, step: StepRecord, number: int) -> None:
+        """Итог шага и событие model.call в одной транзакции."""
+        if step.id is None:
+            raise ValueError("шаг без id")
+        async with self._engine.begin() as conn:
+            if await _update_step(conn, step.id, step):
+                await conn.execute(
+                    insert(audit_events).values(_step_event(run, step, step.id, number))
+                )
+
     async def finish_agent_run(
         self, run: AgentRunStart, outcome: RunOutcome, approval: Approval | None = None
     ) -> None:
@@ -665,51 +740,35 @@ class PgStore:
             # Аудит последним в транзакции (ADR-0012, п. 4): строки разговоров уже обновлены.
             events: list[dict[str, Any]] = []
             for number, step in enumerate(outcome.steps, start=1):
-                step_id = uuid.uuid7()
+                step_id = step.id or uuid.uuid7()
                 step_ids.append(step_id)
-                await conn.execute(
-                    insert(model_calls).values(
-                        id=step_id,
-                        user_id=run.user_id,
-                        conversation_id=run.conversation_id,
-                        client_id=run.client_id,
-                        model=run.model,
-                        stream=run.stream,
-                        status=step.status,
-                        http_status=step.http_status,
-                        prompt_tokens=step.prompt_tokens,
-                        completion_tokens=step.completion_tokens,
-                        gateway_request_id=step.gateway_request_id,
-                        error=step.error,
-                        agent_run_id=run.id,
-                        started_at=step.started_at or func.now(),
-                        finished_at=step.finished_at or func.now(),
+                if step.saved:
+                    continue
+                if step.id is not None:
+                    # Итог шага не записался по ходу запуска: вторая попытка.
+                    if not await _update_step(conn, step_id, step):
+                        continue
+                else:
+                    await conn.execute(
+                        insert(model_calls).values(
+                            id=step_id,
+                            user_id=run.user_id,
+                            conversation_id=run.conversation_id,
+                            client_id=run.client_id,
+                            model=run.model,
+                            stream=run.stream,
+                            status=step.status,
+                            http_status=step.http_status,
+                            prompt_tokens=step.prompt_tokens,
+                            completion_tokens=step.completion_tokens,
+                            gateway_request_id=step.gateway_request_id,
+                            error=step.error,
+                            agent_run_id=run.id,
+                            started_at=step.started_at or func.now(),
+                            finished_at=step.finished_at or func.now(),
+                        )
                     )
-                )
-                events.append(
-                    audit_row(
-                        action="model.call",
-                        outcome="allow" if step.status in ("ok", "cancelled") else "error",
-                        request_id=run.id,
-                        actor_user_id=run.user_id,
-                        actor_client=run.client_id,
-                        resource_type="model",
-                        resource_id=run.model,
-                        details={
-                            "status": step.status,
-                            "http_status": step.http_status,
-                            "stream": run.stream,
-                            "conversation_id": str(run.conversation_id),
-                            "agent": run.agent,
-                            "agent_run_id": str(run.id),
-                            "data_class": run.data_class,
-                            "step": number,
-                            "model_call_id": str(step_id),
-                            "prompt_tokens": step.prompt_tokens,
-                            "completion_tokens": step.completion_tokens,
-                        },
-                    )
-                )
+                events.append(_step_event(run, step, step_id, number))
             history = list(run.new_messages)
             if outcome.text:
                 history.append({"role": "assistant", "content": outcome.text})

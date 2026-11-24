@@ -63,6 +63,7 @@ services:
       - platform-api-secrets:/out/platform-api
       - platform-migrate-secrets:/out/platform-migrate
       - platform-worker-secrets:/out/platform-worker
+      - platform-subject-secrets:/out/platform-subject
     networks: [secrets]
     depends_on:
       openbao:
@@ -155,6 +156,9 @@ services:
     # Обёртка переносит секреты из файлов в окружение процесса LiteLLM (ADR-0018).
     entrypoint: ["/bin/sh", "/antec/env-from-files.sh", "/app/docker/prod_entrypoint.sh"]
     command: ["--config", "/antec/config.yaml", "--port", "4000", "--num_workers", "1"]
+    env_file:
+      - path: ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered/litellm.env
+        required: true
     environment:
       # Карта цен моделей из образа, без загрузки из интернета при старте.
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
@@ -311,8 +315,15 @@ services:
     image: localhost/antec/platform-api:0.1.0
     pull_policy: build
     command: ["worker"]
+    # Сроки хранения инсталляции (tools/instance render, ADR-0012).
+    env_file:
+      - path: ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered/platform-worker.env
+        required: true
     environment:
+      ANTEC_CONFIG_SHA: ${ANTEC_WORKER_CONFIG_SHA:-}
       PLATFORM_DATABASE_USER: platform_worker
+      # Чаты Open WebUI удаляются по тому же сроку, что и тексты.
+      PLATFORM_OPEN_WEBUI_DATABASE: openwebui
     read_only: true
     tmpfs:
       - /tmp:size=16m,uid=65534,gid=65534
@@ -331,6 +342,30 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Выгрузка и удаление данных субъекта (ADR-0012, п. 7): одноразовый, только scripts/subject.sh.
+  platform-subject:
+    profiles: [bootstrap]
+    build:
+      context: ../../services/platform-api
+    image: localhost/antec/platform-api:0.1.0
+    pull_policy: build
+    command: ["subject", "--help"]
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    environment:
+      PLATFORM_DATABASE_USER: platform_subject
+      PLATFORM_OPEN_WEBUI_DATABASE: openwebui
+    volumes:
+      - platform-subject-secrets:/run/antec-secrets:ro
+    networks: [data]
+    mem_limit: 512m
     depends_on:
       postgres:
         condition: service_healthy
@@ -505,3 +540,4 @@ volumes:
   platform-api-secrets:
   platform-migrate-secrets:
   platform-worker-secrets:
+  platform-subject-secrets:

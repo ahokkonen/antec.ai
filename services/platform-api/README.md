@@ -50,6 +50,12 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 запуски в `started` дольше `PLATFORM_WORKER_ABANDON_SECONDS` (3600, причина `abandoned`) и вызовы
 инструментов без итога (`tool.call.unknown`).
 
+Очистка по срокам: тот же сервис раз в сутки (`PLATFORM_RETENTION_CONTENT_DAYS`,
+`PLATFORM_RETENTION_METADATA_DAYS` из манифеста), включая чаты Open WebUI
+(`PLATFORM_OPEN_WEBUI_DATABASE`); событие `retention.purge`. Права субъекта данных:
+`antec-platform subject find|export|erase` ролью `platform_subject` (события `subject.export`,
+`subject.erase`).
+
 ## Код
 
 | Модуль | Роль |
@@ -58,6 +64,8 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 | `auth.py` | JWKS с кэшем, проверка токена, `Principal` |
 | `chat.py` | Белый список параметров, новые сообщения, разбор событий SSE |
 | `worker.py` | Фоновые задачи: истечение ожиданий, потерянные вызовы (ADR-0012) |
+| `retention.py` | Очистка по срокам хранения (ADR-0012, п. 1) |
+| `subject.py` | Выгрузка и удаление данных субъекта (ADR-0012, п. 7) |
 | `store.py` | Пользователи, разговоры, вызовы, аудит (PostgreSQL) |
 | `db.py`, `migrations/` | Схема (SQLAlchemy Core) и миграции Alembic |
 | `policy.py` | Контракт `PolicyClient`: субъект, действие, ресурсы |
