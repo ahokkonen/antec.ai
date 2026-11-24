@@ -132,6 +132,15 @@ deploy/compose/scripts/subject.sh export <id пользователя> > subject
 после восстановления из бэкапа). Выгрузка содержит персональные данные. Бэкапы старше 35 дней
 удаляются вручную.
 
+```bash
+deploy/compose/scripts/audit-verify.sh
+```
+
+Проверка аудита (ADR-0012, п. 4): цепочка хэшей, контрольные точки и их подписи. Точки создают `up.sh`,
+`backup.sh` и `audit-checkpoint.sh` в `~/Library/Application Support/antec/audit/` (переопределяется
+`ANTEC_AUDIT_DIR`). Первый `up.sh` после обновления останавливает Platform API на время переноса
+таблицы аудита в схему `audit`.
+
 Подключиться к PostgreSQL:
 
 ```bash

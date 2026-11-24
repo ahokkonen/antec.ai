@@ -353,3 +353,55 @@ sync_open_webui_identities() {
     < "$COMPOSE_DIR/open-webui/sync-identities.sql" \
     | sed 's/^/  open-webui: /' >&2
 }
+
+# --- Аудит: цепочка и контрольные точки (ADR-0012, п. 4) ---
+AUDIT_DIR="${ANTEC_AUDIT_DIR:-$HOME/Library/Application Support/antec/audit}"
+AUDIT_KEY=audit-checkpoint
+audit_points_file() { echo "$AUDIT_DIR/checkpoints-$(current_installation).jsonl"; }
+audit_chain() { python3 "$COMPOSE_DIR/scripts/audit_chain.py" "$@"; }
+
+# Подписи всех точек файла. Аргументы после файла: команда bao (стенд или восстановленный OpenBao).
+audit_verify_signatures() { # файл команда...
+  local file="$1"; shift
+  [[ -s "$file" ]] || return 0
+  audit_chain batch "$file" \
+    | "$@" write -format=json "transit/verify/$AUDIT_KEY" - \
+    | python3 -c '
+import json, sys
+need = sum(1 for _ in open(sys.argv[1]))
+got = json.load(sys.stdin)["data"]["batch_results"]
+bad = [i + 1 for i, r in enumerate(got) if r.get("valid") is not True]
+if bad or len(got) != need:
+    sys.exit(f"аудит: подпись контрольных точек не подтверждена: {bad or len(got)}")' "$file"
+}
+
+# Проверка цепочки и точек стенда; итог JSON на stdout. Нужен BAO_TOKEN.
+audit_verify() {
+  local file
+  file="$(audit_points_file)"
+  audit_verify_signatures "$file" compose exec -T -e BAO_TOKEN openbao bao || return 1
+  pg_exec psql -X -q -At -d platform < "$COMPOSE_DIR/postgres/audit-export.sql" \
+    | audit_chain verify "$file"
+}
+
+# Новая подписанная точка: только после успешной проверки. Подписывает короткоживущий токен с
+# правом лишь на этот ключ. Нужен BAO_TOKEN.
+audit_checkpoint() {
+  local file result raw token signature
+  file="$(audit_points_file)"
+  # Бэкап перед обновлением со старой схемой: точек ещё нет. Если точки есть, а схемы нет, это сбой.
+  if [[ ! -s "$file" && "$(pg_exec psql -X -At -d platform \
+      -c "select to_regclass('audit.chain_head') is null")" == t ]]; then
+    log "схемы audit ещё нет: контрольная точка не создаётся"
+    return 0
+  fi
+  result="$(audit_verify)" || die "проверка аудита не пройдена, контрольная точка не создана"
+  raw="$(audit_chain payload "$file" "$result")"
+  token="$(bao_exec token create -policy="$AUDIT_KEY" -ttl=2m -use-limit=3 -orphan \
+    -no-default-policy -field=token)"
+  signature="$(printf '{"input": "%s"}' "$(printf '%s' "$raw" | base64 | tr -d '\n')" \
+    | BAO_TOKEN="$token" compose exec -T -e BAO_TOKEN openbao \
+        bao write -field=signature "transit/sign/$AUDIT_KEY" -)"
+  printf '%s' "$signature" | audit_chain append "$file" "$raw"
+  log "контрольная точка аудита: событие $(json_field seq <<<"$result"), файл $file"
+}

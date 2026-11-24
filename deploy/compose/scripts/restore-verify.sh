@@ -153,6 +153,16 @@ llm_keys="$(service_secrets litellm db_password master_key salt_key)"
 owui_keys="$(service_secrets open-webui db_password webui_secret_key oauth_client_secret)"
 papi_keys="$(service_secrets platform-api db_password litellm_key)"
 pmig_keys="$(service_secrets platform-migrate db_password)"
+# Аудит (ADR-0012, п. 4): подписи точек ключом из восстановленного OpenBao, цепочка в
+# восстановленной БД. В бэкапах до ADR-0012 точек нет.
+points="$dir/audit-checkpoints.jsonl"
+if [[ -s "$points" ]]; then
+  audit_verify_signatures "$points" docker exec -i -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN \
+    "$bao_name" bao || die "подписи контрольных точек аудита не подтверждены"
+  audit_state="$(rx psql -X -q -At -d platform < "$COMPOSE_DIR/postgres/audit-export.sql" \
+    | audit_chain verify "$points")" || die "аудит в бэкапе не прошёл проверку"
+  log "  аудит: цепочка и точки подтверждены, событий $(json_field count <<<"$audit_state")"
+fi
 pwrk_keys="$(service_secrets platform-worker db_password)"
 psub_keys="$(service_secrets platform-subject db_password)"
 unset BAO_TOKEN

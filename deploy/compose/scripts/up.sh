@@ -60,7 +60,14 @@ if ! bao_exec secrets list -format=json | python3 -c 'import json,sys; sys.exit(
   bao_exec secrets enable -path=antec -version=2 kv >/dev/null
 fi
 
-for policy in render-postgres render-keycloak render-litellm render-open-webui \
+if ! bao_exec secrets list -format=json | python3 -c 'import json,sys; sys.exit(0 if "transit/" in json.load(sys.stdin) else 1)'; then
+  log "включение Transit и ключ подписи контрольных точек аудита"
+  bao_exec secrets enable transit >/dev/null
+fi
+# Не экспортируется и не удаляется (значения по умолчанию); повторная запись ключ не меняет.
+bao_exec write -f "transit/keys/$AUDIT_KEY" type=ed25519 >/dev/null
+
+for policy in audit-checkpoint render-postgres render-keycloak render-litellm render-open-webui \
     render-platform-api render-platform-migrate render-platform-worker render-platform-subject; do
   compose exec -T -e BAO_TOKEN openbao bao policy write "$policy" - \
     < "$COMPOSE_DIR/openbao/policies/$policy.hcl" >/dev/null
@@ -175,6 +182,13 @@ compose up -d --wait cerbos
 log "сборка Platform API и миграции БД platform"
 compose build platform-api
 compose --profile bootstrap run --rm -T platform-migrate
+# Схема аудита с отдельным владельцем (ADR-0012, п. 4). Перед первым переносом сервисы,
+# пишущие в прежнюю таблицу, останавливаются: их итоги успевают записаться.
+if [[ "$(pg_exec psql -X -At -d platform -c "select to_regclass('audit.audit_events') is null")" == t ]]; then
+  log "перенос аудита в схему audit: остановка Platform API и platform-worker"
+  compose stop -t 60 platform-api platform-worker >/dev/null 2>&1 || true
+fi
+pg_exec psql -X -q -v ON_ERROR_STOP=1 -d platform < "$COMPOSE_DIR/postgres/audit.sql" >/dev/null
 log "запуск Platform API"
 start_service platform-api
 
@@ -186,6 +200,7 @@ log "запуск platform-worker"
 start_service platform-worker
 log "сверка аккаунтов Open WebUI с Keycloak"
 sync_open_webui_identities
+audit_checkpoint
 unset BAO_TOKEN
 log "стенд запущен: $(compose ps --format '{{.Service}}={{.State}}' | tr '\n' ' ')"
 log "Keycloak: http://localhost:8080/realms/antec/account (администрирование: http://localhost:8080/admin)"
