@@ -85,6 +85,11 @@ compute_config_shas
 
 compose() {
   local files=(-f "$COMPOSE_DIR/compose.yaml")
+  # Образы ядра по digest из подписанного release.json (core-images.yaml инсталляции,
+  # antec-instance core-pin, ADR-0014, п. 6) вместо локальной сборки.
+  if [[ -f "$ANTEC_INSTANCE_RENDERED/compose.core-images.yaml" ]]; then
+    files+=(-f "$ANTEC_INSTANCE_RENDERED/compose.core-images.yaml")
+  fi
   # Сервисы плагинов инсталляции поверх compose ядра (ADR-0008, п. 6).
   if [[ -f "$ANTEC_INSTANCE_DIR/compose.override.yaml" ]]; then
     files+=(-f "$ANTEC_INSTANCE_DIR/compose.override.yaml")
@@ -196,7 +201,11 @@ json_field() {
 
 DATABASES=(keycloak litellm openwebui platform dbos)
 BACKUP_ROOT="${ANTEC_BACKUP_DIR:-$HOME/Library/Application Support/antec/backups}"
-POSTGRES_IMAGE="localhost/antec/postgres:18.7-pgvector0.8.7"
+# Образ postgres стенда: локальная сборка или образ ядра по digest (ADR-0014, п. 6).
+postgres_image() {
+  compose config --format json \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["postgres"]["image"])'
+}
 
 # psql от пользователя postgres внутри контейнера (peer-аутентификация по сокету).
 pg_exec() {

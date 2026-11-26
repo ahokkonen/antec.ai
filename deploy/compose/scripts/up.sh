@@ -3,16 +3,21 @@
 # Platform API, Open WebUI. Идемпотентен. Инсталляция: ANTEC_INSTANCE_DIR (по умолчанию
 # instances/dev ядра, ADR-0008).
 #   --recreate-realm   удалить realm antec и создать заново из keycloak/realm-antec.json
+#   --no-backup        не делать бэкап перед миграциями БД platform (только стенд разработки,
+#                      ADR-0014, п. 7)
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 require_macos_keychain
 
 recreate_realm=""
-case "${1:-}" in
-  "") ;;
-  --recreate-realm) recreate_realm="--recreate-realm" ;;
-  *) die "использование: up.sh [--recreate-realm]" ;;
-esac
+no_backup=""
+for arg in "$@"; do
+  case "$arg" in
+    --recreate-realm) recreate_realm="--recreate-realm" ;;
+    --no-backup) no_backup=1 ;;
+    *) die "использование: up.sh [--recreate-realm] [--no-backup]" ;;
+  esac
+done
 
 log "проверка и рендер манифеста инсталляции $ANTEC_INSTANCE_DIR (ADR-0008)"
 render_instance
@@ -181,6 +186,31 @@ compose up -d --wait cerbos
 
 log "сборка Platform API и миграции БД platform"
 compose build platform-api
+# План до миграций (ADR-0014, п. 7): понижение версии ядра останавливает запуск, ожидающие
+# миграции существующей БД выполняются только после бэкапа.
+plan_rc=0
+plan_json="$(compose --profile bootstrap run --rm -T platform-migrate migrate --plan)" || plan_rc=$?
+case "$plan_rc" in
+  0) log "  миграций нет" ;;
+  3)
+    plan_field() { python3 -c 'import json,sys; v=json.load(sys.stdin)[sys.argv[1]]; print(" ".join(v) if isinstance(v, list) else (v or ""))' "$1" <<<"$plan_json"; }
+    current="$(plan_field current)"
+    log "  миграции: $(plan_field pending)${current:+ (сейчас $current)}"
+    irreversible="$(plan_field irreversible)"
+    [[ -z "$irreversible" ]] || log "  необратимые: $irreversible"
+    if [[ -z "$current" ]]; then
+      log "  новая БД: бэкап не нужен"
+    elif [[ -n "$no_backup" ]]; then
+      log "  --no-backup: миграции без бэкапа (только стенд разработки)"
+    else
+      log "бэкап перед миграциями"
+      "$COMPOSE_DIR/scripts/backup.sh"
+    fi
+    ;;
+  4) die "БД platform на ревизии, неизвестной этой версии ядра ($plan_json): понижение версии \
+не поддерживается, восстановите бэкап, сделанный до обновления (restore-verify.sh, ADR-0014)" ;;
+  *) die "не удалось получить план миграций БД platform (код $plan_rc)" ;;
+esac
 compose --profile bootstrap run --rm -T platform-migrate
 # Схема аудита с отдельным владельцем (ADR-0012, п. 4). Перед первым переносом сервисы,
 # пишущие в прежнюю таблицу, останавливаются: их итоги успевают записаться.
