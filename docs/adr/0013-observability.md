@@ -81,15 +81,20 @@
    статус, токены; без id пользователя, email, имён и текстов. Без адреса Collector
    (`PLATFORM_OTEL_ENDPOINT` пуст) телеметрия выключена.
 3. **Пре-релизы Python (уточнение ADR-0016).** pincheck проверяет `uv.lock`: версия a, b, rc
-   или dev по PEP 440 = ошибка PIN034. Исключение только в `python_prerelease_allowed` реестра с
-   причиной; сейчас там три пакета OTel с нумерацией `0.NNbN`, которые выпускаются в паре со
-   стабильным SDK 1.x.
+   или dev по PEP 440 = ошибка PIN034. Исключение только в `python_prerelease_allowed` реестра:
+   пакет, шаблон версий (`versions`, на всю версию) и причина; сейчас там три пакета OTel с
+   шаблоном `0\.\d+b\d+`, которые выпускаются в паре со стабильным SDK 1.x. Другой пре-релиз
+   того же пакета (например, `1.0.0rc1`) запрещён.
 4. **Бэкенды** в compose ядра, профиль `observability`, сети `telemetry` (Platform API ->
    Collector) и `observability` (Collector -> хранилища -> Grafana), обе internal, портов на хост
    нет (кроме Grafana на `127.0.0.1`, п. 5):
-   - OTel Collector contrib: только приёмник OTLP/HTTP, `memory_limiter`, `batch` и
-     `attributes/privacy`, который удаляет тексты GenAI, `enduser.*`, `user.*`, HTTP-заголовки и
-     query URL, даже если источник их прислал;
+   - OTel Collector contrib: только приёмник OTLP/HTTP, `memory_limiter`, `batch` и процессоры
+     приватности, которые срабатывают, даже если источник прислал содержимое:
+     `attributes/privacy` удаляет тексты GenAI по semconv, атрибуты содержимого Pydantic AI и
+     Logfire (`pydantic_ai.all_messages`, `final_result`, `pydantic_ai.decision.*`, `logfire.msg`),
+     `enduser.*`, `user.*`, HTTP-заголовки, query URL и тексты исключений; `filter/privacy`
+     оставляет у спанов только события `exception`; `transform/privacy` очищает тело
+     журналов-событий GenAI. Проверено на стенде канарейкой во всех этих местах;
    - VictoriaMetrics, VictoriaLogs, VictoriaTraces со сроком `ANTEC_TELEMETRY_RETENTION`
      (по умолчанию 30 дней). Образы без пользователя запускаются от root без capabilities,
      с корнем только для чтения.

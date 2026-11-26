@@ -178,6 +178,27 @@ class Advisory(_Model):
     summary: NonEmptyStr
 
 
+def _check_regex(value: str) -> str:
+    try:
+        re.compile(value)
+    except re.error as exc:
+        raise ValueError(f"некорректное регулярное выражение {value!r}: {exc}") from exc
+    return value
+
+
+RegexStr = Annotated[StrictStr, Field(min_length=1), AfterValidator(_check_regex)]
+
+
+class PrereleaseAllowance(_Model):
+    """Исключение PIN034: разрешены только версии, целиком совпадающие с versions."""
+
+    versions: RegexStr
+    reason: NonEmptyStr
+
+    def allows(self, version: str) -> bool:
+        return re.fullmatch(self.versions, version) is not None
+
+
 class Component(_Model):
     role: NonEmptyStr
     license: NonEmptyStr
@@ -213,8 +234,8 @@ class Policy(_Model):
     python_forbidden: list[PyNameStr] = Field(default_factory=list)
     python_denylist: dict[PyNameStr, list[PyVersionStr]] = Field(default_factory=dict)
     python_min_versions: dict[PyNameStr, PyVersionStr] = Field(default_factory=dict)
-    # Пакеты, у которых пре-релизная по PEP 440 нумерация разрешена: пакет -> причина (ADR-0013).
-    python_prerelease_allowed: dict[PyNameStr, NonEmptyStr] = Field(default_factory=dict)
+    # Пакеты, у которых пре-релизная по PEP 440 нумерация разрешена (ADR-0013).
+    python_prerelease_allowed: dict[PyNameStr, PrereleaseAllowance] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,7 +1,8 @@
 # OTel Collector стенда (ADR-0013): OTLP/HTTP от Platform API -> VictoriaMetrics, VictoriaLogs,
 # VictoriaTraces. Только сеть telemetry (приём) и observability (бэкенды), обе internal.
 # Содержимое и персональные данные не хранятся (ADR-0012, п. 6): источник их не шлёт
-# (include_content=False), процессор privacy удаляет их, даже если пришли.
+# (include_content=False), процессоры */privacy удаляют их, даже если пришли: атрибуты по
+# списку, события спанов кроме исключений, тела журналов-событий GenAI, тексты исключений.
 receivers:
   otlp:
     protocols:
@@ -16,9 +17,13 @@ processors:
     spike_limit_mib: 40
   attributes/privacy:
     actions:
-      # Тексты GenAI (semconv: входные и выходные сообщения, системные инструкции, аргументы и
-      # результаты инструментов).
-      - pattern: ^gen_ai\.(input|output|system_instructions|prompt|completion|tool\.call\.(arguments|result))(\..*)?$
+      # Тексты GenAI по semconv: сообщения, системные инструкции, описания и аргументы
+      # инструментов, их результаты.
+      - pattern: ^gen_ai\.(input|output|system_instructions|prompt|completion|tool\.definitions|tool\.call\.(arguments|result))(\..*)?$
+        action: delete
+      # Содержимое в атрибутах Pydantic AI и Logfire (история, итог, вопросы и ответы решений,
+      # контекст запуска, текст сообщения).
+      - pattern: ^(pydantic_ai\.(all_messages|current_run_context|decision\..*)|final_result|all_messages_events|logfire\.(msg|json_schema))$
         action: delete
       # Пользователь и HTTP-заголовки (токены, cookies).
       - pattern: ^(enduser|user)\..*
@@ -27,15 +32,40 @@ processors:
         action: delete
       - pattern: ^url\.(query|full)$
         action: delete
+      # Текст и трассировка исключений могут цитировать содержимое (ADR-0012, п. 5).
+      - pattern: ^exception\.(message|stacktrace)$
+        action: delete
+  # События спанов: только исключения (тип без текста), события GenAI с содержимым удаляются.
+  filter/privacy:
+    error_mode: ignore
+    traces:
+      spanevent:
+        - 'name != "exception"'
+  transform/privacy:
+    error_mode: ignore
+    trace_statements:
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message")
+          - delete_key(attributes, "exception.stacktrace")
+    log_statements:
+      - context: log
+        statements:
+          # Журналы-события GenAI несут содержимое в теле.
+          - set(body, "") where IsMatch(event_name, "^gen_ai\\.")
   batch:
     timeout: 5s
 
 exporters:
+  # Повторы до 5 минут: хранилища без healthcheck (Logs, Traces) могут стартовать позже Collector.
   otlp_http/metrics:
+    retry_on_failure: {enabled: true, max_elapsed_time: 300s}
     metrics_endpoint: http://victoria-metrics:8428/opentelemetry/v1/metrics
   otlp_http/logs:
+    retry_on_failure: {enabled: true, max_elapsed_time: 300s}
     logs_endpoint: http://victoria-logs:9428/insert/opentelemetry/v1/logs
   otlp_http/traces:
+    retry_on_failure: {enabled: true, max_elapsed_time: 300s}
     traces_endpoint: http://victoria-traces:10428/insert/opentelemetry/v1/traces
 
 service:
@@ -45,7 +75,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, attributes/privacy, batch]
+      processors: [memory_limiter, filter/privacy, transform/privacy, attributes/privacy, batch]
       exporters: [otlp_http/traces]
     metrics:
       receivers: [otlp]
@@ -53,5 +83,5 @@ service:
       exporters: [otlp_http/metrics]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, attributes/privacy, batch]
+      processors: [memory_limiter, transform/privacy, attributes/privacy, batch]
       exporters: [otlp_http/logs]

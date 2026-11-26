@@ -409,8 +409,15 @@ python_denylist:
   litellm: ["1.82.7", "1.82.8", "1.107.0"]
 python_min_versions: {}
 #   python_prerelease_allowed  пакеты, чья обычная нумерация выглядит пре-релизом по PEP 440:
-#                        пакет -> причина (PIN034, ADR-0013). Остальные пре-релизы запрещены.
+#                        versions (регулярное выражение на всю версию) и reason (PIN034,
+#                        ADR-0013). Остальные пре-релизы и другие версии этих пакетов запрещены.
 python_prerelease_allowed:
-  opentelemetry-semantic-conventions: "Нумерация 0.NNbN у нестабильных пакетов OTel Python; выпускается в паре со стабильным opentelemetry-sdk 1.x (ADR-0013)"
-  opentelemetry-exporter-otlp-common: "То же: зависимость opentelemetry-exporter-otlp-proto-http 1.x (ADR-0013)"
-  opentelemetry-exporter-http-transport: "То же: зависимость opentelemetry-exporter-otlp-proto-http 1.x (ADR-0013)"
+  opentelemetry-semantic-conventions:
+    versions: '0\.\d+b\d+'
+    reason: "Нумерация 0.NNbN у нестабильных пакетов OTel Python; выпускается в паре со стабильным opentelemetry-sdk 1.x (ADR-0013)"
+  opentelemetry-exporter-otlp-common:
+    versions: '0\.\d+b\d+'
+    reason: "То же: зависимость opentelemetry-exporter-otlp-proto-http 1.x (ADR-0013)"
+  opentelemetry-exporter-http-transport:
+    versions: '0\.\d+b\d+'
+    reason: "То же: зависимость opentelemetry-exporter-otlp-proto-http 1.x (ADR-0013)"
