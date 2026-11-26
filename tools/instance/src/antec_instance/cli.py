@@ -1,4 +1,4 @@
-"""CLI: antec-instance validate | render | init | core-info (ADR-0008, ADR-0014).
+"""CLI: antec-instance validate | render | init | core-info | core-pin (ADR-0008, ADR-0014).
 
 Код выхода: 0 успех, 1 манифест или политики не прошли проверку, 2 ошибка использования.
 """
@@ -11,7 +11,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from antec_instance import __version__
+from antec_instance import __version__, coreimages
 from antec_instance.agents import resolve_agents
 from antec_instance.compliance import ProvidersError, load_providers
 from antec_instance.core import CoreError, core_version, default_core_dir
@@ -56,6 +56,18 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--id", required=True, help="id инсталляции, он же scope политик")
     init.add_argument("--name", required=True, help="название организации")
     sub.add_parser("core-info", help="совместимость ядра для release.json (JSON, ADR-0014)")
+    pin = sub.add_parser(
+        "core-pin", help="образы ядра по digest из подписанного release.json (ADR-0014)"
+    )
+    pin.add_argument("instance", type=Path, help="каталог инсталляции")
+    pin.add_argument(
+        "--release-dir",
+        type=Path,
+        default=None,
+        help="каталог с release.json и release.json.sigstore.json (по умолчанию скачать "
+        "из GitHub Release версии core.version)",
+    )
+    pin.add_argument("--cosign", default="cosign", help="путь к cosign (по умолчанию из PATH)")
     return parser
 
 
@@ -76,6 +88,7 @@ def _validate(core_dir: Path, instance_dir: Path) -> Manifest:
         if s.protocol_version not in CORE_MCP_PROTOCOL_VERSIONS
     ]
     problems += check_policies(instance_dir, manifest.instance.id)
+    problems += coreimages.check(coreimages.load(instance_dir), manifest)
     try:
         resolve_agents(manifest, instance_dir)
     except ManifestError as exc:
@@ -117,6 +130,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "core-info":
             print(json.dumps(core_info(core_dir), indent=2))
             return EXIT_OK
+        if args.command == "core-pin":
+            manifest = load_manifest(args.instance)
+            path = coreimages.pin(
+                args.instance, manifest, release_dir=args.release_dir, cosign=args.cosign
+            )
+            print(f"{path}: образы ядра {manifest.core.version} по digest")
+            return EXIT_OK
         manifest = _validate(core_dir, args.instance)
         providers = load_providers(core_dir)
         notes = manifest.compliance_warnings(providers)
@@ -130,6 +150,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ManifestError as exc:
         for problem in exc.problems:
             print(f"ошибка: {problem}", file=sys.stderr)
+        return EXIT_INVALID
+    except coreimages.CoreImagesError as exc:
+        print(f"ошибка: {exc}", file=sys.stderr)
         return EXIT_INVALID
     except (CoreError, ProvidersError) as exc:
         print(f"ошибка: {exc}", file=sys.stderr)

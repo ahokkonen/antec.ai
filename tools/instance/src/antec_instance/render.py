@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from antec_instance import compliance
+from antec_instance import compliance, coreimages
 from antec_instance.agents import resolve_agents
 from antec_instance.manifest import Manifest
 
@@ -137,7 +137,7 @@ def _env_file(env: dict[str, str]) -> str:
     return _HEADER + "".join(f"{k}={v.replace('$', '$$')}\n" for k, v in env.items())
 
 
-def summary(manifest: Manifest) -> dict[str, Any]:
+def summary(manifest: Manifest, pinned: coreimages.CoreImages | None = None) -> dict[str, Any]:
     return {
         "schema_version": manifest.schema_version,
         "id": manifest.instance.id,
@@ -148,6 +148,8 @@ def summary(manifest: Manifest) -> dict[str, Any]:
         # Срок событий Keycloak (ADR-0012, п. 1).
         "audit_days": manifest.retention.audit_days,
         "mcp_audiences": [s.audience for s in manifest.mcp_servers],
+        # Образы ядра по digest или null = локальная сборка (ADR-0014, п. 6).
+        "core_images": coreimages.summary(pinned),
     }
 
 
@@ -203,6 +205,7 @@ def render(
     warnings: list[str] | None = None,
 ) -> list[Path]:
     agents = resolve_agents(manifest, instance_dir)
+    pinned = coreimages.load(instance_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     files = {
         LITELLM_MODELS: _HEADER
@@ -214,12 +217,17 @@ def render(
         # Черновики для DPIA и реестра обработки (ADR-0015).
         RECORD: compliance.record(manifest, providers or {}),
         DPIA_FACTS: compliance.dpia_facts(manifest, providers or {}, warnings or []),
-        SUMMARY: json.dumps(summary(manifest), ensure_ascii=False, indent=2) + "\n",
+        SUMMARY: json.dumps(summary(manifest, pinned), ensure_ascii=False, indent=2) + "\n",
         # Всегда, даже пустой: Platform API читает файл при старте.
         AGENTS: json.dumps(agents, ensure_ascii=False, indent=2) + "\n",
         MCP_SERVERS: json.dumps(mcp_servers(manifest), ensure_ascii=False, indent=2) + "\n",
         MODELS: json.dumps(model_clearances(manifest), ensure_ascii=False, indent=2) + "\n",
     }
+    if pinned is not None:
+        files[coreimages.OVERRIDE_FILE] = coreimages.override(pinned)
+    else:
+        # Без core-images.yaml образы ядра собираются локально: прежний override удаляется.
+        (out_dir / coreimages.OVERRIDE_FILE).unlink(missing_ok=True)
     for legacy in _LEGACY:
         (out_dir / legacy).unlink(missing_ok=True)
     written = []
