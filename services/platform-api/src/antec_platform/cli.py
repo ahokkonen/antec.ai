@@ -12,6 +12,10 @@ import uvicorn
 
 from antec_platform import logs
 
+# Коды выхода migrate (ADR-0014, п. 7): up.sh делает бэкап при 3 и останавливается при 4.
+EXIT_MIGRATE_PENDING = 3
+EXIT_MIGRATE_UNKNOWN = 4
+
 log = logging.getLogger("antec_platform")
 
 
@@ -55,7 +59,13 @@ def main(argv: list[str] | None = None) -> int:
     serve = sub.add_parser("serve", help="запустить Platform API")
     serve.add_argument("--host", default="0.0.0.0")  # noqa: S104 - внутри контейнера
     serve.add_argument("--port", type=int, default=8000)
-    sub.add_parser("migrate", help="применить миграции БД (роль владельца схемы)")
+    migrate = sub.add_parser("migrate", help="применить миграции БД (роль владельца схемы)")
+    migrate.add_argument(
+        "--plan",
+        action="store_true",
+        help="только план (JSON): код выхода 0 нечего применять, 3 есть миграции, "
+        "4 ревизия БД неизвестна этой версии (ADR-0014)",
+    )
     sub.add_parser("worker", help="фоновый сервис: истечение ожиданий, потерянные вызовы")
     subject_parser = sub.add_parser("subject", help="права субъекта данных (ADR-0012, п. 7)")
     subject_sub = subject_parser.add_subparsers(dest="subject_command", required=True)
@@ -69,11 +79,28 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "migrate":
-        from antec_platform.migrate import upgrade
+        from antec_platform.migrate import plan, upgrade
         from antec_platform.settings import DatabaseSettings
 
         logs.configure("INFO")
-        upgrade(DatabaseSettings())  # пароль из файла секрета
+        settings = DatabaseSettings()  # пароль из файла секрета
+        if args.plan:
+            result = plan(settings)
+            json.dump(result.as_dict(), sys.stdout)
+            print()
+            if not result.known:
+                return EXIT_MIGRATE_UNKNOWN
+            return EXIT_MIGRATE_PENDING if result.pending else 0
+        current = plan(settings)
+        if not current.known:
+            # Понижение версии ядра: схема новее кода (ADR-0014, п. 7).
+            print(
+                f"ошибка: ревизия БД {current.current} неизвестна этой версии (голова "
+                f"{current.head}); откат ядра только восстановлением из бэкапа",
+                file=sys.stderr,
+            )
+            return EXIT_MIGRATE_UNKNOWN
+        upgrade(settings)
         return 0
 
     if args.command == "subject":

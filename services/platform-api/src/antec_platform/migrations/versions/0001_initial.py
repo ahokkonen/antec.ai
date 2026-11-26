@@ -20,6 +20,8 @@ revision: str = "0001"
 down_revision: str | None = None
 branch_labels: str | None = None
 depends_on: str | None = None
+# Необратимая миграция: up.sh делает бэкап, откат только восстановлением (ADR-0014, п. 3).
+IRREVERSIBLE = True  # откат бросает исключение
 
 _TS = sa.DateTime(timezone=True)
 _NOW = sa.text("now()")

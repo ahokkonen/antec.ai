@@ -41,7 +41,7 @@ from antec_platform.db import (
     metadata,
     model_calls,
 )
-from antec_platform.migrate import upgrade
+from antec_platform.migrate import plan, upgrade
 from antec_platform.retention import purge
 from antec_platform.settings import DatabaseSettings
 from antec_platform.store import AgentRunStart, Approval, CallResult, CallStart, PgStore
@@ -285,6 +285,13 @@ async def test_schema_matches_metadata(owner_engine: AsyncEngine) -> None:
 
     async with owner_engine.connect() as conn:
         assert await conn.run_sync(diff) == []
+
+
+async def test_plan_on_migrated_database(db: Db) -> None:
+    result = await asyncio.to_thread(plan, db.owner)
+    assert result.known
+    assert result.current == result.head
+    assert result.pending == []
 
 
 async def test_migrations_are_idempotent(db: Db) -> None:

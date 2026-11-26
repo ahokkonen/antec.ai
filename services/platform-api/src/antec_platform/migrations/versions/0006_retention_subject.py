@@ -16,6 +16,8 @@ revision: str = "0006"
 down_revision: str | None = "0005"
 branch_labels: str | None = None
 depends_on: str | None = None
+# Необратимая миграция: up.sh делает бэкап, откат только восстановлением (ADR-0014, п. 3).
+IRREVERSIBLE = True  # откат бросает исключение
 
 _RUN_LINKS = (
     ("agent_runs", "fk_agent_runs_parent_run_id_agent_runs", "parent_run_id"),

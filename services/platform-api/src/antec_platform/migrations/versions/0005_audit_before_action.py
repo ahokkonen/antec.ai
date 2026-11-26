@@ -19,6 +19,8 @@ revision: str = "0005"
 down_revision: str | None = "0004"
 branch_labels: str | None = None
 depends_on: str | None = None
+# Необратимая миграция: up.sh делает бэкап, откат только восстановлением (ADR-0014, п. 3).
+IRREVERSIBLE = True  # откат бросает исключение
 
 
 def upgrade(*, app_role: str) -> None:
