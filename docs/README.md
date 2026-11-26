@@ -25,4 +25,7 @@
   Соответствие реестру проверяет [pincheck](../tools/pincheck/README.md) в CI на каждый PR
   (ADR-0016). Локально из корня репозитория:
   `uv run --project tools/pincheck --locked pincheck --policy policy/allowed-versions.yaml --exclude tools/pincheck/tests/fixtures .`
+- **Релизы**: версия ядра только в `VERSION`, изменения и заметки по обновлению в
+  [../CHANGELOG.md](../CHANGELOG.md), процесс и чек-лист в [../tools/release](../tools/release/README.md)
+  (ADR-0014).
 - Формат: обычный Markdown и Mermaid, без расширений конкретных инструментов.

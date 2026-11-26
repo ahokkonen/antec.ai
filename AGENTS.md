@@ -28,6 +28,8 @@ Claude Code состоит из одной строки `@AGENTS.md` (импор
 | `docs/security/` | Лицензии и политика безопасности |
 | `policy/allowed-versions.yaml` | Разрешённые и запрещённые версии всех компонентов |
 | `tools/pincheck/` | CI-проверка соответствия реестру версий (ADR-0016) |
+| `tools/release/` | Версия ядра, CHANGELOG, `release.json` и чек-лист релиза (ADR-0014) |
+| `CHANGELOG.md` | Изменения ядра по версиям, заметки по обновлению (ADR-0014) |
 | `policies/cerbos/` | Политики Cerbos и их тесты (ADR-0009) |
 | `services/platform-api/` | Platform API: OpenAI-совместимый фасад, пользователи, история, аудит (ADR-0006) |
 | `tools/instance/` | Манифест инсталляции: схема, проверка, рендер, `init` из шаблона (ADR-0008) |
