@@ -170,3 +170,32 @@ def test_old_mcp_protocol_rejected(
     manifest.write_text(manifest.read_text().replace('"2026-07-28"', '"2025-11-25"'))
     assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_INVALID
     assert "2025-11-25" in capsys.readouterr().err
+
+
+def test_render_compliance(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
+    manifest = dev_instance / "instance.yaml"
+    text = manifest.read_text().replace(
+        "  privacy_notice_url: https://antec.invalid/privacy\n",
+        "  privacy_notice_url: https://antec.invalid/privacy\n"
+        '  ai_notice: {fi-FI: "Tekoäly *vastaa* [x](y) $HOME"}\n',
+    )
+    manifest.write_text(text)
+    out = tmp_path / "out"
+    assert (
+        main(["--core", str(core_dir), "render", str(dev_instance), "--out", str(out)]) == EXIT_OK
+    )
+    record = (out / "compliance" / "record.md").read_text()
+    assert "Реестр контролёра (GDPR, ст. 30(1))" in record
+    assert "Anthropic Ireland" in record
+    assert "| chat-fast | anthropic |" in record
+    facts = (out / "compliance" / "dpia-facts.md").read_text()
+    assert "mcp-demo.create_note" in facts
+    assert "без ZDR" in facts
+    env = (out / "open-webui.env").read_text()
+    # $ экранирован для compose, разметка манифеста не исполняется.
+    assert "$$HOME" in env
+    (banner,) = json.loads(env.split("WEBUI_BANNERS=", 1)[1].splitlines()[0].replace("$$", "$"))
+    fi = banner["i18n"]["fi-FI"]["content"]
+    assert fi.startswith("Tekoäly \\*vastaa\\* \\[x\\]\\(y\\) $HOME")
+    assert fi.endswith("[Tietosuojaseloste](https://antec.invalid/privacy)")
+    assert banner["i18n"]["en-US"]["content"].startswith("You are chatting")

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from antec_instance import __version__
 from antec_instance.agents import resolve_agents
+from antec_instance.compliance import ProvidersError, load_providers
 from antec_instance.core import CoreError, core_version, default_core_dir
 from antec_instance.manifest import Manifest, ManifestError, load_manifest
 from antec_instance.policies import check_policies
@@ -83,10 +84,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"инсталляция {args.id} создана в {args.dest}")
             return EXIT_OK
         manifest = _validate(core_dir, args.instance)
-        for warning in manifest.class_warnings():
+        providers = load_providers(core_dir)
+        notes = manifest.compliance_warnings(providers)
+        for warning in [*manifest.class_warnings(), *notes]:
             print(f"предупреждение: {warning}", file=sys.stderr)
         if args.command == "render":
-            for path in render(manifest, args.instance, args.out):
+            for path in render(manifest, args.instance, args.out, providers, notes):
                 print(path)
         else:
             print(f"{args.instance}: инсталляция {manifest.instance.id} в порядке")
@@ -94,7 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for problem in exc.problems:
             print(f"ошибка: {problem}", file=sys.stderr)
         return EXIT_INVALID
-    except CoreError as exc:
+    except (CoreError, ProvidersError) as exc:
         print(f"ошибка: {exc}", file=sys.stderr)
         return EXIT_USAGE
     return EXIT_OK

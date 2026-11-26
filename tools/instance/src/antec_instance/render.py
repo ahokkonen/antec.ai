@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from antec_instance import compliance
 from antec_instance.agents import resolve_agents
 from antec_instance.manifest import Manifest
 
@@ -27,6 +28,8 @@ PLATFORM_ENV = "platform-api.env"
 WORKER_ENV = "platform-worker.env"
 LITELLM_ENV = "litellm.env"
 OPEN_WEBUI_ENV = "open-webui.env"
+RECORD = "compliance/record.md"
+DPIA_FACTS = "compliance/dpia-facts.md"
 SUMMARY = "instance.json"
 # Прежняя раскладка (до подкаталогов): удаляется, чтобы не осталось устаревших копий.
 _LEGACY = ("litellm-models.yaml", "agents.json")
@@ -93,13 +96,33 @@ AI_NOTICE = {
 AI_WATERMARK = "AI-generated (antec.ai)"
 
 
+PRIVACY_LINK = {
+    "en-US": "Privacy notice",
+    "fi-FI": "Tietosuojaseloste",
+    "ru-RU": "Конфиденциальность",
+}
+
+
+def _markdown_text(text: str) -> str:
+    """Текст манифеста как текст, а не разметка: баннер Open WebUI разбирает Markdown."""
+    return "".join(f"\\{ch}" if ch in "\\`*_[]<>()#!|~" else ch for ch in text)
+
+
 def open_webui_env(manifest: Manifest) -> dict[str, str]:
+    c = manifest.compliance
+    texts = {**AI_NOTICE, **{k: _markdown_text(v) for k, v in c.ai_notice.items()}}
+    if c.privacy_notice_url:
+        url = c.privacy_notice_url.replace(")", "%29").replace(" ", "%20")
+        texts = {
+            lang: f"{text} [{PRIVACY_LINK.get(lang, PRIVACY_LINK['en-US'])}]({url})"
+            for lang, text in texts.items()
+        }
     banner = {
         "id": "antec-ai-notice",
         "type": "info",
         "title": "",
-        "content": AI_NOTICE["en-US"],
-        "i18n": {lang: {"content": text} for lang, text in AI_NOTICE.items()},
+        "content": texts.get("en-US") or next(iter(texts.values())),
+        "i18n": {lang: {"content": text} for lang, text in texts.items()},
         "dismissible": False,
         "timestamp": 0,
     }
@@ -172,7 +195,13 @@ def _write(path: Path, content: str) -> None:
         raise
 
 
-def render(manifest: Manifest, instance_dir: Path, out_dir: Path) -> list[Path]:
+def render(
+    manifest: Manifest,
+    instance_dir: Path,
+    out_dir: Path,
+    providers: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+) -> list[Path]:
     agents = resolve_agents(manifest, instance_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     files = {
@@ -182,6 +211,9 @@ def render(manifest: Manifest, instance_dir: Path, out_dir: Path) -> list[Path]:
         WORKER_ENV: _env_file(worker_env(manifest)),
         LITELLM_ENV: _env_file(litellm_env(manifest)),
         OPEN_WEBUI_ENV: _env_file(open_webui_env(manifest)),
+        # Черновики для DPIA и реестра обработки (ADR-0015).
+        RECORD: compliance.record(manifest, providers or {}),
+        DPIA_FACTS: compliance.dpia_facts(manifest, providers or {}, warnings or []),
         SUMMARY: json.dumps(summary(manifest), ensure_ascii=False, indent=2) + "\n",
         # Всегда, даже пустой: Platform API читает файл при старте.
         AGENTS: json.dumps(agents, ensure_ascii=False, indent=2) + "\n",

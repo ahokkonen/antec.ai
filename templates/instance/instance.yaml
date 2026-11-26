@@ -1,6 +1,6 @@
 # Манифест инсталляции __INSTANCE_NAME__ (ADR-0008). Схема v1: tools/instance ядра.
 # Проверка: uv run --project core/tools/instance --locked antec-instance validate .
-schema_version: 4
+schema_version: 5
 instance:
   # id = scope политик Cerbos инсталляции (policies/), менять нельзя.
   id: __INSTANCE_ID__
@@ -17,11 +17,15 @@ models:
     litellm:
       model: anthropic/claude-opus-5-5
       api_key: os.environ/ANTHROPIC_API_KEY
+    # Условия договора с провайдером (ADR-0015): zdr = провайдер не хранит данные по договору.
+    provider_terms: {zdr: false, region: unknown}
   - name: chat-fast
     description: "Быстрая и дешёвая модель: Claude Haiku 5.5"
     litellm:
       model: anthropic/claude-haiku-5-5
       api_key: os.environ/ANTHROPIC_API_KEY
+    # Условия договора с провайдером (ADR-0015): zdr = провайдер не хранит данные по договору.
+    provider_terms: {zdr: false, region: unknown}
 
 # MCP-серверы инсталляции (исполняются вместе с MCP-клиентом Platform API). Пример:
 # mcp_servers:
@@ -59,6 +63,18 @@ retention:
   content_days: 90
   metadata_days: 365
   audit_days: 365
+
+# Комплаенс (ADR-0015). operator_role: controller (организация сама контролёр) или processor
+# (Mtech обработчик клиента: нужны controller и processor). Документы: docs/compliance/;
+# черновики реестра и фактов DPIA пишет render в .rendered/compliance/.
+compliance:
+  operator_role: controller
+  controller: {name: "__INSTANCE_NAME__", contact: "privacy@example.invalid"}
+  # dpo_contact: "dpo@example.invalid"
+  # privacy_notice_url: https://example.invalid/privacy
+  # Свой текст уведомления об ИИ по языку интерфейса (иначе текст ядра на en, fi, ru):
+  # ai_notice: {fi-FI: "Keskustelet tekoälyn kanssa."}
+  require_zdr: false
 
 # Параметры Platform API, которые может менять инсталляция.
 settings:
