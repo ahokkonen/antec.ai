@@ -39,6 +39,17 @@ deploy/compose/scripts/up.sh
 ANTEC_INSTANCE_DIR="$PWD" core/deploy/compose/scripts/up.sh
 ```
 
+Перед миграциями БД `platform` `up.sh` получает их план (`platform-migrate migrate --plan`):
+если есть ожидающие миграции в существующей БД, сначала выполняется `backup.sh`. Бэкап
+делается и раньше, сразу после запуска PostgreSQL, если со времени прошлого успешного запуска
+изменились версия ядра, образы сервисов или `audit.sql` (Keycloak, LiteLLM и Open WebUI
+мигрируют свои БД при старте; отпечаток в `antec_ops.deploy_state` БД `platform`)
+(`up.sh --no-backup` пропускает бэкап, только стенд разработки); если ревизия БД неизвестна
+этой версии ядра (понижение версии), `up.sh` останавливается: откат только восстановлением из
+бэкапа (ADR-0014, п. 7). Если в инсталляции есть `core-images.yaml` (`antec-instance core-pin`),
+образы `platform-api`, `postgres` и `keycloak` берутся из GHCR по digest
+(`.rendered/compose.core-images.yaml`), а не собираются локально.
+
 Первый запуск инициализирует OpenBao, кладёт ключ распечатывания и root token в Связку ключей
 (аккаунт `antec-local`, записи с идентификатором установки), генерирует пароли PostgreSQL и секреты
 Keycloak в OpenBao, поднимает PostgreSQL и Keycloak и создаёт realm `antec` из
@@ -158,7 +169,7 @@ docker compose -f deploy/compose/compose.yaml exec -u postgres postgres psql
 | `litellm` | `litellm-non_root:v1.108.8`, модели из манифеста инсталляции (dev: `chat-default`, `chat-fast`, `chat-lab`); порт 4000 только внутри | `data`, `llm` (internal), `llm-egress` | 1,5 GB |
 | `cerbos` | `cerbos:0.57.0`, политики ядра `/policies/core` и инсталляции `/policies/instance` (scope, только чтение); без телеметрии, Admin API и аудита | `policy` (internal) | 256 MB |
 | `platform-migrate` | Одноразовые миграции БД `platform` ролью владельца схемы (профиль `bootstrap`) | `data` | 256 MB |
-| `platform-api` | `localhost/antec/platform-api:0.1.0`, фасад `/v1` (модели и агенты инсталляции, ADR-0010), роль БД `platform_app`; порт 8000 только внутри | `data`, `llm`, `platform`, `policy`, `mcp` (internal) | 512 MB |
+| `platform-api` | `localhost/antec/platform-api:0.1.0` (или образ ядра по digest), фасад `/v1` (модели и агенты инсталляции, ADR-0010), роль БД `platform_app`; порт 8000 только внутри | `data`, `llm`, `platform`, `policy`, `mcp` (internal) | 512 MB |
 | `platform-worker` | Тот же образ, команда `worker` (ADR-0012): истёкшие ожидания, потерянные вызовы, очистка по срокам (и чатов Open WebUI), роль БД `platform_worker` | `data` | 256 MB |
 | `platform-subject` | Одноразовые `subject export` и `erase` (профиль `bootstrap`, `scripts/subject.sh`), роль БД `platform_subject` | `data` | 512 MB |
 | `open-webui` | `open-webui:v0.13.3`, вход через Keycloak; `http://localhost:3000` | `data`, `platform`, `ui` | 1,5 GB |

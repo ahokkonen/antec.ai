@@ -13,7 +13,7 @@ from pincheck.checks.image import check_image
 from pincheck.imageref import ImageRefError, parse_image_ref
 from pincheck.report import Code, Finding, error
 from pincheck.versions import TagKind, classify_tag_version
-from pincheck.yamlload import YamlLoadError, effective_items, load_yaml
+from pincheck.yamlload import COMPOSE_RESET_TAG, YamlLoadError, effective_items, load_yaml
 
 # Образы, собираемые локально из build:, живут только в этом пространстве имён.
 # Их внешние зависимости проверяются через FROM в Dockerfile сборки.
@@ -28,8 +28,12 @@ _PRERELEASE_TOKEN_RE = re.compile(
 _REMOTE_CONTEXT_RE = re.compile(r"^(?:[a-z][a-z0-9+.-]*://|git@|github\.com/)", re.IGNORECASE)
 
 
+# `!override` из Compose spec не меняет тип строки (ADR-0014).
+_STR_TAGS = frozenset({"tag:yaml.org,2002:str", "!override"})
+
+
 def _scalar(node: Node | None) -> str | None:
-    if isinstance(node, ScalarNode) and node.tag == "tag:yaml.org,2002:str":
+    if isinstance(node, ScalarNode) and node.tag in _STR_TAGS:
         return str(node.value)
     return None
 
@@ -245,6 +249,9 @@ def check_compose(
         if not isinstance(svc, MappingNode):
             continue
         items = effective_items(svc)
+        # build: !reset null снимает локальную сборку в override (образы ядра, ADR-0014).
+        if "build" in items and items["build"][1].tag == COMPOSE_RESET_TAG:
+            del items["build"]
         image = items.get("image")
         if image is None:
             if "build" in items:
@@ -254,7 +261,7 @@ def check_compose(
             continue
         value = image[1]
         line = value.start_mark.line + 1
-        if not isinstance(value, ScalarNode) or value.tag != "tag:yaml.org,2002:str":
+        if not isinstance(value, ScalarNode) or value.tag not in _STR_TAGS:
             findings.append(
                 error(
                     Code.FILE_PARSE,

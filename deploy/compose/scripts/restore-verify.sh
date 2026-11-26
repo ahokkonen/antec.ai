@@ -33,13 +33,14 @@ trap cleanup EXIT
 # Изолированный одноразовый кластер: без сети. Те же правила аутентификации, что на стенде:
 # SCRAM для TCP, peer для сокета. Пароль суперпользователя случайный и нигде не хранится;
 # передаётся через окружение docker CLI, не через argv.
+image="$(postgres_image)"
 POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 export POSTGRES_PASSWORD
 docker run -d --name "$name" --network none \
   -e POSTGRES_PASSWORD \
   -e POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256 --auth-local=peer" \
   --security-opt no-new-privileges:true \
-  "$POSTGRES_IMAGE" >/dev/null
+  "$image" >/dev/null
 unset POSTGRES_PASSWORD
 rx() { docker exec -i -u postgres "$name" "$@"; }
 

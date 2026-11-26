@@ -55,6 +55,40 @@ jobs:
           uv run --project tools/instance --locked antec-instance init "$dest" --id ci --name "CI Oy"
           uv run --project tools/instance --locked antec-instance validate "$dest"
           deploy/compose/scripts/policies-check.sh "$dest"
+      # Образы ядра по digest (ADR-0014, п. 6): core-images.yaml с тестовыми digest вместо
+      # core-pin (подпись релиза проверяется тестами tools/instance с поддельным cosign).
+      - name: Инсталляция с образами ядра по digest
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/instance-ci"
+          version="$(cat VERSION)"
+          {
+            echo "schema_version: 1"
+            echo "core_version: \"$version\""
+            echo "commit: \"$GITHUB_SHA\""
+            echo "release_sha256: \"$(printf '0%.0s' $(seq 64))\""
+            echo "images:"
+            for pair in platform-api:a postgres:b keycloak:c; do
+              name="${pair%%:*}"; hex="$(printf "${pair##*:}%.0s" $(seq 64))"
+              echo "  $name: {repository: ghcr.io/ahokkonen/antec-$name, tag: \"$version\", digest: \"sha256:$hex\"}"
+            done
+          } > "$dest/core-images.yaml"
+          uv run --project tools/instance --locked antec-instance render "$dest" --out "$dest/.rendered"
+          uv run --project tools/pincheck --locked pincheck --policy policy/allowed-versions.yaml \
+            --require-digest --core-images "$dest/core-images.yaml" "$dest"
+          ANTEC_INSTANCE_DIR="$dest" docker compose --project-directory deploy/compose \
+            -f deploy/compose/compose.yaml -f "$dest/.rendered/compose.core-images.yaml" \
+            --profile bootstrap config --format json > "$RUNNER_TEMP/config.json"
+          python3 - "$RUNNER_TEMP/config.json" "$version" <<'PY'
+          import json, sys
+          services = json.load(open(sys.argv[1]))["services"]
+          for name in ("postgres", "keycloak", "platform-api", "platform-migrate", "platform-worker", "platform-subject"):
+              svc = services[name]
+              assert svc["image"].startswith("ghcr.io/ahokkonen/antec-"), (name, svc["image"])
+              assert f":{sys.argv[2]}@sha256:" in svc["image"], (name, svc["image"])
+              assert "build" not in svc and svc["pull_policy"] == "missing", (name, svc)
+          print("образы ядра по digest:", len(services), "сервисов")
+          PY
 
   mcp-demo:
     name: "instances/dev/plugins/mcp-demo: ruff, mypy, pytest, сборка образа"

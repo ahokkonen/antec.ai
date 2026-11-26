@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import TextIO
 
 from pincheck import __version__
-from pincheck.checks import CheckContext
+from pincheck.checks import CheckContext, CoreImage
 from pincheck.checks.compose import check_compose
 from pincheck.checks.dockerfile import check_dockerfile
 from pincheck.checks.uvlock import check_uvlock
+from pincheck.coreimages import CoreImagesError, load_core_images
 from pincheck.discover import FileKind, discover
 from pincheck.policy import load_policy
 from pincheck.report import Code, Finding, Severity, error, write_github, write_text
@@ -64,6 +65,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="digest: null в реестре для используемого образа считать ошибкой "
         "(prod, репозитории инсталляций)",
+    )
+    parser.add_argument(
+        "--core-images",
+        default=None,
+        metavar="PATH",
+        help="core-images.yaml инсталляции: образы ядра antec.ai разрешены только с этими "
+        "тегом и digest (ADR-0014)",
     )
     parser.add_argument(
         "--format",
@@ -128,9 +136,42 @@ def run(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
         )
         return EXIT_VIOLATIONS
 
-    ctx = CheckContext(loaded.policy, loaded.index, policy_display, args.require_digest)
+    core_images: dict[str, CoreImage] = {}
+    if args.core_images is not None:
+        try:
+            core_images = load_core_images(args.core_images, _read(Path(args.core_images)))
+        except (OSError, UnicodeDecodeError, CoreImagesError) as exc:
+            _write(
+                [
+                    error(
+                        Code.FILE_INPUT,
+                        args.core_images,
+                        None,
+                        f"core-images.yaml не прочитан: {exc}",
+                        "создайте его antec-instance core-pin (ADR-0014)",
+                    )
+                ],
+                args.format,
+                stream,
+            )
+            return EXIT_VIOLATIONS
+    ctx = CheckContext(
+        loaded.policy, loaded.index, policy_display, args.require_digest, core_images
+    )
     found = discover(list(args.paths), list(args.exclude))
     findings: list[Finding] = []
+    for repository, core in core_images.items():
+        hit = loaded.index.denied_match(core.digest)
+        if hit is not None:
+            findings.append(
+                error(
+                    Code.IMAGE_DENIED_DIGEST,
+                    core.source,
+                    None,
+                    f"digest образа ядра {repository} в denylist компонента {hit.component!r}",
+                    "не разворачивайте этот релиз ядра; действуйте по ADR-0004, п. 10",
+                )
+            )
     for missing in found.missing:
         findings.append(
             error(

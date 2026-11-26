@@ -20,6 +20,7 @@ revision: str = "0002"
 down_revision: str | None = "0001"
 branch_labels: str | None = None
 depends_on: str | None = None
+IRREVERSIBLE = False  # есть downgrade (ADR-0014, п. 3)
 
 _TS = sa.DateTime(timezone=True)
 _NOW = sa.text("now()")

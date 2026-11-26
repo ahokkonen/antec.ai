@@ -36,7 +36,8 @@ uv run --project tools/pincheck --locked pincheck --policy policy/allowed-versio
 Фикстуры тестов намеренно содержат нарушения, поэтому при проверке всего репозитория их
 нужно исключать. В репозитории инсталляции (ADR-0005) добавьте `--require-digest`.
 
-Опции: `--exclude GLOB` (можно повторять), `--require-digest`, `--format text|github|auto`
+Опции: `--exclude GLOB` (можно повторять), `--require-digest`, `--core-images PATH`
+(`core-images.yaml` инсталляции: образы ядра разрешены только с его тегом и digest, ADR-0014), `--format text|github|auto`
 (auto = аннотации GitHub внутри Actions), `--today YYYY-MM-DD` (дата для проверок карантина).
 
 Код выхода: `0` нет ошибок (предупреждения допустимы), `1` есть ошибки или реестр невалиден,
@@ -79,9 +80,13 @@ uv run --locked pytest
 | PIN020 | Ссылку на образ нельзя проверить (переменная, некорректный формат) |
 | PIN021 | Образ без тега |
 | PIN022 | Сервис с `build:`: image вне `localhost/antec/`, с digest, плавающий тег или пре-релиз, нет `pull_policy: build`, удалённый контекст или `additional_contexts`, переменная в контексте без значения по умолчанию (`${VAR:-путь}` проверяется по умолчанию), Dockerfile сборки не читается |
+| PIN023 | Образ ядра antec.ai (`--core-images`) с тегом или digest не из `core-images.yaml` инсталляции (ADR-0014) |
 | PIN030 | Python-пакет запрещён в любой версии |
 | PIN031 | Версия Python-пакета в denylist |
 | PIN032 | Версия Python-пакета ниже минимальной |
 | PIN033 | Некорректный `uv.lock` |
 | PIN040 | Некорректный compose-файл или `FROM` |
 | PIN041 | Путь не существует, неизвестный тип файла или реестр не читается |
+
+Теги слияния Compose `!reset` и `!override` поддерживаются: `build: !reset null` в override
+снимает локальную сборку (образы ядра по digest в инсталляции, ADR-0014).

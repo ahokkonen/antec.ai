@@ -18,8 +18,16 @@
   метка ИИ (ADR-0015), стенд docker compose (ADR-0017, 0018), pincheck (ADR-0016).
 - Релизный процесс ядра (ADR-0014): единая версия в `VERSION`, `tools/release`, CHANGELOG,
   публикация подписанных образов в GHCR с SBOM и provenance, `release.json`.
+- Обновление инсталляции (ADR-0014): `antec-instance core-pin` проверяет подпись
+  `release.json` и пишет `core-images.yaml`; `render` подменяет локальную сборку образов ядра
+  образами по digest; `pincheck --core-images`, поддержка `!reset` и `!override` Compose.
+- `antec-platform migrate --plan` и флаг `IRREVERSIBLE` у миграций; `up.sh` делает бэкап перед
+  миграциями существующей БД (`--no-backup` для стенда разработки).
+- CI: проверка обновления БД с предыдущего релиза (job `upgrade`).
 
 ### Изменено
 
+- `up.sh` и `antec-platform migrate` отказываются работать с БД на ревизии, неизвестной ядру
+  (понижение версии ядра); откат только восстановлением из бэкапа.
 - `schema_version` 1-4 манифеста инсталляции устарели: `validate` предупреждает, удаление не
   раньше 0.3.0 (ADR-0014, п. 3).
