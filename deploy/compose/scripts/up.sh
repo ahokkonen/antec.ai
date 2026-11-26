@@ -189,7 +189,10 @@ compose build platform-api
 # План до миграций (ADR-0014, п. 7): понижение версии ядра останавливает запуск, ожидающие
 # миграции существующей БД выполняются только после бэкапа.
 plan_rc=0
-plan_json="$(compose --profile bootstrap run --rm -T platform-migrate migrate --plan)" || plan_rc=$?
+plan_out="$(compose --profile bootstrap run --rm -T platform-migrate migrate --plan)" || plan_rc=$?
+# compose run пишет в stdout и лог сборки (pull_policy: build): план = последняя строка JSON.
+plan_json="$(grep '^{' <<<"$plan_out" | tail -n 1 || true)"
+[[ -n "$plan_json" ]] || die "нет плана миграций БД platform (код $plan_rc): $plan_out"
 case "$plan_rc" in
   0) log "  миграций нет" ;;
   3)
