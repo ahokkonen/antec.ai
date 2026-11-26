@@ -73,9 +73,9 @@ def test_rewrite_changes_only_versions(core_copy: Path) -> None:
     assert set(changed) == {"VERSION", *before}
     for rel, text in before.items():
         after = (core_copy / rel).read_text()
-        # Длина та же: 0.1.0 -> 0.2.0, значит заменены только версии.
-        assert len(after) == len(text)
-        assert after.replace("0.2.0", "0.1.0") == text or "0.2.0" not in text
+        # Заменены только версии: обратная замена даёт исходный текст.
+        assert "0.2.0" not in text
+        assert after.replace("0.2.0", "0.1.0") == text
 
 
 def test_rewrite_keeps_other_packages_in_lock(core_copy: Path) -> None:
