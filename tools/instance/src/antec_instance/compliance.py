@@ -156,7 +156,7 @@ def record(manifest: Manifest, providers: dict[str, Any]) -> str:
 - тексты сообщений и чаты Open WebUI: {r.content_days} дней;
 - метаданные вызовов и запусков: {r.metadata_days} дней;
 - аудит, расходы LiteLLM, события Keycloak: {r.audit_days} дней;
-- бэкапы: 35 дней.
+- бэкапы: 35 дней, старые удаляются вручную (автоматического удаления нет).
 
 ## Меры защиты (ст. 30(1)(g), ст. 32)
 

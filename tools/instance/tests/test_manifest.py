@@ -241,7 +241,7 @@ def test_compliance_v5() -> None:
         {
             **BASE,
             "schema_version": 5,
-            "compliance": {"controller": {"name": "Acme Oy", "contact": "dpo@acme.test"}},
+            "compliance": {"controller": {"name": "Acme Oy", "contact": "dpo@acme.fi"}},
             "models": [{**BASE["models"][0], "provider_terms": {"zdr": True, "region": "eu"}}],
         }
     )
@@ -249,6 +249,14 @@ def test_compliance_v5() -> None:
     assert m.compliance_warnings({"anthropic": {}}) == [
         "compliance.privacy_notice_url не задан: баннер без ссылки (ст. 13)"
     ]
+    stub = parse_manifest(
+        {
+            **BASE,
+            "schema_version": 5,
+            "compliance": {"controller": {"name": "A", "contact": "privacy@example.invalid"}},
+        }
+    )
+    assert any("заглушка" in w for w in stub.compliance_warnings({}))
     assert any("schema_version < 5" in w for w in parse_manifest(BASE).compliance_warnings({}))
 
 
@@ -266,6 +274,7 @@ def test_compliance_v5() -> None:
             "https",
         ),
         ({**BASE, "schema_version": 5, "compliance": {"ai_notice": {"FI": "x"}}}, "ai_notice"),
+        ({**BASE, "schema_version": 5, "compliance": {"ai_notice": {"fi": "x"}}}, "ai_notice"),
     ],
 )
 def test_compliance_rejected(data: dict[str, Any], needle: str) -> None:

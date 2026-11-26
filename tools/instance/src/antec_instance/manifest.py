@@ -264,7 +264,8 @@ class Retention(_Strict):
     audit_days: Annotated[int, Field(ge=180, le=730)] = 365
 
 
-_LOCALE = r"^[a-z]{2}(-[A-Z]{2})?$"
+# Код языка интерфейса Open WebUI: с регионом (fi-FI), иначе перевод не находится.
+_LOCALE = r"^[a-z]{2}-[A-Z]{2}$"
 NoticeText = Annotated[
     str, StringConstraints(min_length=1, max_length=500, pattern=r"^[^\r\n\x00]*$")
 ]
@@ -379,6 +380,18 @@ class Manifest(_Strict):
         c = self.compliance
         if c.controller is None:
             out.append("compliance.controller не задан: реестр обработки без контролёра")
+        placeholders = [
+            f"compliance.{name}"
+            for name, value in (
+                ("controller.contact", c.controller.contact if c.controller else None),
+                ("processor.contact", c.processor.contact if c.processor else None),
+                ("dpo_contact", c.dpo_contact),
+                ("privacy_notice_url", c.privacy_notice_url),
+            )
+            if value and re.search(r"example\.|\.invalid\b|\.test\b", value)
+        ]
+        if placeholders:
+            out.append(f"{', '.join(placeholders)}: адрес-заглушка из шаблона")
         if c.privacy_notice_url is None:
             out.append("compliance.privacy_notice_url не задан: баннер без ссылки (ст. 13)")
         for m in self.models:
