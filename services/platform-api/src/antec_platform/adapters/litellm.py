@@ -13,7 +13,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
+from opentelemetry.trace import SpanKind
 
+from antec_platform import telemetry
 from antec_platform.adapters.gateway import GatewayMeta, GatewayResponse, GatewayUnavailable
 
 _MAX_EVENT_BYTES = 1024 * 1024
@@ -67,6 +69,17 @@ class _Stream:
             yield buf + b"\n\n"
 
 
+def _span_args(payload: dict[str, Any]) -> tuple[str, SpanKind, dict[str, str | int | bool]]:
+    """Спан вызова шлюза по GenAI semconv: только модель и режим, без сообщений."""
+    model = str(payload.get("model", ""))
+    attrs: dict[str, str | int | bool] = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": model,
+        "antec.stream": bool(payload.get("stream")),
+    }
+    return f"chat {model}", SpanKind.CLIENT, attrs
+
+
 class LiteLLMGateway:
     def __init__(self, base_url: str, api_key: str, timeout: float) -> None:
         self._client = httpx.AsyncClient(
@@ -82,24 +95,29 @@ class LiteLLMGateway:
         await self._client.aclose()
 
     async def complete(self, payload: dict[str, Any]) -> GatewayResponse:
-        try:
-            resp = await self._client.post("chat/completions", json=payload)
-        except httpx.TimeoutException as exc:
-            raise GatewayUnavailable("шлюз не ответил вовремя", timeout=True) from exc
-        except httpx.HTTPError as exc:
-            raise GatewayUnavailable(f"шлюз недоступен: {type(exc).__name__}") from exc
-        return GatewayResponse(meta=_meta(resp), body=_json_or_text(resp))
+        with telemetry.span(*_span_args(payload)) as span:
+            try:
+                resp = await self._client.post("chat/completions", json=payload)
+            except httpx.TimeoutException as exc:
+                raise GatewayUnavailable("шлюз не ответил вовремя", timeout=True) from exc
+            except httpx.HTTPError as exc:
+                raise GatewayUnavailable(f"шлюз недоступен: {type(exc).__name__}") from exc
+            span.set_attribute("http.response.status_code", resp.status_code)
+            return GatewayResponse(meta=_meta(resp), body=_json_or_text(resp))
 
     @asynccontextmanager
     async def stream(self, payload: dict[str, Any]) -> AsyncIterator[_Stream]:
         request = self._client.build_request("POST", "chat/completions", json=payload)
-        try:
-            resp = await self._client.send(request, stream=True)
-        except httpx.TimeoutException as exc:
-            raise GatewayUnavailable("шлюз не ответил вовремя", timeout=True) from exc
-        except httpx.HTTPError as exc:
-            raise GatewayUnavailable(f"шлюз недоступен: {type(exc).__name__}") from exc
-        try:
-            yield _Stream(resp)
-        finally:
-            await resp.aclose()
+        # Поток закрывается в другой задаче: спан не становится текущим.
+        with telemetry.span(*_span_args(payload), current=False) as span:
+            try:
+                resp = await self._client.send(request, stream=True)
+            except httpx.TimeoutException as exc:
+                raise GatewayUnavailable("шлюз не ответил вовремя", timeout=True) from exc
+            except httpx.HTTPError as exc:
+                raise GatewayUnavailable(f"шлюз недоступен: {type(exc).__name__}") from exc
+            span.set_attribute("http.response.status_code", resp.status_code)
+            try:
+                yield _Stream(resp)
+            finally:
+                await resp.aclose()

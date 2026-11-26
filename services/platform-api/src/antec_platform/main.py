@@ -5,11 +5,12 @@ from __future__ import annotations
 import httpx
 from fastapi import FastAPI
 
+from antec_platform.adapters import otel
 from antec_platform.adapters.authzen import AuthZenPolicyClient
 from antec_platform.adapters.keycloak import KeycloakTokenExchange
 from antec_platform.adapters.litellm import LiteLLMGateway
 from antec_platform.adapters.mcp import HttpMcpClient
-from antec_platform.adapters.pydantic_ai import PydanticAIRuntime
+from antec_platform.adapters.pydantic_ai import PydanticAIRuntime, instrument_agents
 from antec_platform.agents import AgentConfigError, AgentRuntime, load_agents
 from antec_platform.app import Deps, create_app
 from antec_platform.auth import JwksCache, TokenVerifier
@@ -33,6 +34,11 @@ def build_app(settings: Settings) -> FastAPI:
         )
     engine = create_engine(settings)
     http = httpx.AsyncClient(trust_env=False, follow_redirects=False)
+    # Телеметрия до создания агентов и клиентов (ADR-0013); без адреса Collector выключена.
+    telemetry: otel.Telemetry | None = None
+    if settings.otel_endpoint:
+        telemetry = otel.setup(settings.otel_endpoint, "antec-platform-api")
+        instrument_agents()
 
     async def factory() -> Deps:
         jwks = JwksCache(settings.oidc_jwks_url, http, ttl=settings.jwks_cache_seconds)
@@ -96,5 +102,7 @@ def build_app(settings: Settings) -> FastAPI:
         await deps.policy.aclose()
         await http.aclose()
         await engine.dispose()
+        if telemetry is not None:
+            telemetry.shutdown()
 
     return create_app(factory, shutdown)

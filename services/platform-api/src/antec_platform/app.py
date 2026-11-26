@@ -19,9 +19,11 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from opentelemetry.trace import SpanKind
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from antec_platform import telemetry
 from antec_platform.adapters.gateway import ChatGateway, GatewayMeta, GatewayUnavailable
 from antec_platform.agents import (
     AGENT_KIND,
@@ -359,6 +361,7 @@ def _stored_error(err: ApiError) -> str:
 
 
 async def _finish(deps: Deps, call: CallStart, result: CallResult) -> None:
+    telemetry.record_call(call, result)
     try:
         await deps.store.finish_call(call, result)
     except Exception:
@@ -1099,25 +1102,55 @@ class AccessLogMiddleware:
                 message["headers"] = headers
             await send(message)
 
-        try:
-            await self.app(scope, receive, send_wrapper)
-        finally:
-            state = scope.get("state", {})
-            # Проверки здоровья (каждые 10 с) в журнал только при отказе или на уровне DEBUG.
-            quiet = scope.get("path") in _PROBES and status == 200
-            log.log(
-                logging.DEBUG if quiet else logging.INFO,
-                "%s %s %s",
-                scope.get("method"),
-                scope.get("path"),
-                status,
-                extra={
-                    "request_id": str(request_id),
-                    "user_id": str(state["user_id"]) if state.get("user_id") else None,
-                    "duration_ms": round((time.monotonic() - started) * 1000),
-                    "http_status": status,
-                },
-            )
+        method = str(scope.get("method", ""))
+        if scope.get("path") in _PROBES:
+            # Проверки здоровья (каждые 10 с) без спанов и метрик: только журнал при отказе.
+            try:
+                await self.app(scope, receive, send_wrapper)
+            finally:
+                _access_log(scope, request_id, started, status)
+            return
+        with telemetry.span(
+            method,
+            SpanKind.SERVER,
+            {**telemetry.request_attributes(request_id), "http.request.method": method},
+        ) as span:
+            try:
+                await self.app(scope, receive, send_wrapper)
+            finally:
+                # Шаблон маршрута, а не путь: в пути бывают id (ADR-0012, п. 6).
+                route = getattr(scope.get("route"), "path", None) or "unmatched"
+                span.update_name(f"{method} {route}")
+                span.set_attribute("http.route", route)
+                span.set_attribute("http.response.status_code", status)
+                telemetry.http_duration.record(
+                    time.monotonic() - started,
+                    {
+                        "http.request.method": method,
+                        "http.route": route,
+                        "http.response.status_code": status,
+                    },
+                )
+                _access_log(scope, request_id, started, status)
+
+
+def _access_log(scope: Scope, request_id: uuid.UUID, started: float, status: int) -> None:
+    state = scope.get("state", {})
+    # Проверки здоровья в журнал только при отказе или на уровне DEBUG.
+    quiet = scope.get("path") in _PROBES and status == 200
+    log.log(
+        logging.DEBUG if quiet else logging.INFO,
+        "%s %s %s",
+        scope.get("method"),
+        scope.get("path"),
+        status,
+        extra={
+            "request_id": str(request_id),
+            "user_id": str(state["user_id"]) if state.get("user_id") else None,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "http_status": status,
+        },
+    )
 
 
 def create_app(
@@ -1138,6 +1171,15 @@ def create_app(
     app = FastAPI(
         title="antec.ai Platform API",
         lifespan=lifespan,
+        # Встроенная телеметрия FastAPI выключена: спаны и метрики запросов пишет
+        # AccessLogMiddleware по шаблону маршрута, без пути и текстов исключений (ADR-0013).
+        telemetry={
+            "tracing": False,
+            "metrics": False,
+            "logs": False,
+            "operation_spans": False,
+            "auto_configure": False,
+        },
         docs_url=None,
         redoc_url=None,
         openapi_url=None,

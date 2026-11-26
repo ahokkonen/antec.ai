@@ -24,8 +24,10 @@ from mcp_types import (
     ListToolsResult,
     TextContent,
 )
+from opentelemetry.trace import SpanKind
 from pydantic import ValidationError
 
+from antec_platform import telemetry
 from antec_platform.tools import McpServerSpec, RemoteTool, ToolCallResult, ToolError
 
 PROTOCOL_VERSION = "2026-07-28"
@@ -56,6 +58,32 @@ class HttpMcpClient:
         method: str,
         params: dict[str, Any],
         name: str | None = None,
+    ) -> dict[str, Any]:
+        attrs: dict[str, str | int | bool] = {
+            "mcp.method.name": method,
+            "antec.mcp.server": server.name,
+        }
+        if name is not None:
+            attrs["gen_ai.tool.name"] = name
+        outcome = "error"
+        try:
+            with telemetry.span(f"{method} {server.name}", SpanKind.CLIENT, attrs):
+                result = await self._rpc_call(server, token, method, params, name)
+            outcome = "ok"
+            return result
+        except ToolError as exc:
+            outcome = exc.code or "error"
+            raise
+        finally:
+            telemetry.mcp_requests.add(1, {**attrs, "antec.status": outcome})
+
+    async def _rpc_call(
+        self,
+        server: McpServerSpec,
+        token: str,
+        method: str,
+        params: dict[str, Any],
+        name: str | None,
     ) -> dict[str, Any]:
         if server.protocol_version != PROTOCOL_VERSION:
             raise ToolError(f"ревизия MCP {server.protocol_version} не поддерживается")
