@@ -40,6 +40,9 @@ OpenAI-совместимый фасад antec.ai: проверка токена
 `PLATFORM_APPROVAL_TTL_SECONDS`; решение пишется событием `tool.approval`, запуск продолжается
 от сохранённого состояния (`agent_runs.state`, удаляется вместе с решением).
 
+Метка ИИ ([ADR-0015](../../docs/adr/0015-compliance-ai-act-gdpr.md), AI Act, ст. 50(2)): успешный ответ модели или
+агента получает заголовки `x-antec-ai-generated: true` и `x-antec-model`.
+
 Классы данных ([ADR-0011](../../docs/adr/0011-data-classes-and-model-routing.md)): допуски моделей
 `PLATFORM_MODELS_FILE`, класс ввода `PLATFORM_DEFAULT_DATA_CLASS`; класс разговора растёт с
 каждым начатым вызовом инструмента выше класса ввода. Модель, агент или инструмент выше

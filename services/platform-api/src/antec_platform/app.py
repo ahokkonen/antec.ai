@@ -65,6 +65,9 @@ CHAT_ID_HEADER = "x-openwebui-chat-id"
 _EXTERNAL_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 _ERROR_MESSAGE_LIMIT = 500
 _ERROR_CODE_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+# Машиночитаемая метка сгенерированного ИИ ответа (AI Act, ст. 50(2); ADR-0015, п. 4).
+AI_GENERATED_HEADER = "x-antec-ai-generated"
+AI_MODEL_HEADER = "x-antec-model"
 _PROBES = frozenset({"/healthz", "/readyz"})
 # Подтверждение в чате (ADR-0010, п. 7): код без похожих символов (0/O, 1/I).
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -131,6 +134,11 @@ class Deps:
 def _deps(request: Request) -> Deps:
     deps: Deps = request.app.state.deps
     return deps
+
+
+def _mark_generated(request: Request, model: str) -> None:
+    """Ответ создаёт модель: успешный ответ получит метку (AccessLogMiddleware)."""
+    request.state.ai_model = model
 
 
 def _request_id(request: Request) -> uuid.UUID:
@@ -382,6 +390,7 @@ async def chat_completions(request: Request) -> Response:
         data_class=data_class,
     )
     await deps.store.start_call(call)
+    _mark_generated(request, chat.model)
     payload = chat.upstream_payload(str(user.id))
     if chat.stream:
         return await _stream(deps, call, chat, payload)
@@ -882,6 +891,7 @@ async def _run_agent(
         data_class=data_class,
     )
     await deps.store.start_agent_run(run)
+    _mark_generated(request, agent.name)
     handle = deps.runtime.start(
         agent, str(user.id), history, prompt, tools, resume, _RunSteps(deps.store, run)
     )
@@ -1078,10 +1088,15 @@ class AccessLogMiddleware:
             if message["type"] == "http.response.start":
                 status = message["status"]
                 message.setdefault("headers", [])
-                message["headers"] = [
-                    *message["headers"],
-                    (b"x-request-id", str(request_id).encode()),
-                ]
+                headers = [*message["headers"], (b"x-request-id", str(request_id).encode())]
+                # Ответы без модели (решение по подтверждению, ошибки) не помечаются.
+                model = scope.get("state", {}).get("ai_model")
+                if model and status == 200:
+                    headers += [
+                        (AI_GENERATED_HEADER.encode(), b"true"),
+                        (AI_MODEL_HEADER.encode(), str(model).encode()),
+                    ]
+                message["headers"] = headers
             await send(message)
 
         try:

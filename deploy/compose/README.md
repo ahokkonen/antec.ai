@@ -180,6 +180,9 @@ Open WebUI с Keycloak: создаёт `breakglass` в пустом Open WebUI (
 созданные по `sub`, на `antec_uid`. Локальным пользователям Keycloak `antec_uid` = логин
 (заполняется `up.sh`).
 
+На экране нового чата баннер «вы общаетесь с системой ИИ» (en, fi, ru), при копировании ответа
+дописывается «AI-generated (antec.ai)»: `open-webui.env` рендера манифеста (ADR-0015).
+
 Единственное подключение Open WebUI: фасад Platform API с access token пользователя из Keycloak
 (`auth_type: system_oauth`, ADR-0006); ключа LiteLLM у Open WebUI нет, прежний ключ `open-webui`
 `up.sh` удаляет. Platform API ходит в LiteLLM ключом `platform-api` и передаёт `user` = id

@@ -23,6 +23,14 @@ def test_render_dev(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
         main(["--core", str(core_dir), "render", str(dev_instance), "--out", str(out)]) == EXIT_OK
     )
     models = yaml.safe_load((out / "litellm" / "models.yaml").read_text())
+    env = dict(
+        line.split("=", 1)
+        for line in (out / "open-webui.env").read_text().splitlines()
+        if not line.startswith("#")
+    )
+    (banner,) = json.loads(env["WEBUI_BANNERS"])
+    assert banner["dismissible"] is False
+    assert set(banner["i18n"]) == {"en-US", "fi-FI", "ru-RU"}
     assert list(models) == ["model_list"]
     assert [m["model_name"] for m in models["model_list"]] == [
         "chat-default",

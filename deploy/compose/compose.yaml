@@ -379,6 +379,10 @@ services:
     working_dir: /app/backend
     entrypoint: ["/bin/sh", "/antec/env-from-files.sh"]
     command: ["bash", "start.sh"]
+    # Уведомление об ИИ и метка при копировании из манифеста (AI Act, ст. 50; ADR-0015).
+    env_file:
+      - path: ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered/open-webui.env
+        required: true
     environment:
       HOME: /tmp
       # Хэш обёртки common/env-from-files.sh (scripts/lib.sh): изменение пересоздаёт контейнер.
