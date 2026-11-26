@@ -28,8 +28,12 @@ _PRERELEASE_TOKEN_RE = re.compile(
 _REMOTE_CONTEXT_RE = re.compile(r"^(?:[a-z][a-z0-9+.-]*://|git@|github\.com/)", re.IGNORECASE)
 
 
+# `!override` из Compose spec не меняет тип строки (ADR-0014).
+_STR_TAGS = frozenset({"tag:yaml.org,2002:str", "!override"})
+
+
 def _scalar(node: Node | None) -> str | None:
-    if isinstance(node, ScalarNode) and node.tag == "tag:yaml.org,2002:str":
+    if isinstance(node, ScalarNode) and node.tag in _STR_TAGS:
         return str(node.value)
     return None
 
@@ -257,7 +261,7 @@ def check_compose(
             continue
         value = image[1]
         line = value.start_mark.line + 1
-        if not isinstance(value, ScalarNode) or value.tag != "tag:yaml.org,2002:str":
+        if not isinstance(value, ScalarNode) or value.tag not in _STR_TAGS:
             findings.append(
                 error(
                     Code.FILE_PARSE,

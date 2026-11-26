@@ -201,6 +201,27 @@ json_field() {
 
 DATABASES=(keycloak litellm openwebui platform dbos)
 BACKUP_ROOT="${ANTEC_BACKUP_DIR:-$HOME/Library/Application Support/antec/backups}"
+# Отпечаток состава стенда (ADR-0014, п. 7): версия ядра, образы всех сервисов, audit.sql.
+deploy_fingerprint() {
+  { cat "$COMPOSE_DIR/../../VERSION"
+    compose --profile bootstrap config --images | LC_ALL=C sort
+    shasum -a 256 < "$COMPOSE_DIR/postgres/audit.sql"
+  } | shasum -a 256 | cut -d' ' -f1
+}
+
+save_deploy_state() { # отпечаток
+  pg_exec psql -X -q -v ON_ERROR_STOP=1 -d platform -v fp="$1" >/dev/null <<'SQL'
+CREATE SCHEMA IF NOT EXISTS antec_ops AUTHORIZATION postgres;
+CREATE TABLE IF NOT EXISTS antec_ops.deploy_state (
+  id          int PRIMARY KEY CHECK (id = 1),
+  fingerprint text NOT NULL,
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO antec_ops.deploy_state (id, fingerprint) VALUES (1, :'fp')
+  ON CONFLICT (id) DO UPDATE SET fingerprint = excluded.fingerprint, updated_at = now();
+SQL
+}
+
 # Образ postgres стенда: локальная сборка или образ ядра по digest (ADR-0014, п. 6).
 postgres_image() {
   compose config --format json \

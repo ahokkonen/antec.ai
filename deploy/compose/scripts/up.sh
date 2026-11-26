@@ -162,6 +162,22 @@ fi
 ensure_platform_role platform_app 30
 ensure_platform_role platform_worker 5 openwebui
 ensure_platform_role platform_subject 5 openwebui
+# Изменился состав стенда (версия ядра, образы, audit.sql): Keycloak, LiteLLM и Open WebUI
+# мигрируют свои БД при запуске, поэтому бэкап до них (ADR-0014, п. 7). Отпечаток прошлого
+# успешного запуска лежит в БД platform и восстанавливается вместе с ней.
+deploy_state="$(deploy_fingerprint)"
+deployed="$(pg_exec psql -X -At -d platform -c 'select fingerprint from antec_ops.deploy_state' 2>/dev/null || true)"
+existing="$(pg_exec psql -X -At -d platform -c "select to_regclass('public.alembic_version') is not null")"
+backed_up=""
+if [[ "$existing" == t && "$deployed" != "$deploy_state" ]]; then
+  if [[ -n "$no_backup" ]]; then
+    log "состав стенда изменился: --no-backup, без бэкапа (только стенд разработки)"
+  else
+    log "состав стенда изменился (версия ядра, образы, audit.sql): бэкап до запуска сервисов"
+    "$COMPOSE_DIR/scripts/backup.sh"
+    backed_up=1
+  fi
+fi
 log "сборка и запуск Keycloak (первый запуск около минуты)"
 start_service keycloak --build
 
@@ -205,6 +221,8 @@ case "$plan_rc" in
       log "  новая БД: бэкап не нужен"
     elif [[ -n "$no_backup" ]]; then
       log "  --no-backup: миграции без бэкапа (только стенд разработки)"
+    elif [[ -n "$backed_up" ]]; then
+      log "  бэкап уже сделан в этом запуске"
     else
       log "бэкап перед миграциями"
       "$COMPOSE_DIR/scripts/backup.sh"
@@ -235,6 +253,7 @@ log "сверка аккаунтов Open WebUI с Keycloak"
 sync_open_webui_identities
 audit_checkpoint
 unset BAO_TOKEN
+save_deploy_state "$deploy_state"
 log "стенд запущен: $(compose ps --format '{{.Service}}={{.State}}' | tr '\n' ' ')"
 log "Keycloak: http://localhost:8080/realms/antec/account (администрирование: http://localhost:8080/admin)"
 log "Open WebUI: http://localhost:3000 (вход через Keycloak)"

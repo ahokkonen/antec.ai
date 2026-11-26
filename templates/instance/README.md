@@ -43,6 +43,8 @@ ANTEC_INSTANCE_DIR="$PWD" core/deploy/compose/scripts/up.sh
 Образы ядра берутся из GHCR по digest из подписанного `release.json` релиза
 `core.version` (ADR-0014). Нужен cosign версии из реестра ядра (`policy/allowed-versions.yaml`,
 `components.cosign`). Без `core-images.yaml` образы ядра собираются локально из `core/`.
+Пакеты `ghcr.io/ahokkonen/antec-*` публичные; если пакет закрыт, перед `up.sh` нужен
+`docker login ghcr.io` с токеном `read:packages`, иначе `up.sh` остановится на загрузке образа.
 
 ```bash
 uv run --project core/tools/instance --locked antec-instance core-pin .

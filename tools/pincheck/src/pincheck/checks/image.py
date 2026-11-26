@@ -100,6 +100,8 @@ def check_image(raw: str, path: str, line: int | None, ctx: CheckContext) -> lis
         return out
 
     core = ctx.core_images.get(ref.repository)
+    if core is not None and ref.digest is None:
+        return out  # PIN010 уже выдан
     if core is not None:
         # Образ ядра: тег и digest только из подписанного release.json (ADR-0014, п. 6).
         if ref.tag != core.tag or ref.digest != core.digest:

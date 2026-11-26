@@ -62,7 +62,7 @@ def test_core_image_other_digest_or_tag(pincheck: Runner, tmp_path: Path) -> Non
 def test_core_image_without_digest(pincheck: Runner, tmp_path: Path) -> None:
     rendered = _override(tmp_path, f"{REPO}:0.1.0")
     result = pincheck(rendered, extra=("--core-images", str(_core_images(tmp_path))))
-    assert "PIN010" in result.errors, result.output
+    assert result.errors == ["PIN010"], result.output
 
 
 def test_denied_digest_in_core_images(pincheck: Runner, tmp_path: Path) -> None:
@@ -83,4 +83,12 @@ def test_bad_core_images_file(pincheck: Runner, tmp_path: Path) -> None:
 def test_reset_build_without_image_is_ignored(pincheck: Runner, tmp_path: Path) -> None:
     (tmp_path / "compose.yaml").write_text("services:\n  x:\n    build: !reset null\n")
     result = pincheck(tmp_path)
+    assert result.exit_code == 0, result.output
+
+
+def test_override_tag_on_image(pincheck: Runner, tmp_path: Path) -> None:
+    (tmp_path / "compose.yaml").write_text(
+        f"services:\n  postgres:\n    image: !override {REPO}:0.1.0@{DIGEST}\n"
+    )
+    result = pincheck(tmp_path, extra=("--core-images", str(_core_images(tmp_path))))
     assert result.exit_code == 0, result.output

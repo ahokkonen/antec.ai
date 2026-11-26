@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -203,7 +204,16 @@ def pin(
         "# Не редактировать: обновление ядра = новый core.version и повторный core-pin.\n"
     )
     body = yaml.safe_dump(pinned.model_dump(mode="json"), sort_keys=False, allow_unicode=True)
-    path.write_text(header + body, encoding="utf-8")
+    # Атомарно: прерванный core-pin не оставляет обрезанный файл.
+    fd, tmp = tempfile.mkstemp(prefix=f".{CORE_IMAGES_FILE}.", dir=instance_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(header + body)
+        Path(tmp).chmod(0o644)
+        Path(tmp).replace(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     return path
 
 
