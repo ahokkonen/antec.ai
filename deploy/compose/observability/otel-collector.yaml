@@ -1,0 +1,57 @@
+# OTel Collector стенда (ADR-0013): OTLP/HTTP от Platform API -> VictoriaMetrics, VictoriaLogs,
+# VictoriaTraces. Только сеть telemetry (приём) и observability (бэкенды), обе internal.
+# Содержимое и персональные данные не хранятся (ADR-0012, п. 6): источник их не шлёт
+# (include_content=False), процессор privacy удаляет их, даже если пришли.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        max_request_body_size: 4194304
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 160
+    spike_limit_mib: 40
+  attributes/privacy:
+    actions:
+      # Тексты GenAI (semconv: входные и выходные сообщения, системные инструкции, аргументы и
+      # результаты инструментов).
+      - pattern: ^gen_ai\.(input|output|system_instructions|prompt|completion|tool\.call\.(arguments|result))(\..*)?$
+        action: delete
+      # Пользователь и HTTP-заголовки (токены, cookies).
+      - pattern: ^(enduser|user)\..*
+        action: delete
+      - pattern: ^http\.(request|response)\.header\..*
+        action: delete
+      - pattern: ^url\.(query|full)$
+        action: delete
+  batch:
+    timeout: 5s
+
+exporters:
+  otlp_http/metrics:
+    metrics_endpoint: http://victoria-metrics:8428/opentelemetry/v1/metrics
+  otlp_http/logs:
+    logs_endpoint: http://victoria-logs:9428/insert/opentelemetry/v1/logs
+  otlp_http/traces:
+    traces_endpoint: http://victoria-traces:10428/insert/opentelemetry/v1/traces
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/privacy, batch]
+      exporters: [otlp_http/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/privacy, batch]
+      exporters: [otlp_http/metrics]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/privacy, batch]
+      exporters: [otlp_http/logs]

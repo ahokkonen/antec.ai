@@ -28,9 +28,9 @@
 | [0012](0012-audit-retention-pii.md) | Аудит отдельно от observability, сроки хранения, PII: запись до действия, worker, защита аудита | предложено | 2026-11-24 |
 | [0015](0015-compliance-ai-act-gdpr.md) | Комплаенс: Mtech провайдер по AI Act, уведомление и маркировка ИИ, DPIA и права субъекта | предложено | 2026-11-26 |
 | [0014](0014-release-process.md) | Релизный процесс ядра: единая версия, semver и контракт, подписанные образы в GHCR, `release.json`, N и N-1 | предложено | 2026-11-26 |
+| [0013](0013-observability.md) | LLM-observability: OTel, VictoriaMetrics/Logs/Traces, Grafana, без Langfuse; пре-релизы Python в pincheck | предложено | 2026-11-26 |
 
 ## Очередь
 
 | № | Тема |
 | --- | --- |
-| 0013 | LLM-observability в пилоте: Langfuse (ClickHouse) или OTel + Grafana |

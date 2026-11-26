@@ -8,6 +8,14 @@
 
 ## [Не выпущено]
 
+### Добавлено
+
+- Наблюдаемость (ADR-0013): профиль compose `observability` с OTel Collector, VictoriaMetrics,
+  VictoriaLogs и VictoriaTraces; фильтр приватности в Collector удаляет тексты GenAI,
+  пользователя и HTTP-заголовки.
+- pincheck PIN034: пре-релизы Python-пакетов в `uv.lock` запрещены, исключения в
+  `python_prerelease_allowed` реестра.
+
 ## [0.1.0] - 2026-11-26
 
 ### Добавлено

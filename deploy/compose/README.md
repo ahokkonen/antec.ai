@@ -238,6 +238,21 @@ bash -c 'source deploy/compose/scripts/lib.sh && export BAO_TOKEN="$(kc_get "$(k
 `http://localhost:8080/realms/antec/broker/entra/endpoint`, delegated `openid`, `profile`, `email`,
 client secret со сроком не больше 180 дней, «Assignment required» с назначенной группой.
 
+## Наблюдаемость
+
+Профиль `observability` (ADR-0013): `otel-collector` принимает OTLP/HTTP по сети `telemetry` и
+пишет в VictoriaMetrics, VictoriaLogs и VictoriaTraces (сеть `observability`). Обе сети internal,
+портов на хост нет. Срок хранения `ANTEC_TELEMETRY_RETENTION` (по умолчанию `30d`). Процессор
+`attributes/privacy` в [`observability/otel-collector.yaml`](observability/otel-collector.yaml)
+удаляет тексты GenAI, `enduser.*`, `user.*`, HTTP-заголовки и query URL (ADR-0012, п. 6).
+
+```bash
+docker compose -f deploy/compose/compose.yaml --profile observability up -d --wait victoria-metrics otel-collector
+```
+
+Трейсы ищутся через Jaeger API VictoriaTraces изнутри сети `observability`, например
+`http://victoria-traces:10428/select/jaeger/api/traces?service=<сервис>&lookback=1h`.
+
 ## Ограничения локального стенда
 
 - TLS OpenBao выключен, одна доля ключа распечатывания. На сервере так нельзя (ADR-0017).
