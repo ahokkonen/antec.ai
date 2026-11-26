@@ -168,6 +168,9 @@ def main() -> int:
     status, headers, body = call("POST", "/chat/completions", token, question)
     usage = json.loads(body).get("usage") if status == 200 else None
     checks[f"{model} без потока: 200 и usage"] = isinstance(usage, dict)
+    checks["ответ модели помечен как ИИ (AI Act, ст. 50(2))"] = (
+        headers.get("x-antec-ai-generated") == "true" and headers.get("x-antec-model") == model
+    )
     ids["completion"] = headers.get("x-request-id", "")
 
     if dev:
@@ -179,6 +182,7 @@ def main() -> int:
     status, headers, body = call("POST", "/chat/completions", token, {**question, "stream": True})
     events = [line for line in body.decode().splitlines() if line.startswith("data:")]
     checks[f"{model} поток: 200 и [DONE]"] = status == 200 and events[-1:] == ["data: [DONE]"]
+    checks[f"{model} поток: метка ИИ"] = headers.get("x-antec-ai-generated") == "true"
     ids["stream"] = headers.get("x-request-id", "")
 
     status, _, _ = call("POST", "/chat/completions", token, {**question, "model": "gpt-unknown"})
@@ -197,6 +201,7 @@ def main() -> int:
         answer = json.loads(body) if status == 200 else {}
         content = (answer.get("choices") or [{}])[0].get("message", {}).get("content")
         checks[f"{agents[0]} без потока: 200 и текст"] = isinstance(content, str) and bool(content)
+        checks[f"{agents[0]}: метка ИИ"] = headers.get("x-antec-model") == agents[0]
         ids["agent"] = headers.get("x-request-id", "")
         status, headers, body = call("POST", "/chat/completions", token, {**ask, "stream": True})
         events = [line for line in body.decode().splitlines() if line.startswith("data:")]

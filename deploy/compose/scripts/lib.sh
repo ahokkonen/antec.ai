@@ -69,7 +69,8 @@ compute_config_shas() {
     "$COMPOSE_DIR/common/env-from-files.sh" "$ANTEC_INSTANCE_RENDERED/litellm/models.yaml" \
     "$ANTEC_INSTANCE_RENDERED/litellm.env")"
   ANTEC_WORKER_CONFIG_SHA="$(config_sha "$ANTEC_INSTANCE_RENDERED/platform-worker.env")"
-  ANTEC_OPEN_WEBUI_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/common/env-from-files.sh")"
+  ANTEC_OPEN_WEBUI_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/common/env-from-files.sh" \
+    "$ANTEC_INSTANCE_RENDERED/open-webui.env")"
   # Конфигурация Cerbos и все файлы политик ядра и инсталляции в стабильном порядке.
   ANTEC_CERBOS_CONFIG_SHA="$( { config_sha "$COMPOSE_DIR/cerbos/config.yaml"
     tree_sha "$COMPOSE_DIR/../../policies/cerbos" "$ANTEC_INSTANCE_DIR/policies"; } \
@@ -107,6 +108,7 @@ die() { printf '\033[31m[antec] ошибка:\033[0m %s\n' "$*" >&2; exit 1; }
 if [[ ! -f "$ANTEC_INSTANCE_RENDERED/platform-api.env" \
   || ! -f "$ANTEC_INSTANCE_RENDERED/litellm/models.yaml" \
   || ! -f "$ANTEC_INSTANCE_RENDERED/litellm.env" \
+  || ! -f "$ANTEC_INSTANCE_RENDERED/open-webui.env" \
   || ! -f "$ANTEC_INSTANCE_RENDERED/platform-worker.env" \
   || ! -f "$ANTEC_INSTANCE_RENDERED/instance.json" \
   || ! -f "$ANTEC_INSTANCE_RENDERED/platform-api/agents.json" \

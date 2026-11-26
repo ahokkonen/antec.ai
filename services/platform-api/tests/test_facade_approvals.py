@@ -220,6 +220,8 @@ async def test_expired_by_worker(harness: Harness, make_token: TokenFactory) -> 
             "/v1/chat/completions", json=_ask(answer), headers=_auth(token)
         )
         assert "истёк" in resp.json()["choices"][0]["message"]["content"]
+        # Текст Platform API, а не модели: метки ИИ нет (ADR-0015).
+        assert "x-antec-ai-generated" not in resp.headers
     assert len(harness.runtime.started) == started
     decision = await harness.client.post(
         f"/v1/agent-runs/{run_id}/decision", json={"decision": "approve"}, headers=_auth(token)

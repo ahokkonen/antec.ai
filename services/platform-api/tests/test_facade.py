@@ -363,3 +363,29 @@ async def test_policy_down_fails_closed(harness: Harness, make_token: TokenFacto
     assert (chat.status_code, models.status_code, ready.status_code) == (503, 503, 503)
     assert chat.json()["error"]["code"] == "policy_unavailable"
     assert harness.gateway.payloads == []
+
+
+async def test_generated_responses_are_marked(harness: Harness, make_token: TokenFactory) -> None:
+    """AI Act, ст. 50(2): машиночитаемая метка у ответа модели, у ошибок её нет (ADR-0015)."""
+    harness.gateway.response = GatewayResponse(
+        meta=ok_meta(),
+        body={
+            "id": "chatcmpl-1",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "да"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        },
+    )
+    body = {"model": "chat-fast", "messages": [{"role": "user", "content": "x"}]}
+    resp = await harness.client.post("/v1/chat/completions", json=body, headers=_auth(make_token()))
+    assert resp.status_code == 200
+    assert resp.headers["x-antec-ai-generated"] == "true"
+    assert resp.headers["x-antec-model"] == "chat-fast"
+    missing = await harness.client.post(
+        "/v1/chat/completions",
+        json={**body, "model": "nope"},
+        headers=_auth(make_token()),
+    )
+    assert missing.status_code == 404
+    assert "x-antec-ai-generated" not in missing.headers
+    models = await harness.client.get("/v1/models", headers=_auth(make_token()))
+    assert "x-antec-ai-generated" not in models.headers
