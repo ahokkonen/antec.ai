@@ -317,26 +317,77 @@ components:
   otel-collector:
     role: telemetry-pipeline
     license: Apache-2.0
-    allowed: []                    # зафиксировать в PoC
-    digest: null
+    image: docker.io/otel/opentelemetry-collector-contrib
+    note: "Сборка contrib (нужны процессоры attributes и redaction); OpAMP Supervisor не используется. Пользователь образа 10001 (ADR-0013)"
+    allowed: ["0.165.0"]           # от 2026-11-07 (core 1.71.0); 0.166.0 от 2026-11-24 в карантине
+    min_version: "0.165.0"         # core 1.71.0: GHSA-vf52-ppm4-c35w (zstd в confighttp/configgrpc), GHSA-cx3c-rmcx-ff35
+    # Индекс тега 0.165.0 (7 платформ).
+    digest: "sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea"
+    signature:
+      method: "cosign keyless: identity https://github.com/open-telemetry/opentelemetry-collector-releases/.github/workflows/base-release.yaml@refs/tags/v0.165.0, issuer https://token.actions.githubusercontent.com"
+      note: "Проверено 2026-11-26 cosign 3.1.4 по digest индекса; GHSA collector и contrib 2026 года закрыты в 0.165.0 или касаются неиспользуемых компонентов (OpAMP Supervisor, YANG receiver)"
+    sources:
+      - https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.165.0
+      - https://github.com/open-telemetry/opentelemetry-collector/security/advisories
 
   victoria-metrics:
     role: metrics
     license: Apache-2.0
-    allowed: []                    # зафиксировать в PoC
-    digest: null
+    image: docker.io/victoriametrics/victoria-metrics
+    note: "Single-node, приём OTLP-метрик от otel-collector; образ запускается от root: в compose cap_drop ALL и read_only (ADR-0013)"
+    allowed: ["1.156.0"]           # от 2026-11-09; 1.157.0 от 2026-11-23 в карантине
+    image_tag_prefix: "v"
+    min_version: "1.154.0"         # GHSA-rpfx-hrcp-f73x, GHSA-8g4f-32hw-vqf8 и др. (2026)
+    digest: "sha256:da8a90ac0912f16589be2b96a6441a2fca4bca415c83783d972d92e3b5b66970"
+    signature:
+      method: "cosign-подписи и BuildKit provenance нет"
+      note: "Проверено 2026-11-26: тот же digest индекса на docker.io и quay.io/victoriametrics; label org.opencontainers.image.version v1.156.0, сборка 2026-11-06; 11 GHSA 2026 года закрыты к 1.154.0"
+    sources:
+      - https://github.com/VictoriaMetrics/VictoriaMetrics/releases/tag/v1.156.0
+      - https://github.com/VictoriaMetrics/VictoriaMetrics/security/advisories
 
   victoria-logs:
     role: logs
     license: Apache-2.0
-    allowed: []                    # зафиксировать в PoC
-    digest: null
+    image: docker.io/victoriametrics/victoria-logs
+    note: "Приём OTLP-журналов от otel-collector; образ запускается от root: в compose cap_drop ALL и read_only (ADR-0013)"
+    allowed: ["1.54.0"]            # от 2026-11-13
+    image_tag_prefix: "v"
+    digest: "sha256:ee4e820cac3721f5f5d91641b950c22439593adc4224f9655e5333d5a84c1dfe"
+    signature:
+      method: "cosign-подписи и BuildKit provenance нет"
+      note: "Проверено 2026-11-26: тот же digest индекса на docker.io и quay.io/victoriametrics; label version v1.54.0, сборка 2026-11-13; опубликованных GHSA нет"
+    sources:
+      - https://github.com/VictoriaMetrics/VictoriaLogs/releases/tag/v1.54.0
+
+  victoria-traces:
+    role: traces
+    license: Apache-2.0
+    image: docker.io/victoriametrics/victoria-traces
+    note: "Приём OTLP-трейсов от otel-collector, Jaeger Query API для Grafana. Версия 0.x: проект моложе остального стека, альтернатива Jaeger v2 (ADR-0013). Образ от root: cap_drop ALL и read_only"
+    allowed: ["0.13.0"]            # от 2026-11-05
+    image_tag_prefix: "v"
+    digest: "sha256:3018df8f99429d7d3029167ab9f70848bf0a778c31c49dff16c86c7e34759fbd"
+    signature:
+      method: "cosign-подписи и BuildKit provenance нет"
+      note: "Проверено 2026-11-26: тот же digest индекса на docker.io и quay.io/victoriametrics; label version v0.13.0, сборка 2026-11-05; опубликованных GHSA нет"
+    sources:
+      - https://github.com/VictoriaMetrics/VictoriaTraces/releases/tag/v0.13.0
 
   grafana:
     role: dashboards
     license: "AGPL-3.0: только отдельный немодифицированный сервис (docs/security/licensing.md)"
-    allowed: []                    # зафиксировать в PoC
-    digest: null
+    image: docker.io/grafana/grafana
+    note: "OSS-образ на Alpine, пользователь 472; вход только через Keycloak, provisioning из deploy/compose/observability (ADR-0013). Патчи за 72 ч"
+    allowed: ["13.3.2"]            # от 2026-11-24: security-релиз (CVE-2026-107561, CVE-2026-88960), без карантина по ADR-0004, п. 5
+    min_version: "13.3.2"
+    digest: "sha256:81556409ba48b2b922e0adb69a2511337d8ba7578f11962eefa6149a2d815101"
+    signature:
+      method: "cosign-подписи и BuildKit provenance нет; образ публикуется только на Docker Hub"
+      note: "Проверено 2026-11-26: label org.opencontainers.image.source https://github.com/grafana/grafana, сборка 2026-11-19; в release notes v13.3.2 раздел Security (2 CVE); single-source: подтверждения digest вторым источником нет, принято в ADR-0013"
+    sources:
+      - https://github.com/grafana/grafana/releases/tag/v13.3.2
+      - https://grafana.com/security/security-advisories/
 
   reverse-proxy:
     role: ingress
@@ -357,3 +408,9 @@ python_forbidden:
 python_denylist:
   litellm: ["1.82.7", "1.82.8", "1.107.0"]
 python_min_versions: {}
+#   python_prerelease_allowed  пакеты, чья обычная нумерация выглядит пре-релизом по PEP 440:
+#                        пакет -> причина (PIN034, ADR-0013). Остальные пре-релизы запрещены.
+python_prerelease_allowed:
+  opentelemetry-semantic-conventions: "Нумерация 0.NNbN у нестабильных пакетов OTel Python; выпускается в паре со стабильным opentelemetry-sdk 1.x (ADR-0013)"
+  opentelemetry-exporter-otlp-common: "То же: зависимость opentelemetry-exporter-otlp-proto-http 1.x (ADR-0013)"
+  opentelemetry-exporter-http-transport: "То же: зависимость opentelemetry-exporter-otlp-proto-http 1.x (ADR-0013)"

@@ -1,4 +1,4 @@
-"""Проверка uv.lock: запрещённые пакеты, версии из denylist, минимальные версии."""
+"""Проверка uv.lock: запрещённые пакеты, версии из denylist, минимальные версии, пре-релизы."""
 
 from __future__ import annotations
 
@@ -64,6 +64,7 @@ def check_uvlock(path: str, text: str, ctx: CheckContext) -> list[Finding]:
     minimums = {
         canonical_py_name(k): PyVersion.parse(v) for k, v in pol.python_min_versions.items()
     }
+    prerelease_allowed = {canonical_py_name(n) for n in pol.python_prerelease_allowed}
     lines = _package_lines(text)
     seen_count: dict[str, int] = {}
     findings: list[Finding] = []
@@ -112,6 +113,18 @@ def check_uvlock(path: str, text: str, ctx: CheckContext) -> list[Finding]:
                     f"версия {label} в python_denylist (известная вредоносная или отозванная)",
                     f"смените версию и пересоберите lock: uv lock --upgrade-package {raw_name}; "
                     "если пакет устанавливался, действуйте по ADR-0004, п. 10",
+                )
+            )
+        if parsed.is_prerelease and name not in prerelease_allowed:
+            findings.append(
+                error(
+                    Code.PY_PRERELEASE,
+                    path,
+                    line,
+                    f"версия {label} является пре-релизом (PEP 440); пре-релизы запрещены "
+                    "(ADR-0016)",
+                    "закрепите стабильную версию или, если проект так нумерует стабильные "
+                    "выпуски, добавьте пакет в python_prerelease_allowed с причиной через PR",
                 )
             )
         minimum = minimums.get(name)

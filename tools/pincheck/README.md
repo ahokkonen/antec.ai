@@ -85,6 +85,7 @@ uv run --locked pytest
 | PIN031 | Версия Python-пакета в denylist |
 | PIN032 | Версия Python-пакета ниже минимальной |
 | PIN033 | Некорректный `uv.lock` |
+| PIN034 | Пре-релиз Python-пакета (a, b, rc, dev по PEP 440) в `uv.lock`; исключения только в `python_prerelease_allowed` с причиной (ADR-0013) |
 | PIN040 | Некорректный compose-файл или `FROM` |
 | PIN041 | Путь не существует, неизвестный тип файла или реестр не читается |
 
