@@ -1,0 +1,40 @@
+# Условия провайдеров моделей для реестра обработки и DPIA (ADR-0015). Факты на дату проверки,
+# не юридическое заключение. Провайдер определяется префиксом litellm.model в манифесте.
+# Обновлять PR со ссылками; при изменении условий провайдера пересмотреть DPIA инсталляций.
+providers:
+  anthropic:
+    entity: "Anthropic Ireland, Limited (ЕЭЗ); Anthropic PBC (США)"
+    country: "США (обработка), Ирландия (договор)"
+    transfer: "SCC (модули 2 и 3), DPA в Commercial Terms"
+    retention: "промпты и ответы не хранятся по умолчанию; Covered Models (Fable, Mythos) 30 дней; ZDR по запросу"
+    training: "нет"
+    eu_region: "не найдено"
+    dpa: https://www.anthropic.com/legal/data-processing-addendum
+    sources:
+      - https://platform.claude.com/docs/en/manage-claude/api-and-data-retention
+      - https://www.anthropic.com/legal/commercial-terms
+    checked: "2026-11-26"
+  openai:
+    entity: "OpenAI"
+    country: "США; ЕС при проекте с регионом EU"
+    transfer: "DPA (онлайн-форма); механизм передачи не подтверждён"
+    retention: "до 30 дней (контроль злоупотреблений); ZDR по одобрению OpenAI"
+    training: "нет (только по согласию)"
+    eu_region: "eu.api.openai.com, проект с регионом EU, по договорённости, +10% к цене"
+    dpa: https://openai.com/policies/data-processing-addendum/
+    sources:
+      - https://developers.openai.com/api/docs/guides/your-data
+      - https://developers.openai.com/api/docs/guides/data-residency
+    checked: "2026-11-26"
+  openrouter:
+    entity: "OpenRouter, Inc."
+    country: "США (Google Cloud, регионы США)"
+    transfer: "SCC (модуль 2) в DPA"
+    retention: "не хранит без включённого логирования; ZDR в запросе или аккаунте; модели провайдеров по их условиям"
+    training: "своё: нет; провайдеры моделей по своим условиям"
+    eu_region: "eu.openrouter.ai на тарифах Business и Enterprise"
+    dpa: https://openrouter.ai/data-processing-agreement
+    sources:
+      - https://openrouter.ai/docs/features/privacy-and-logging
+      - https://openrouter.ai/docs/features/zdr
+    checked: "2026-11-26"
