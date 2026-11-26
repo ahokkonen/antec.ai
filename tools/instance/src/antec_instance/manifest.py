@@ -40,6 +40,13 @@ MANIFEST_FILE = "instance.yaml"
 # (deploy/compose/openbao/render.sh). Другие имена LiteLLM не увидит.
 PROVIDER_KEY_ENV = frozenset({"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"})
 MCP_PROTOCOL_VERSIONS = ("2025-11-25", "2026-07-28")
+# Ревизии, которые понимает MCP-клиент ядра (ADR-0010, п. 6); публикуются в release.json.
+CORE_MCP_PROTOCOL_VERSIONS = ("2026-07-28",)
+# Схемы манифеста этой версии ядра и устаревшие из них (ADR-0014, п. 3): устаревшая схема
+# удаляется не раньше чем через 2 minor после объявления; v1-v4 устарели в 0.1.0.
+SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
+DEPRECATED_SCHEMA_VERSIONS = (1, 2, 3, 4)
+DEPRECATED_SCHEMA_REMOVAL = "0.3.0"
 
 # Те же ограничения, что в Platform API (antec_platform/settings.py).
 _MODEL = r"^[a-z0-9][a-z0-9._-]{0,63}$"
@@ -324,7 +331,7 @@ def _v3_fields(data: dict[str, Any]) -> list[str]:
 
 
 class Manifest(_Strict):
-    schema_version: Literal[1, 2, 3, 4, 5]
+    schema_version: Literal[1, 2, 3, 4, 5]  # = SCHEMA_VERSIONS
     instance: InstanceInfo
     core: CoreRef
     models: Annotated[list[Model], Field(min_length=1)]

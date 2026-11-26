@@ -87,7 +87,10 @@ def test_core_version_mismatch(
     core_dir: Path, dev_instance: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     manifest = dev_instance / "instance.yaml"
-    manifest.write_text(manifest.read_text().replace('version: "0.1.0"', 'version: "9.9.9"'))
+    current = (core_dir / "VERSION").read_text().strip()
+    text = manifest.read_text()
+    assert f'version: "{current}"' in text
+    manifest.write_text(text.replace(f'version: "{current}"', 'version: "9.9.9"'))
     assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_INVALID
     assert "9.9.9" in capsys.readouterr().err
 
@@ -199,3 +202,43 @@ def test_render_compliance(core_dir: Path, dev_instance: Path, tmp_path: Path) -
     assert fi.startswith("Tekoäly \\*vastaa\\* \\[x\\]\\(y\\) $HOME")
     assert fi.endswith("[Tietosuojaseloste](https://antec.invalid/privacy)")
     assert banner["i18n"]["en-US"]["content"].startswith("You are chatting")
+
+
+def test_core_info(core_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--core", str(core_dir), "core-info"]) == EXIT_OK
+    info = json.loads(capsys.readouterr().out)
+    assert info["core_version"] == (core_dir / "VERSION").read_text().strip()
+    assert info["manifest_schema_versions"] == {
+        "supported": [1, 2, 3, 4, 5],
+        "deprecated": [1, 2, 3, 4],
+    }
+    assert info["mcp_protocol_versions"] == ["2026-07-28"]
+
+
+def test_deprecated_schema_warns(
+    core_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inst = tmp_path / "old"
+    inst.mkdir()
+    (inst / "policies").mkdir()
+    version = (core_dir / "VERSION").read_text().strip()
+    (inst / "instance.yaml").write_text(
+        "schema_version: 1\n"
+        "instance: {id: old, name: Old}\n"
+        f'core: {{version: "{version}"}}\n'
+        "models:\n"
+        "  - name: chat-default\n"
+        "    description: d\n"
+        "    litellm: {model: anthropic/x, api_key: os.environ/ANTHROPIC_API_KEY}\n"
+    )
+    assert main(["--core", str(core_dir), "validate", str(inst)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "schema_version: 1 устарела" in err
+    assert "0.3.0" in err
+
+
+def test_current_schema_no_deprecation(
+    core_dir: Path, dev_instance: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_OK
+    assert "устарела" not in capsys.readouterr().err

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from importlib import metadata
 from typing import Any
 
 import httpx
@@ -28,7 +29,8 @@ from pydantic import ValidationError
 from antec_platform.tools import McpServerSpec, RemoteTool, ToolCallResult, ToolError
 
 PROTOCOL_VERSION = "2026-07-28"
-CLIENT_INFO = {"name": "antec-platform-api", "version": "0.1.0"}
+# Версия ядра из метаданных пакета (единый источник VERSION, ADR-0014).
+CLIENT_INFO = {"name": "antec-platform-api", "version": metadata.version("antec-platform")}
 _RESULT_LIMIT = 32 * 1024
 # Тело ответа MCP-сервера читается потоком с ограничением: больше = ошибка инструмента.
 MAX_RESPONSE_BYTES = 1024 * 1024
