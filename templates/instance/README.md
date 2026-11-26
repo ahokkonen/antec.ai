@@ -7,6 +7,7 @@
 | --- | --- |
 | `core/` | Ядро antec.ai, git submodule на тег релиза |
 | `instance.yaml` | Манифест: модели, MCP-серверы, настройки Platform API |
+| `core-images.yaml` | Образы ядра по digest из подписанного `release.json` (`antec-instance core-pin`, ADR-0014) |
 | `policies/` | Политики Cerbos в scope `__INSTANCE_ID__` и их тесты |
 | `plugins/` | Код плагинов только этой инсталляции |
 | `compose.override.yaml` | Сервисы плагинов поверх compose ядра |
@@ -37,7 +38,33 @@ core/deploy/compose/scripts/policies-check.sh .
 ANTEC_INSTANCE_DIR="$PWD" core/deploy/compose/scripts/up.sh
 ```
 
+## Закрепить образы ядра
+
+Образы ядра берутся из GHCR по digest из подписанного `release.json` релиза
+`core.version` (ADR-0014). Нужен cosign версии из реестра ядра (`policy/allowed-versions.yaml`,
+`components.cosign`). Без `core-images.yaml` образы ядра собираются локально из `core/`.
+
+```bash
+uv run --project core/tools/instance --locked antec-instance core-pin .
+```
+
+```bash
+uv run --project core/tools/pincheck --locked pincheck --policy core/policy/allowed-versions.yaml --require-digest --core-images core-images.yaml .
+```
+
 ## Обновить ядро
 
-Перевести `core/` на новый тег, прочитать changelog ядра, поправить `core.version` и манифест,
-прогнать проверки. Повторной генерации из шаблона нет.
+1. Прочитать разделы «Несовместимые изменения» и «Обновление» в `core/CHANGELOG.md` нового
+   релиза. Поддерживаются только две последние minor-версии ядра (ADR-0005, п. 4).
+2. Перевести `core/` на новый тег, поправить `core.version` и манифест:
+
+   ```bash
+   git -C core fetch --tags && git -C core checkout vX.Y.Z
+   ```
+
+3. `core-pin`, `validate` и pincheck (команды выше), коммит.
+4. `up.sh`: перед миграциями БД он сам делает бэкап и останавливается, если БД новее ядра
+   (понижение версии ядра не поддерживается, откат только восстановлением из бэкапа).
+5. После запуска: `core/deploy/compose/scripts/audit-verify.sh` и smoke-проверки.
+
+Повторной генерации из шаблона нет.
