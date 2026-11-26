@@ -110,7 +110,8 @@ def open_webui_env(manifest: Manifest) -> dict[str, str]:
 
 
 def _env_file(env: dict[str, str]) -> str:
-    return _HEADER + "".join(f"{k}={v}\n" for k, v in env.items())
+    # compose подставляет переменные в env_file: «$» в значении экранируется.
+    return _HEADER + "".join(f"{k}={v.replace('$', '$$')}\n" for k, v in env.items())
 
 
 def summary(manifest: Manifest) -> dict[str, Any]:
