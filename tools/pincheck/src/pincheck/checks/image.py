@@ -99,6 +99,23 @@ def check_image(raw: str, path: str, line: int | None, ctx: CheckContext) -> lis
         )
         return out
 
+    core = ctx.core_images.get(ref.repository)
+    if core is not None:
+        # Образ ядра: тег и digest только из подписанного release.json (ADR-0014, п. 6).
+        if ref.tag != core.tag or ref.digest != core.digest:
+            out.append(
+                error(
+                    Code.IMAGE_CORE_MISMATCH,
+                    path,
+                    line,
+                    f"образ ядра {ref.repository}:{ref.tag}@{ref.digest} не совпадает с "
+                    f"{core.source} ({core.tag}@{core.digest})",
+                    "образы ядра берутся только из core-images.yaml: antec-instance core-pin "
+                    "и render",
+                )
+            )
+        return out
+
     entry = ctx.index.by_repository.get(ref.repository)
     if entry is None:
         out.append(

@@ -13,7 +13,7 @@ from pincheck.checks.image import check_image
 from pincheck.imageref import ImageRefError, parse_image_ref
 from pincheck.report import Code, Finding, error
 from pincheck.versions import TagKind, classify_tag_version
-from pincheck.yamlload import YamlLoadError, effective_items, load_yaml
+from pincheck.yamlload import COMPOSE_RESET_TAG, YamlLoadError, effective_items, load_yaml
 
 # Образы, собираемые локально из build:, живут только в этом пространстве имён.
 # Их внешние зависимости проверяются через FROM в Dockerfile сборки.
@@ -245,6 +245,9 @@ def check_compose(
         if not isinstance(svc, MappingNode):
             continue
         items = effective_items(svc)
+        # build: !reset null снимает локальную сборку в override (образы ядра, ADR-0014).
+        if "build" in items and items["build"][1].tag == COMPOSE_RESET_TAG:
+            del items["build"]
         image = items.get("image")
         if image is None:
             if "build" in items:

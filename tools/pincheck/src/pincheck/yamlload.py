@@ -50,6 +50,28 @@ class _StrictLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
+def _construct_reset(loader: yaml.SafeLoader, node: Node) -> None:
+    """`!reset` из Compose spec: значение снимается при слиянии файлов."""
+    return
+
+
+def _construct_override(loader: yaml.SafeLoader, node: Node) -> Any:  # noqa: ANN401 - любой YAML
+    """`!override` из Compose spec: значение заменяет унаследованное целиком."""
+    if isinstance(node, MappingNode):
+        return loader.construct_mapping(node, deep=True)
+    if isinstance(node, SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    if isinstance(node, ScalarNode):
+        return loader.construct_scalar(node)
+    raise ConstructorError(None, None, "неизвестный узел для !override", node.start_mark)
+
+
+# Теги слияния Compose (https://docs.docker.com/reference/compose-file/merge/), ADR-0014.
+COMPOSE_RESET_TAG = "!reset"
+_StrictLoader.add_constructor(COMPOSE_RESET_TAG, _construct_reset)
+_StrictLoader.add_constructor("!override", _construct_override)
+
+
 def effective_items(node: MappingNode) -> dict[str, tuple[ScalarNode, Node]]:
     """Действующие пары словаря с учётом merge-ключей: явный ключ сильнее унаследованного.
 
