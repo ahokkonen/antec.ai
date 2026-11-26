@@ -1,5 +1,5 @@
 # Dev-инсталляция ядра (ADR-0008, п. 7): локальный стенд deploy/compose и CI.
-schema_version: 4
+schema_version: 5
 instance:
   id: dev
   name: "antec.ai dev"
@@ -12,11 +12,15 @@ models:
     litellm:
       model: anthropic/claude-opus-5-5
       api_key: os.environ/ANTHROPIC_API_KEY
+    # Условия договора стенда с провайдером (ADR-0015): ZDR не заключён.
+    provider_terms: {zdr: false, region: us}
   - name: chat-fast
     description: "Быстрая и дешёвая модель: Claude Haiku 5.5"
     litellm:
       model: anthropic/claude-haiku-5-5
       api_key: os.environ/ANTHROPIC_API_KEY
+    # Условия договора стенда с провайдером (ADR-0015): ZDR не заключён.
+    provider_terms: {zdr: false, region: us}
   # Модель инсталляции: политика ядра её не разрешает, разрешает политика scope dev
   # (policies/model.yaml). Проверяется scripts/platform-smoke.sh.
   - name: chat-lab
@@ -26,6 +30,8 @@ models:
     litellm:
       model: anthropic/claude-haiku-5-5
       api_key: os.environ/ANTHROPIC_API_KEY
+    # Условия договора стенда с провайдером (ADR-0015): ZDR не заключён.
+    provider_terms: {zdr: false, region: us}
 
 # Тестовый MCP-сервер dev-инсталляции (plugins/mcp-demo, ADR-0010, п. 6): read-only инструмент
 # и инструмент с подтверждением человеком.
@@ -72,6 +78,12 @@ retention:
   content_days: 90
   metadata_days: 365
   audit_days: 365
+
+# Комплаенс (ADR-0015): стенд разработки, реальных данных нет.
+compliance:
+  operator_role: controller
+  controller: {name: "antec.ai dev", contact: "dev@antec.invalid"}
+  privacy_notice_url: https://antec.invalid/privacy
 
 settings:
   # antec-smoke: только стенд (scripts/platform-smoke.sh).

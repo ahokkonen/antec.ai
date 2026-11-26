@@ -1,7 +1,9 @@
-"""Схема манифеста инсталляции `instance.yaml` (ADR-0008, п. 2), версии 1-3.
+"""Схема манифеста инсталляции `instance.yaml` (ADR-0008, п. 2), версии 1-5.
 
 Версия 2 добавляет раздел `agents` (ADR-0010, п. 3), версия 3 классы данных: `data`,
-`max_data_class` моделей и `data_class` инструментов (ADR-0011). Прежние версии валидны.
+`max_data_class` моделей и `data_class` инструментов (ADR-0011), версия 4 сроки хранения
+(ADR-0012), версия 5 комплаенс: `compliance` и `provider_terms` моделей (ADR-0015). Прежние
+версии валидны.
 
 Неизвестные поля = ошибка: опечатка в манифесте не должна молча менять поведение инсталляции.
 """
@@ -25,7 +27,7 @@ from pydantic import (
 
 from antec_instance.yamlload import YamlError, load_mapping
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 # Классы данных ядра по возрастанию (ADR-0011, п. 1).
 DATA_CLASSES = ("public", "internal", "confidential", "restricted")
 DataClass = Literal["public", "internal", "confidential", "restricted"]
@@ -124,12 +126,27 @@ def class_rank(value: str) -> int:
     return DATA_CLASSES.index(value)
 
 
+class ProviderTerms(_Strict):
+    """Условия договора инсталляции с провайдером модели (ADR-0015, п. 12)."""
+
+    # Провайдер не хранит промпты и ответы (zero data retention) по договору инсталляции.
+    zdr: bool = False
+    # Где обрабатываются данные этой модели по договору; unknown = не выяснено.
+    region: Literal["eu", "us", "unknown"] = "unknown"
+
+
 class Model(_Strict):
     name: ModelName
     description: Text = ""
     litellm: LiteLLMParams
     # Верхний допуск модели (ADR-0011, п. 2); в v1 облачным моделям разрешено всё.
     max_data_class: DataClass = "restricted"
+    provider_terms: ProviderTerms | None = None
+
+    @property
+    def provider(self) -> str:
+        """Провайдер = префикс litellm.model (anthropic/..., openai/..., openrouter/...)."""
+        return self.litellm.model.split("/", 1)[0]
 
     @field_validator("name")
     @classmethod
@@ -247,6 +264,51 @@ class Retention(_Strict):
     audit_days: Annotated[int, Field(ge=180, le=730)] = 365
 
 
+# Код языка интерфейса Open WebUI: с регионом (fi-FI), иначе перевод не находится.
+_LOCALE = r"^[a-z]{2}-[A-Z]{2}$"
+NoticeText = Annotated[
+    str, StringConstraints(min_length=1, max_length=500, pattern=r"^[^\r\n\x00]*$")
+]
+
+
+class Party(_Strict):
+    name: Text
+    contact: Text
+
+
+class Compliance(_Strict):
+    """Роли и документы комплаенса инсталляции (ADR-0015)."""
+
+    # controller: организация инсталляции сама контролёр (Mtech у себя); processor: Mtech
+    # обработчик для клиента-контролёра (ADR-0015, п. 1).
+    operator_role: Literal["controller", "processor"] = "controller"
+    controller: Party | None = None
+    processor: Party | None = None
+    dpo_contact: Text | None = None
+    privacy_notice_url: str | None = None
+    # Свой текст уведомления об ИИ по языкам интерфейса (ст. 50(1)); иначе текст ядра.
+    ai_notice: dict[Annotated[str, StringConstraints(pattern=_LOCALE)], NoticeText] = {}
+    # Каждая модель обязана иметь provider_terms.zdr: true (ADR-0015, вопрос 4).
+    require_zdr: bool = False
+
+    @field_validator("privacy_notice_url")
+    @classmethod
+    def _url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if urlsplit(value).scheme != "https":
+            raise ValueError("privacy_notice_url: только https")
+        return _check_url(value)
+
+    @model_validator(mode="after")
+    def _roles(self) -> Compliance:
+        if self.operator_role == "processor" and (
+            self.controller is None or self.processor is None
+        ):
+            raise ValueError("operator_role processor: нужны controller (клиент) и processor")
+        return self
+
+
 def _v3_fields(data: dict[str, Any]) -> list[str]:
     found = ["data"] if "data" in data else []
     for i, model in enumerate(data.get("models") or []):
@@ -262,7 +324,7 @@ def _v3_fields(data: dict[str, Any]) -> list[str]:
 
 
 class Manifest(_Strict):
-    schema_version: Literal[1, 2, 3, 4]
+    schema_version: Literal[1, 2, 3, 4, 5]
     instance: InstanceInfo
     core: CoreRef
     models: Annotated[list[Model], Field(min_length=1)]
@@ -270,6 +332,7 @@ class Manifest(_Strict):
     agents: list[Agent] = []
     data: DataSettings = DataSettings()
     retention: Retention = Retention()
+    compliance: Compliance = Compliance()
     settings: Settings = Settings()
 
     @model_validator(mode="before")
@@ -286,8 +349,59 @@ class Manifest(_Strict):
                 "и выше (ADR-0011)"
             )
         if "retention" in data and version in (1, 2, 3):
-            raise ValueError("раздел retention есть только в schema_version: 4 (ADR-0012)")
+            raise ValueError("раздел retention есть только в schema_version: 4 и выше (ADR-0012)")
+        has_terms = any(
+            isinstance(m, dict) and "provider_terms" in m for m in data.get("models") or []
+        )
+        if version in (1, 2, 3, 4) and ("compliance" in data or has_terms):
+            raise ValueError(
+                "compliance и provider_terms есть только в schema_version: 5 (ADR-0015)"
+            )
         return data
+
+    @model_validator(mode="after")
+    def _zdr(self) -> Manifest:
+        if self.compliance.require_zdr:
+            missing = [
+                m.name for m in self.models if not (m.provider_terms and m.provider_terms.zdr)
+            ]
+            if missing:
+                raise ValueError(
+                    f"compliance.require_zdr: у моделей {', '.join(missing)} нет "
+                    "provider_terms.zdr: true"
+                )
+        return self
+
+    def compliance_warnings(self, providers: dict[str, Any]) -> list[str]:
+        """Что не помешает запуску, но нужно закрыть до DPIA (ADR-0015)."""
+        if self.schema_version < 5:
+            return ["schema_version < 5: роли и условия провайдеров не заданы (ADR-0015)"]
+        out = []
+        c = self.compliance
+        if c.controller is None:
+            out.append("compliance.controller не задан: реестр обработки без контролёра")
+        placeholders = [
+            f"compliance.{name}"
+            for name, value in (
+                ("controller.contact", c.controller.contact if c.controller else None),
+                ("processor.contact", c.processor.contact if c.processor else None),
+                ("dpo_contact", c.dpo_contact),
+                ("privacy_notice_url", c.privacy_notice_url),
+            )
+            if value and re.search(r"example\.|\.invalid\b|\.test\b", value)
+        ]
+        if placeholders:
+            out.append(f"{', '.join(placeholders)}: адрес-заглушка из шаблона")
+        if c.privacy_notice_url is None:
+            out.append("compliance.privacy_notice_url не задан: баннер без ссылки (ст. 13)")
+        for m in self.models:
+            if m.provider not in providers:
+                out.append(
+                    f"модель {m.name}: провайдера {m.provider} нет в policy/llm-providers.yaml"
+                )
+            if m.provider_terms is None or not m.provider_terms.zdr:
+                out.append(f"модель {m.name}: без ZDR провайдер может хранить данные (ADR-0015)")
+        return out
 
     def tool_class(self, server: str, tool: str) -> str:
         for s in self.mcp_servers:

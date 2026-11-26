@@ -53,7 +53,7 @@ def test_minimal_manifest() -> None:
 @pytest.mark.parametrize(
     ("path", "value", "needle"),
     [
-        ("schema_version", 5, "schema_version"),
+        ("schema_version", 6, "schema_version"),
         ("instance.id", "Acme", "instance.id"),
         ("instance.id", "a.b", "instance.id"),
         ("models.0.litellm.api_key", "sk-plain-secret", "os.environ"),
@@ -234,3 +234,48 @@ def test_retention_needs_v4() -> None:
 )
 def test_retention_bounds(retention: dict[str, int]) -> None:
     assert "retention" in _problems({**BASE, "schema_version": 4, "retention": retention})
+
+
+def test_compliance_v5() -> None:
+    m = parse_manifest(
+        {
+            **BASE,
+            "schema_version": 5,
+            "compliance": {"controller": {"name": "Acme Oy", "contact": "dpo@acme.fi"}},
+            "models": [{**BASE["models"][0], "provider_terms": {"zdr": True, "region": "eu"}}],
+        }
+    )
+    assert m.models[0].provider == "anthropic"
+    assert m.compliance_warnings({"anthropic": {}}) == [
+        "compliance.privacy_notice_url не задан: баннер без ссылки (ст. 13)"
+    ]
+    stub = parse_manifest(
+        {
+            **BASE,
+            "schema_version": 5,
+            "compliance": {"controller": {"name": "A", "contact": "privacy@example.invalid"}},
+        }
+    )
+    assert any("заглушка" in w for w in stub.compliance_warnings({}))
+    assert any("schema_version < 5" in w for w in parse_manifest(BASE).compliance_warnings({}))
+
+
+@pytest.mark.parametrize(
+    ("data", "needle"),
+    [
+        ({**BASE, "schema_version": 4, "compliance": {}}, "schema_version: 5"),
+        (
+            {**BASE, "schema_version": 5, "compliance": {"operator_role": "processor"}},
+            "нужны controller",
+        ),
+        ({**BASE, "schema_version": 5, "compliance": {"require_zdr": True}}, "require_zdr"),
+        (
+            {**BASE, "schema_version": 5, "compliance": {"privacy_notice_url": "http://x.test"}},
+            "https",
+        ),
+        ({**BASE, "schema_version": 5, "compliance": {"ai_notice": {"FI": "x"}}}, "ai_notice"),
+        ({**BASE, "schema_version": 5, "compliance": {"ai_notice": {"fi": "x"}}}, "ai_notice"),
+    ],
+)
+def test_compliance_rejected(data: dict[str, Any], needle: str) -> None:
+    assert needle in _problems(data)
