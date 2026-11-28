@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 from fastapi import FastAPI
 
@@ -103,6 +105,7 @@ def build_app(settings: Settings) -> FastAPI:
         await http.aclose()
         await engine.dispose()
         if telemetry is not None:
-            telemetry.shutdown()
+            # Сброс буферов SDK синхронный (HTTP): в потоке, чтобы не держать цикл событий.
+            await asyncio.to_thread(telemetry.shutdown)
 
     return create_app(factory, shutdown)

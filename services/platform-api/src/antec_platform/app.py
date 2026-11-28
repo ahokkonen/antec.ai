@@ -361,11 +361,15 @@ def _stored_error(err: ApiError) -> str:
 
 
 async def _finish(deps: Deps, call: CallStart, result: CallResult) -> None:
-    telemetry.record_call(call, result)
     try:
         await deps.store.finish_call(call, result)
     except Exception:
         log.exception("не удалось записать итог вызова %s", call.id)
+    # Телеметрия после записи: её сбой не должен терять итог вызова и аудит.
+    try:
+        telemetry.record_call(call, result)
+    except Exception:
+        log.exception("не удалось записать метрики вызова %s", call.id)
 
 
 async def chat_completions(request: Request) -> Response:

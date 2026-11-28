@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import metadata
 
+import requests
 from opentelemetry import metrics, trace
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -33,6 +34,13 @@ class Telemetry:
         self.meter_provider.shutdown()
 
 
+def _session() -> requests.Session:
+    # Без прокси из окружения: Collector во внутренней сети, как у остальных клиентов сервиса.
+    session = requests.Session()
+    session.trust_env = False
+    return session
+
+
 def setup(endpoint: str, service_name: str) -> Telemetry:
     """Глобальные провайдеры трейсов и метрик; endpoint вида http://otel-collector:4318."""
     resource = Resource.create(
@@ -44,7 +52,11 @@ def setup(endpoint: str, service_name: str) -> Telemetry:
     tracer_provider = TracerProvider(resource=resource)
     tracer_provider.add_span_processor(
         BatchSpanProcessor(
-            OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces", timeout=_EXPORT_TIMEOUT_SECONDS)
+            OTLPSpanExporter(
+                endpoint=f"{endpoint}/v1/traces",
+                timeout=_EXPORT_TIMEOUT_SECONDS,
+                session=_session(),
+            )
         )
     )
     meter_provider = MeterProvider(
@@ -52,7 +64,9 @@ def setup(endpoint: str, service_name: str) -> Telemetry:
         metric_readers=[
             PeriodicExportingMetricReader(
                 OTLPMetricExporter(
-                    endpoint=f"{endpoint}/v1/metrics", timeout=_EXPORT_TIMEOUT_SECONDS
+                    endpoint=f"{endpoint}/v1/metrics",
+                    timeout=_EXPORT_TIMEOUT_SECONDS,
+                    session=_session(),
                 ),
                 export_interval_millis=_METRIC_INTERVAL_MS,
             )
