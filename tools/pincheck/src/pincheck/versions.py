@@ -104,6 +104,11 @@ class PyVersion:
     def is_below(self, minimum: PyVersion) -> bool:
         return self.value < minimum.value
 
+    @property
+    def is_prerelease(self) -> bool:
+        """a, b, rc и dev по PEP 440 (ADR-0016: пре-релизы запрещены всегда)."""
+        return self.value.is_prerelease
+
 
 def canonical_py_version(text: str) -> str:
     """Нормализованная форма PEP 440 для точного сравнения: регистр, разделители, хвостовые нули

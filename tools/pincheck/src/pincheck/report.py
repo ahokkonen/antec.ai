@@ -42,6 +42,7 @@ class Code(enum.StrEnum):
     PY_DENIED_VERSION = "PIN031"
     PY_BELOW_MIN = "PIN032"
     PY_LOCK_PARSE = "PIN033"
+    PY_PRERELEASE = "PIN034"
     # Файлы
     FILE_PARSE = "PIN040"
     FILE_INPUT = "PIN041"

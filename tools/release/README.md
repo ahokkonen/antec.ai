@@ -67,7 +67,8 @@ uv run --project tools/release --locked antec-release check
    cosign verify ghcr.io/ahokkonen/antec-platform-api@sha256:<digest> --certificate-identity https://github.com/ahokkonen/antec.ai/.github/workflows/release.yml@refs/tags/vX.Y.Z --certificate-oidc-issuer https://token.actions.githubusercontent.com
    ```
 
-5. Только после первой публикации: пакеты `antec-*` в GHCR сделать публичными (Package settings).
+5. Пакеты `antec-*` в GHCR публичные (проверено на 0.1.0); теги `v*` защищены ruleset
+   `release-tags`: создавать, менять и удалять их может только администратор репозитория.
 
 ## Патч для N-1
 

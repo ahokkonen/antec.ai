@@ -34,7 +34,7 @@
 | Модели | OpenRouter, OpenAI, Anthropic | Облачные модели | Через LiteLLM, логические имена моделей |
 | Инструменты | MCP-серверы M365 (почта, календарь, OneDrive) и Git | Плагины-инструменты | MCP |
 | Данные | PostgreSQL 18 + pgvector | Все прикладные данные, отдельная БД и роль на сервис | SQL |
-| Наблюдаемость | OTel Collector + VictoriaMetrics/Logs + Grafana | Метрики, логи, трейсы, алерты | OTLP |
+| Наблюдаемость | OTel Collector + VictoriaMetrics/Logs/Traces + Grafana (ADR-0013) | Метрики, логи, трейсы, алерты | OTLP |
 
 В v1 **нет**: отдельного MCP-шлюза (его роль выполняет MCP-клиент Platform API), локальных моделей
 (v2), MongoDB, Redis, Langfuse, Telegram и Slack (пилот).

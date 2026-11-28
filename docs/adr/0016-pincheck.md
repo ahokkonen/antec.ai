@@ -3,6 +3,7 @@
 - Статус: предложено
 - Дата: 2026-11-21
 - Ответственный: CTO
+- Уточнено в [ADR-0013](0013-observability.md) (пре-релизы Python-пакетов, PIN034)
 - Связанные: ADR-0001, ADR-0004, ADR-0005, [policy/allowed-versions.yaml](../../policy/allowed-versions.yaml),
   [tools/pincheck](../../tools/pincheck/README.md)
 

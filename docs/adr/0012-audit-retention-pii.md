@@ -3,7 +3,7 @@
 - Статус: предложено
 - Дата: 2026-11-24
 - Ответственный: CTO
-- Связанные: ADR-0003, ADR-0006, ADR-0008, ADR-0010, ADR-0011, ADR-0013 (в очереди),
+- Связанные: ADR-0003, ADR-0006, ADR-0008, ADR-0010, ADR-0011, [ADR-0013](0013-observability.md),
   ADR-0015 (в очереди), ADR-0017, ADR-0018, [context/requirements.md](../context/requirements.md)
 
 ## Контекст
