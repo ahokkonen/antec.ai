@@ -259,7 +259,12 @@ def test_render_observability(core_dir: Path, dev_instance: Path, tmp_path: Path
     )
     summary = json.loads((out / "instance.json").read_text())
     assert summary["observability"] == {"enabled": True, "telemetry_retention": "30d"}
-    assert not (out / "grafana/alerting/contact-points.yaml").exists()
+    # Без alert_email получатель недоставляемый: не встроенный адрес-пример Grafana.
+    contact = yaml.safe_load((out / "grafana/alerting/contact-points.yaml").read_text())
+    assert contact["contactPoints"][0]["receivers"][0]["settings"]["addresses"] == (
+        "alerts@antec.invalid"
+    )
+    assert contact["policies"][0]["receiver"] == "antec-email"
     rules = yaml.safe_load((out / "grafana/alerting/rules.yaml").read_text())
     assert {r["uid"] for r in rules["groups"][0]["rules"]} >= {
         "antec-api-down",

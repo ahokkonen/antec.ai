@@ -88,7 +88,7 @@ services:
       - postgres-data:/var/lib/postgresql
       - postgres-secrets:/run/antec-secrets:ro
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
-    networks: [data]
+    networks: [data, metrics-db]
     shm_size: 256m
     mem_limit: 1g
     healthcheck:
@@ -648,7 +648,8 @@ services:
       - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       # Правила алертов ядра и получатель из манифеста: рендер инсталляции (tools/instance).
       - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered/grafana/alerting:/etc/grafana/provisioning/alerting:ro
-    networks: [ui, observability, data]
+    # metrics-db: только PostgreSQL (источник «Platform metrics»), без остальных сервисов data.
+    networks: [ui, observability, metrics-db]
     mem_limit: 384m
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
@@ -689,6 +690,9 @@ networks:
     internal: true
   # otel-collector -> VictoriaMetrics, VictoriaLogs, VictoriaTraces; без выхода наружу.
   observability:
+    internal: true
+  # Grafana -> PostgreSQL (роль platform_metrics); без выхода наружу (ADR-0013).
+  metrics-db:
     internal: true
 
 volumes:

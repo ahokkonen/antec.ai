@@ -97,7 +97,9 @@ class WorkerSettings(DatabaseSettings):
 
     database_user: str = "platform_worker"
     database_pool_size: Annotated[int, Field(ge=1, le=50)] = 2
-    worker_interval_seconds: Annotated[float, Field(ge=1, le=3600)] = 60.0
+    # Не больше 5 минут: алерт «platform-worker не выполняет проходы» смотрит окно 10 минут
+    # (ADR-0013, deploy/compose/observability/grafana/alerting/rules.yaml).
+    worker_interval_seconds: Annotated[float, Field(ge=1, le=300)] = 60.0
     # Незавершённое старше этого срока считается потерянным. Больше времени любого запроса.
     worker_abandon_seconds: Annotated[int, Field(ge=600, le=86400)] = 3600
     # Сроки хранения (манифест, раздел retention; ADR-0012, п. 1), дни.

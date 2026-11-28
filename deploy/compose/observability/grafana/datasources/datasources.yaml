@@ -19,7 +19,7 @@ datasources:
     url: http://victoria-traces:10428/select/jaeger
     editable: false
   # Агрегаты вызовов моделей без текстов и идентификаторов: роль platform_metrics видит только
-  # представления схемы metrics (deploy/compose/postgres/metrics.sql).
+  # представления схемы metrics (deploy/compose/postgres/metrics.sql); сеть metrics-db.
   - name: Platform metrics
     uid: pg
     type: grafana-postgresql-datasource

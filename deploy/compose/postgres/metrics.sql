@@ -4,11 +4,14 @@
 -- Роль видит только представления схемы metrics: без текстов, id пользователей, разговоров,
 -- клиентов и ошибок; доступа к схемам public и audit нет. Представления принадлежат postgres и
 -- читают таблицы от его имени.
+-- Текст упавшей команды с паролем не попадает в журнал сервера (log_min_error_statement).
+SET log_min_error_statement = panic;
 SELECT format('CREATE ROLE platform_metrics LOGIN CONNECTION LIMIT 3 PASSWORD %L', :'pw')
   WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'platform_metrics') \gexec
 ALTER ROLE platform_metrics LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
   CONNECTION LIMIT 3 PASSWORD :'pw';
 GRANT CONNECT ON DATABASE platform TO platform_metrics;
+RESET log_min_error_statement;
 
 BEGIN;
 CREATE SCHEMA IF NOT EXISTS metrics AUTHORIZATION postgres;

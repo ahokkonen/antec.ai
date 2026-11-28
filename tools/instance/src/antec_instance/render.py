@@ -34,6 +34,7 @@ SUMMARY = "instance.json"
 # Алерты Grafana инсталляции: получатель из манифеста (ADR-0013, п. 6).
 GRAFANA_CONTACT = "grafana/alerting/contact-points.yaml"
 GRAFANA_RULES = "grafana/alerting/rules.yaml"
+NO_ALERT_EMAIL = "alerts@antec.invalid"
 CORE_GRAFANA_RULES = Path("deploy/compose/observability/grafana/alerting/rules.yaml")
 # Прежняя раскладка (до подкаталогов): удаляется, чтобы не осталось устаревших копий.
 _LEGACY = ("litellm-models.yaml", "agents.json")
@@ -283,8 +284,12 @@ def render(
         files[GRAFANA_RULES] = (core_dir / CORE_GRAFANA_RULES).read_text(encoding="utf-8")
     else:
         (out_dir / GRAFANA_RULES).unlink(missing_ok=True)
-    if manifest.observability.enabled and manifest.observability.alert_email:
-        files[GRAFANA_CONTACT] = grafana_contact(manifest.observability.alert_email)
+    if manifest.observability.enabled:
+        # Без адреса получатель в .invalid: иначе политика по умолчанию Grafana шлёт алерты на
+        # её встроенный адрес-пример, как только настроен SMTP.
+        files[GRAFANA_CONTACT] = grafana_contact(
+            manifest.observability.alert_email or NO_ALERT_EMAIL
+        )
     else:
         (out_dir / GRAFANA_CONTACT).unlink(missing_ok=True)
     if pinned is not None:

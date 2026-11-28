@@ -22,6 +22,7 @@
   `retention.telemetry_days`; метрики platform-worker.
 - pincheck PIN034: пре-релизы Python-пакетов в `uv.lock` запрещены, исключения в
   `python_prerelease_allowed` реестра.
+
 ### Обновление
 
 - Манифест можно перевести на `schema_version: 6` и включить `observability.enabled`; v5
