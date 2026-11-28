@@ -250,6 +250,12 @@ client secret со сроком не больше 180 дней, «Assignment req
 docker compose -f deploy/compose/compose.yaml --profile observability up -d --wait victoria-metrics otel-collector
 ```
 
+Platform API шлёт трейсы и метрики, если задан `ANTEC_OTEL_ENDPOINT` (например,
+`http://otel-collector:4318`; `PLATFORM_OTEL_ENDPOINT` в compose, сеть `telemetry`). Агенты пишут
+спаны без содержимого (`include_content=False`), свои спаны: запрос по шаблону маршрута, вызов
+шлюза, MCP, Cerbos; метрики `http.server.request.duration`, `gen_ai.client.token.usage`,
+`antec.model.calls`, `antec.mcp.requests`, `antec.policy.decisions`.
+
 Трейсы ищутся через Jaeger API VictoriaTraces изнутри сети `observability`, например
 `http://victoria-traces:10428/select/jaeger/api/traces?service=<сервис>&lookback=1h`.
 

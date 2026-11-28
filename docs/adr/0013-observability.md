@@ -79,7 +79,9 @@
    include_binary_content=False))`. Свои спаны: фасад, MCP-вызов, Cerbos, LiteLLM. Пакеты
    `opentelemetry-instrumentation-*` не используются. Атрибуты: `antec.request_id`, модель, агент,
    статус, токены; без id пользователя, email, имён и текстов. Без адреса Collector
-   (`PLATFORM_OTEL_ENDPOINT` пуст) телеметрия выключена.
+   (`PLATFORM_OTEL_ENDPOINT` пуст) телеметрия выключена. Встроенная телеметрия FastAPI (0.163+:
+   свои спаны, метрики и журналы с реальным путём запроса) выключена, спан запроса один, по шаблону
+   маршрута; проверки здоровья без спанов. Журналы Platform API остаются JSON в stdout.
 3. **Пре-релизы Python (уточнение ADR-0016).** pincheck проверяет `uv.lock`: версия a, b, rc
    или dev по PEP 440 = ошибка PIN034. Исключение только в `python_prerelease_allowed` реестра:
    пакет, шаблон версий (`versions`, на всю версию) и причина; сейчас там три пакета OTel с
