@@ -44,7 +44,7 @@ MCP_PROTOCOL_VERSIONS = ("2025-11-25", "2026-07-28")
 CORE_MCP_PROTOCOL_VERSIONS = ("2026-07-28",)
 # Схемы манифеста этой версии ядра и устаревшие из них (ADR-0014, п. 3): устаревшая схема
 # удаляется не раньше чем через 2 minor после объявления; v1-v4 устарели в 0.1.0.
-SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
+SCHEMA_VERSIONS = (1, 2, 3, 4, 5, 6)
 DEPRECATED_SCHEMA_VERSIONS = (1, 2, 3, 4)
 DEPRECATED_SCHEMA_REMOVAL = "0.3.0"
 
@@ -269,6 +269,19 @@ class Retention(_Strict):
     metadata_days: Annotated[int, Field(ge=180, le=730)] = 365
     # Аудит, расходы LiteLLM, события Keycloak.
     audit_days: Annotated[int, Field(ge=180, le=730)] = 365
+    # Метрики, журналы и трейсы телеметрии (ADR-0013, ADR-0012: 30 дней на сервере).
+    telemetry_days: Annotated[int, Field(ge=1, le=90)] = 30
+
+
+_EMAIL = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+
+class Observability(_Strict):
+    """Наблюдаемость инсталляции (ADR-0013): профиль observability, Grafana, алерты."""
+
+    enabled: bool = False
+    # Получатель алертов Grafana; без него алерты видны только в Grafana.
+    alert_email: Annotated[str, StringConstraints(max_length=254, pattern=_EMAIL)] | None = None
 
 
 # Код языка интерфейса Open WebUI: с регионом (fi-FI), иначе перевод не находится.
@@ -331,7 +344,7 @@ def _v3_fields(data: dict[str, Any]) -> list[str]:
 
 
 class Manifest(_Strict):
-    schema_version: Literal[1, 2, 3, 4, 5]  # = SCHEMA_VERSIONS
+    schema_version: Literal[1, 2, 3, 4, 5, 6]  # = SCHEMA_VERSIONS
     instance: InstanceInfo
     core: CoreRef
     models: Annotated[list[Model], Field(min_length=1)]
@@ -340,6 +353,7 @@ class Manifest(_Strict):
     data: DataSettings = DataSettings()
     retention: Retention = Retention()
     compliance: Compliance = Compliance()
+    observability: Observability = Observability()
     settings: Settings = Settings()
 
     @model_validator(mode="before")
@@ -362,7 +376,14 @@ class Manifest(_Strict):
         )
         if version in (1, 2, 3, 4) and ("compliance" in data or has_terms):
             raise ValueError(
-                "compliance и provider_terms есть только в schema_version: 5 (ADR-0015)"
+                "compliance и provider_terms есть только в schema_version: 5 и выше (ADR-0015)"
+            )
+        retention = data.get("retention")
+        has_telemetry = isinstance(retention, dict) and "telemetry_days" in retention
+        if version in (1, 2, 3, 4, 5) and ("observability" in data or has_telemetry):
+            raise ValueError(
+                "observability и retention.telemetry_days есть только в schema_version: 6 "
+                "(ADR-0013)"
             )
         return data
 

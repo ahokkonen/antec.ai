@@ -53,7 +53,7 @@ def test_minimal_manifest() -> None:
 @pytest.mark.parametrize(
     ("path", "value", "needle"),
     [
-        ("schema_version", 6, "schema_version"),
+        ("schema_version", 7, "schema_version"),
         ("instance.id", "Acme", "instance.id"),
         ("instance.id", "a.b", "instance.id"),
         ("models.0.litellm.api_key", "sk-plain-secret", "os.environ"),
@@ -279,3 +279,40 @@ def test_compliance_v5() -> None:
 )
 def test_compliance_rejected(data: dict[str, Any], needle: str) -> None:
     assert needle in _problems(data)
+
+
+def test_observability_requires_v6() -> None:
+    from antec_instance.manifest import Manifest
+
+    base = {
+        "instance": {"id": "acme", "name": "Acme"},
+        "core": {"version": "0.1.0"},
+        "models": [
+            {
+                "name": "chat-default",
+                "description": "d",
+                "litellm": {"model": "anthropic/x", "api_key": "os.environ/ANTHROPIC_API_KEY"},
+            }
+        ],
+    }
+    for extra in ({"observability": {"enabled": True}}, {"retention": {"telemetry_days": 7}}):
+        with pytest.raises(ValueError, match="schema_version: 6"):
+            Manifest.model_validate({"schema_version": 5, **base, **extra})
+    m = Manifest.model_validate(
+        {
+            "schema_version": 6,
+            **base,
+            "observability": {"enabled": True, "alert_email": "ops@acme.fi"},
+            "retention": {"telemetry_days": 14},
+        }
+    )
+    assert m.observability.enabled
+    assert m.retention.telemetry_days == 14
+    for bad, field in (
+        ({"alert_email": "not-an-email"}, "alert_email"),
+        ({"unknown": 1}, "unknown"),
+    ):
+        with pytest.raises(ValueError, match=field):
+            Manifest.model_validate({"schema_version": 6, **base, "observability": bad})
+    with pytest.raises(ValueError, match="telemetry_days"):
+        Manifest.model_validate({"schema_version": 6, **base, "retention": {"telemetry_days": 91}})

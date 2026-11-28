@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from opentelemetry import metrics, trace
+from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.trace import Span, SpanKind, Status, StatusCode
 
 from antec_platform.store import CallResult, CallStart
@@ -49,6 +50,26 @@ policy_decisions = _meter.create_counter(
     "antec.policy.decisions",
     unit="{decision}",
     description="Решения PDP по действию и итогу",
+)
+worker_sweeps = _meter.create_counter(
+    "antec.worker.sweeps",
+    unit="{sweep}",
+    description="Проходы platform-worker по итогу (ADR-0012, п. 2)",
+)
+worker_closed = _meter.create_counter(
+    "antec.worker.closed",
+    unit="{item}",
+    description="Закрытое platform-worker незавершённое по виду",
+)
+
+
+def _up(_: CallbackOptions) -> list[Observation]:
+    return [Observation(1)]
+
+
+# 1 при каждом экспорте: отсутствие ряда = сервис не работает или не отдаёт телеметрию.
+_meter.create_observable_gauge(
+    "antec.service.up", callbacks=[_up], unit="1", description="Сервис жив"
 )
 mcp_requests = _meter.create_counter(
     "antec.mcp.requests",

@@ -1,6 +1,6 @@
 # Манифест инсталляции __INSTANCE_NAME__ (ADR-0008). Схема v1: tools/instance ядра.
 # Проверка: uv run --project core/tools/instance --locked antec-instance validate .
-schema_version: 5
+schema_version: 6
 instance:
   # id = scope политик Cerbos инсталляции (policies/), менять нельзя.
   id: __INSTANCE_ID__
@@ -63,6 +63,12 @@ retention:
   content_days: 90
   metadata_days: 365
   audit_days: 365
+  telemetry_days: 30
+
+# Наблюдаемость (ADR-0013): OTel Collector, VictoriaMetrics/Logs/Traces, Grafana и алерты.
+observability:
+  enabled: true
+  # alert_email: "ops@example.invalid"
 
 # Комплаенс (ADR-0015). operator_role: controller (организация сама контролёр) или processor
 # (Mtech обработчик клиента: нужны controller и processor). Документы: docs/compliance/;
