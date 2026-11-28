@@ -176,6 +176,7 @@ async def test_facade_span_and_metrics(harness: Harness, make_token: TokenFactor
         and dict(p.attributes).get("gen_ai.request.model") == "chat-fast"
     }
     assert tokens == {"input": 7, "output": 3}
+    assert [p.value for p in collected["antec.service.up"]] == [1]
     durations = collected["http.server.request.duration"]
     assert {dict(p.attributes)["http.route"] for p in durations} == {"/v1/chat/completions"}
 

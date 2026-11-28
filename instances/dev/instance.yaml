@@ -1,5 +1,5 @@
 # Dev-инсталляция ядра (ADR-0008, п. 7): локальный стенд deploy/compose и CI.
-schema_version: 5
+schema_version: 6
 instance:
   id: dev
   name: "antec.ai dev"
@@ -78,6 +78,13 @@ retention:
   content_days: 90
   metadata_days: 365
   audit_days: 365
+  telemetry_days: 30
+
+# Наблюдаемость (ADR-0013): OTel Collector, VictoriaMetrics/Logs/Traces, Grafana и алерты.
+observability:
+  enabled: true
+  # Алерты стенда только в Grafana; адрес задаётся здесь, SMTP: scripts/set-smtp.sh.
+  # alert_email: "ops@example.invalid"
 
 # Комплаенс (ADR-0015): стенд разработки, реальных данных нет.
 compliance:

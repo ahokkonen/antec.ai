@@ -51,6 +51,7 @@ def test_render_dev(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
         "PLATFORM_POLICY_SCOPE": "dev",
         "PLATFORM_DEFAULT_DATA_CLASS": "internal",
         "PLATFORM_ALLOWED_CLIENTS": "open-webui,antec-smoke",
+        "PLATFORM_OTEL_ENDPOINT": "http://otel-collector:4318",
     }
     agents = json.loads((out / "platform-api" / "agents.json").read_text())
     assert [a["name"] for a in agents] == ["agent-assistant", "agent-notes", "agent-lab"]
@@ -209,7 +210,7 @@ def test_core_info(core_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
     info = json.loads(capsys.readouterr().out)
     assert info["core_version"] == (core_dir / "VERSION").read_text().strip()
     assert info["manifest_schema_versions"] == {
-        "supported": [1, 2, 3, 4, 5],
+        "supported": [1, 2, 3, 4, 5, 6],
         "deprecated": [1, 2, 3, 4],
     }
     assert info["mcp_protocol_versions"] == ["2026-07-28"]
@@ -242,3 +243,48 @@ def test_current_schema_no_deprecation(
 ) -> None:
     assert main(["--core", str(core_dir), "validate", str(dev_instance)]) == EXIT_OK
     assert "устарела" not in capsys.readouterr().err
+
+
+def test_render_observability(core_dir: Path, dev_instance: Path, tmp_path: Path) -> None:
+    manifest = dev_instance / "instance.yaml"
+    text = manifest.read_text()
+    assert "observability:\n  enabled: true\n" in text
+    out = tmp_path / "out"
+    assert main(["--core", str(core_dir), "render", str(dev_instance), "--out", str(out)]) == 0
+    env = (out / "platform-api.env").read_text()
+    assert "PLATFORM_OTEL_ENDPOINT=http://otel-collector:4318\n" in env
+    assert (
+        "PLATFORM_OTEL_ENDPOINT=http://otel-collector:4318\n"
+        in (out / "platform-worker.env").read_text()
+    )
+    summary = json.loads((out / "instance.json").read_text())
+    assert summary["observability"] == {"enabled": True, "telemetry_retention": "30d"}
+    # Без alert_email получатель недоставляемый: не встроенный адрес-пример Grafana.
+    contact = yaml.safe_load((out / "grafana/alerting/contact-points.yaml").read_text())
+    assert contact["contactPoints"][0]["receivers"][0]["settings"]["addresses"] == (
+        "alerts@antec.invalid"
+    )
+    assert contact["policies"][0]["receiver"] == "antec-email"
+    rules = yaml.safe_load((out / "grafana/alerting/rules.yaml").read_text())
+    assert {r["uid"] for r in rules["groups"][0]["rules"]} >= {
+        "antec-api-down",
+        "antec-worker-stalled",
+    }
+    # Адрес алертов: контакт и политика уведомлений Grafana.
+    manifest.write_text(
+        text.replace(
+            "observability:\n  enabled: true\n",
+            'observability:\n  enabled: true\n  alert_email: "ops@acme.fi"\n',
+        )
+    )
+    assert main(["--core", str(core_dir), "render", str(dev_instance), "--out", str(out)]) == 0
+    contact = yaml.safe_load((out / "grafana/alerting/contact-points.yaml").read_text())
+    assert contact["contactPoints"][0]["receivers"][0]["settings"]["addresses"] == "ops@acme.fi"
+    # Выключено: ни адреса Collector, ни контакта.
+    manifest.write_text(
+        text.replace("observability:\n  enabled: true\n", "observability:\n  enabled: false\n")
+    )
+    assert main(["--core", str(core_dir), "render", str(dev_instance), "--out", str(out)]) == 0
+    assert "PLATFORM_OTEL_ENDPOINT" not in (out / "platform-api.env").read_text()
+    assert not (out / "grafana/alerting/contact-points.yaml").exists()
+    assert not (out / "grafana/alerting/rules.yaml").exists()

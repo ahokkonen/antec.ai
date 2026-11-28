@@ -51,6 +51,9 @@ DEFAULT_SA_SCOPES = ("service_account", "web-origins", "acr", "profile", "roles"
 PROFILE_ATTRIBUTES = ("entra_oid", "entra_tid", "antec_uid")
 UID_ATTRIBUTE = "antec_uid"
 OPEN_WEBUI_CLIENT = "open-webui"
+# Grafana (ADR-0013): роли клиента viewer и admin; ролей по умолчанию нет, без роли вход запрещён.
+GRAFANA_CLIENT = "grafana"
+GRAFANA_ROLES = ("viewer", "admin")
 # Срок access token клиента open-webui, секунды. Open WebUI обновляет токен, когда до истечения
 # меньше 5 минут: при сроке realm в 5 минут обновление шло бы перед каждым запросом (ADR-0006).
 OPEN_WEBUI_ACCESS_LIFESPAN = "900"
@@ -398,6 +401,7 @@ def ensure_realm(admin: Admin, secrets_in: Json) -> None:
     ensure_client_secrets(admin, secrets_in)
     ensure_otp_browser_flow(admin, REALM)
     ensure_open_webui_access(admin)
+    ensure_grafana_access(admin)
     ensure_platform_roles(admin)
     if admin.find_user(REALM, BREAKGLASS_USER) is None:
         log(f"создание аварийного пользователя {BREAKGLASS_USER} (TOTP обязателен)")
@@ -431,6 +435,7 @@ def ensure_realm(admin: Admin, secrets_in: Json) -> None:
         admin.call("PUT", f"/{REALM}/users/{breakglass['id']}", breakglass)
     # Аварийный пользователь администрирует и Open WebUI.
     ensure_client_role_mapping(admin, breakglass["id"], OPEN_WEBUI_CLIENT, "admin")
+    ensure_client_role_mapping(admin, breakglass["id"], GRAFANA_CLIENT, "admin")
     ensure_local_uids(admin)
 
 
@@ -552,6 +557,71 @@ def ensure_open_webui_access(admin: Admin) -> None:
             )
 
 
+def ensure_grafana_access(admin: Admin) -> None:
+    """Роли клиента grafana и claim roles в userinfo (ADR-0013, п. 5).
+
+    Ролей по умолчанию нет: viewer и admin назначаются явно (админ-консоль Keycloak, Clients ->
+    grafana -> Roles). Grafana берёт роль из claim roles при каждом входе (role_attribute_strict).
+    """
+    client = admin.find_client(REALM, GRAFANA_CLIENT)
+    if client is None:
+        raise KeycloakError(f"в realm {REALM} нет клиента {GRAFANA_CLIENT}")
+    cid = client["id"]
+    have_roles = {r["name"] for r in admin.call("GET", f"/{REALM}/clients/{cid}/roles")}
+    for role in GRAFANA_ROLES:
+        if role not in have_roles:
+            admin.call(
+                "POST",
+                f"/{REALM}/clients/{cid}/roles",
+                {"name": role, "description": f"Grafana: {role}"},
+            )
+    # roles: роли клиента grafana; antec_uid: логин пользователя в Grafana (как у Open WebUI).
+    wanted = {
+        "roles": {
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-usermodel-client-role-mapper",
+            "config": {
+                "usermodel.clientRoleMapping.clientId": GRAFANA_CLIENT,
+                "claim.name": "roles",
+                "multivalued": "true",
+                "jsonType.label": "String",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "introspection.token.claim": "true",
+            },
+        },
+        UID_ATTRIBUTE: {
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-usermodel-attribute-mapper",
+            "config": {
+                "user.attribute": UID_ATTRIBUTE,
+                "claim.name": UID_ATTRIBUTE,
+                "jsonType.label": "String",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "introspection.token.claim": "true",
+            },
+        },
+    }
+    mappers = {
+        m["name"]: m for m in admin.call("GET", f"/{REALM}/clients/{cid}/protocol-mappers/models")
+    }
+    for name, spec in wanted.items():
+        current = mappers.get(name)
+        if current is None:
+            admin.call(
+                "POST", f"/{REALM}/clients/{cid}/protocol-mappers/models", {"name": name, **spec}
+            )
+        elif current.get("config") != spec["config"]:
+            admin.call(
+                "PUT",
+                f"/{REALM}/clients/{cid}/protocol-mappers/models/{current['id']}",
+                {**current, **spec},
+            )
+
+
 def ensure_platform_roles(admin: Admin) -> None:
     """Роли Platform API и их доставка в токен (ADR-0009).
 
@@ -633,6 +703,7 @@ def client_secret_map(secrets_in: Json) -> dict[str, str]:
     return {
         "platform-api": _secret(secrets_in, "platform_api_client_secret"),
         "open-webui": _secret(secrets_in, "open_webui_client_secret"),
+        "grafana": _secret(secrets_in, "grafana_client_secret"),
     }
 
 

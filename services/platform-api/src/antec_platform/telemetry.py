@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from opentelemetry import metrics, trace
+from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.trace import Span, SpanKind, Status, StatusCode
 
 from antec_platform.store import CallResult, CallStart
@@ -50,6 +51,25 @@ policy_decisions = _meter.create_counter(
     unit="{decision}",
     description="Решения PDP по действию и итогу",
 )
+worker_sweeps = _meter.create_counter(
+    "antec.worker.sweeps",
+    unit="{sweep}",
+    description="Проходы platform-worker по итогу (ADR-0012, п. 2)",
+)
+worker_closed = _meter.create_counter(
+    "antec.worker.closed",
+    unit="{item}",
+    description="Закрытое platform-worker незавершённое по виду",
+)
+
+
+def _up(_: CallbackOptions) -> list[Observation]:
+    return [Observation(1)]
+
+
+# 1 при каждом экспорте: отсутствие ряда = сервис не работает или не отдаёт телеметрию. Без
+# единицы: с unit="1" VictoriaMetrics (usePrometheusNaming) добавляет к имени суффикс _ratio.
+_meter.create_observable_gauge("antec.service.up", callbacks=[_up], description="Сервис жив")
 mcp_requests = _meter.create_counter(
     "antec.mcp.requests",
     unit="{request}",

@@ -55,12 +55,24 @@ class DatabaseSettings(BaseSettings):
     subject_role: str = "platform_subject"
     # БД Open WebUI на том же сервере (чаты по сроку и по запросу субъекта); пусто = её нет.
     open_webui_database: str | None = None
+    # Телеметрия OTLP/HTTP (ADR-0013): адрес otel-collector без пути; пусто = выключена. Здесь,
+    # а не в отдельном классе: свой model_config перекрыл бы secrets_dir.
+    otel_endpoint: str | None = None
 
     @field_validator("app_role", "worker_role", "subject_role", "database_user", "database_name")
     @classmethod
     def _identifier(cls, value: str) -> str:
         if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", value):
             raise ValueError("ожидается идентификатор PostgreSQL в нижнем регистре")
+        return value
+
+    @field_validator("otel_endpoint", mode="before")
+    @classmethod
+    def _otel_endpoint(cls, value: object) -> object:
+        if value in ("", None):
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:\d+)?", value):
+            raise ValueError("ожидается http(s)://хост[:порт] без пути и параметров")
         return value
 
     @field_validator("open_webui_database", mode="before")
@@ -85,7 +97,9 @@ class WorkerSettings(DatabaseSettings):
 
     database_user: str = "platform_worker"
     database_pool_size: Annotated[int, Field(ge=1, le=50)] = 2
-    worker_interval_seconds: Annotated[float, Field(ge=1, le=3600)] = 60.0
+    # Не больше 5 минут: алерт «platform-worker не выполняет проходы» смотрит окно 10 минут
+    # (ADR-0013, deploy/compose/observability/grafana/alerting/rules.yaml).
+    worker_interval_seconds: Annotated[float, Field(ge=1, le=300)] = 60.0
     # Незавершённое старше этого срока считается потерянным. Больше времени любого запроса.
     worker_abandon_seconds: Annotated[int, Field(ge=600, le=86400)] = 3600
     # Сроки хранения (манифест, раздел retention; ADR-0012, п. 1), дни.
@@ -124,9 +138,6 @@ class Settings(DatabaseSettings):
         default_factory=lambda: ["chat-default", "chat-fast"]
     )
 
-    # Телеметрия OTLP/HTTP (ADR-0013): адрес otel-collector без пути; пусто = выключена.
-    otel_endpoint: str | None = None
-
     # PDP по AuthZEN (ADR-0009).
     policy_url: str = "http://cerbos:3592"
     policy_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 3.0
@@ -149,15 +160,6 @@ class Settings(DatabaseSettings):
 
     max_request_bytes: Annotated[int, Field(ge=1024, le=64 * 1024 * 1024)] = 8 * 1024 * 1024
     log_level: str = "INFO"
-
-    @field_validator("otel_endpoint", mode="before")
-    @classmethod
-    def _otel_endpoint(cls, value: object) -> object:
-        if value in ("", None):
-            return None
-        if not isinstance(value, str) or not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:\d+)?", value):
-            raise ValueError("ожидается http(s)://хост[:порт] без пути и параметров")
-        return value
 
     @field_validator("allowed_clients", "models", mode="before")
     @classmethod

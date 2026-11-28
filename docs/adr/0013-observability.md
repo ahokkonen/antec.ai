@@ -110,6 +110,12 @@
    `platform-worker`, место на диске. Получатель: email из манифеста, SMTP в OpenBao.
 7. **Манифест v6:** `retention.telemetry_days` (по умолчанию 30, не больше 90) и
    `observability.enabled`, `observability.alert_email`. v1-v5 остаются валидными (ADR-0014).
+   Рендер передаёт адрес Collector Platform API и platform-worker, копирует правила алертов ядра
+   и пишет получателя в `.rendered/grafana/alerting`. platform-worker шлёт метрики проходов
+   (`antec.worker.sweeps`, `antec.worker.closed`), оба сервиса `antec.service.up`. Состояние
+   Grafana в SQLite своего тома (пользователи и настройки восстанавливаются provisioning'ом и
+   входом через Keycloak), бэкап тома не нужен. SMTP в OpenBao (`antec/smtp`,
+   `scripts/set-smtp.sh`), только STARTTLS.
 8. **LiteLLM** без своей OTel-телеметрии в пилоте: каждый вызов модели и так виден в Platform API.
 9. **Сэмплирование** 100% трейсов (до 500 пользователей, 30 дней).
 10. **Проверка отсутствия содержимого:** smoke-проверка шлёт запрос с канарейкой и ищет её в

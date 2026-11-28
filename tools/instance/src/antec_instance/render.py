@@ -31,6 +31,11 @@ OPEN_WEBUI_ENV = "open-webui.env"
 RECORD = "compliance/record.md"
 DPIA_FACTS = "compliance/dpia-facts.md"
 SUMMARY = "instance.json"
+# Алерты Grafana инсталляции: получатель из манифеста (ADR-0013, п. 6).
+GRAFANA_CONTACT = "grafana/alerting/contact-points.yaml"
+GRAFANA_RULES = "grafana/alerting/rules.yaml"
+NO_ALERT_EMAIL = "alerts@antec.invalid"
+CORE_GRAFANA_RULES = Path("deploy/compose/observability/grafana/alerting/rules.yaml")
 # Прежняя раскладка (до подкаталогов): удаляется, чтобы не осталось устаревших копий.
 _LEGACY = ("litellm-models.yaml", "agents.json")
 _HEADER = "# Сгенерировано tools/instance render из instance.yaml (ADR-0008). Не редактировать.\n"
@@ -65,7 +70,16 @@ def platform_env(manifest: Manifest) -> dict[str, str]:
         env["PLATFORM_GATEWAY_TIMEOUT_SECONDS"] = repr(s.gateway_timeout_seconds)
     if s.log_level is not None:
         env["PLATFORM_LOG_LEVEL"] = s.log_level
+    env.update(_otel_env(manifest))
     return env
+
+
+# Адрес otel-collector в сети telemetry (deploy/compose, ADR-0013).
+OTEL_ENDPOINT = "http://otel-collector:4318"
+
+
+def _otel_env(manifest: Manifest) -> dict[str, str]:
+    return {"PLATFORM_OTEL_ENDPOINT": OTEL_ENDPOINT} if manifest.observability.enabled else {}
 
 
 def worker_env(manifest: Manifest) -> dict[str, str]:
@@ -74,6 +88,7 @@ def worker_env(manifest: Manifest) -> dict[str, str]:
         "PLATFORM_RETENTION_CONTENT_DAYS": str(manifest.retention.content_days),
         "PLATFORM_RETENTION_AUDIT_DAYS": str(manifest.retention.audit_days),
         "PLATFORM_RETENTION_METADATA_DAYS": str(manifest.retention.metadata_days),
+        **_otel_env(manifest),
     }
 
 
@@ -148,9 +163,49 @@ def summary(manifest: Manifest, pinned: coreimages.CoreImages | None = None) -> 
         # Срок событий Keycloak (ADR-0012, п. 1).
         "audit_days": manifest.retention.audit_days,
         "mcp_audiences": [s.audience for s in manifest.mcp_servers],
+        # Профиль observability и срок хранения телеметрии для up.sh (ADR-0013).
+        "observability": {
+            "enabled": manifest.observability.enabled,
+            "telemetry_retention": f"{manifest.retention.telemetry_days}d",
+        },
         # Образы ядра по digest или null = локальная сборка (ADR-0014, п. 6).
         "core_images": coreimages.summary(pinned),
     }
+
+
+def grafana_contact(email: str) -> str:
+    """Контакт и политика уведомлений Grafana (provisioning alerting): алерты на email."""
+    doc = {
+        "apiVersion": 1,
+        "contactPoints": [
+            {
+                "orgId": 1,
+                "name": "antec-email",
+                "receivers": [
+                    {
+                        "uid": "antec-email",
+                        "type": "email",
+                        "settings": {"addresses": email, "singleEmail": True},
+                        "disableResolveMessage": False,
+                    }
+                ],
+            }
+        ],
+        "policies": [
+            {
+                "orgId": 1,
+                "receiver": "antec-email",
+                "group_by": ["grafana_folder", "alertname"],
+                "group_wait": "30s",
+                "group_interval": "5m",
+                "repeat_interval": "4h",
+            }
+        ],
+    }
+    header = (
+        "# Сгенерировано tools/instance render из instance.yaml (ADR-0013). Не редактировать.\n"
+    )
+    return header + yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
 
 
 def mcp_servers(manifest: Manifest) -> list[dict[str, Any]]:
@@ -203,6 +258,7 @@ def render(
     out_dir: Path,
     providers: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
+    core_dir: Path | None = None,
 ) -> list[Path]:
     agents = resolve_agents(manifest, instance_dir)
     pinned = coreimages.load(instance_dir)
@@ -223,6 +279,19 @@ def render(
         MCP_SERVERS: json.dumps(mcp_servers(manifest), ensure_ascii=False, indent=2) + "\n",
         MODELS: json.dumps(model_clearances(manifest), ensure_ascii=False, indent=2) + "\n",
     }
+    # Grafana монтирует один каталог алертов: правила ядра и получатель инсталляции.
+    if manifest.observability.enabled and core_dir is not None:
+        files[GRAFANA_RULES] = (core_dir / CORE_GRAFANA_RULES).read_text(encoding="utf-8")
+    else:
+        (out_dir / GRAFANA_RULES).unlink(missing_ok=True)
+    if manifest.observability.enabled:
+        # Без адреса получатель в .invalid: иначе политика по умолчанию Grafana шлёт алерты на
+        # её встроенный адрес-пример, как только настроен SMTP.
+        files[GRAFANA_CONTACT] = grafana_contact(
+            manifest.observability.alert_email or NO_ALERT_EMAIL
+        )
+    else:
+        (out_dir / GRAFANA_CONTACT).unlink(missing_ok=True)
     if pinned is not None:
         files[coreimages.OVERRIDE_FILE] = coreimages.override(pinned)
     else:

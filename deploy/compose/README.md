@@ -16,7 +16,8 @@ digest из [`policy/allowed-versions.yaml`](../../policy/allowed-versions.yaml)
   и `uv` (рендер манифеста инсталляции).
 - Около 6,5 GB свободной памяти в VM Docker (лимиты: OpenBao 256 MB, PostgreSQL 1 GB, Keycloak,
   LiteLLM и Open WebUI по 1,5 GB, Platform API 512 MB, Cerbos и platform-worker по 256 MB; фактически около 2,8 GB).
-- Свободные порты `127.0.0.1:8080` (Keycloak) и `127.0.0.1:3000` (Open WebUI).
+- Свободные порты `127.0.0.1:8080` (Keycloak), `127.0.0.1:3000` (Open WebUI) и `127.0.0.1:3001`
+  (Grafana, если наблюдаемость включена).
 
 ## Команды
 
@@ -250,11 +251,31 @@ client secret со сроком не больше 180 дней, «Assignment req
 docker compose -f deploy/compose/compose.yaml --profile observability up -d --wait victoria-metrics otel-collector
 ```
 
-Platform API шлёт трейсы и метрики, если задан `ANTEC_OTEL_ENDPOINT` (например,
-`http://otel-collector:4318`; `PLATFORM_OTEL_ENDPOINT` в compose, сеть `telemetry`). Агенты пишут
+Профиль включает манифест инсталляции: `observability.enabled` и `retention.telemetry_days`
+(schema v6). `up.sh` запускает хранилища и Collector до Platform API, а рендер передаёт адрес
+Collector Platform API и platform-worker (`PLATFORM_OTEL_ENDPOINT` в `platform-api.env` и
+`platform-worker.env`). При `enabled: false` сервисы профиля останавливаются, тома остаются. Агенты пишут
 спаны без содержимого (`include_content=False`), свои спаны: запрос по шаблону маршрута, вызов
 шлюза, MCP, Cerbos; метрики `http.server.request.duration`, `gen_ai.client.token.usage`,
 `antec.model.calls`, `antec.mcp.requests`, `antec.policy.decisions`.
+
+Grafana: http://localhost:3001, вход только через Keycloak (клиент `grafana`). Ролей по
+умолчанию нет: `viewer` или `admin` назначаются в админ-консоли Keycloak (Clients → grafana →
+Roles), у `breakglass` есть `admin`. Источники данных VictoriaMetrics, VictoriaTraces и
+«Platform metrics» (роль PostgreSQL `platform_metrics` видит только представления схемы
+`metrics`, [`postgres/metrics.sql`](postgres/metrics.sql)), дашборд «antec.ai: LLM и Platform
+API» и правила алертов задаются файлами в [`observability/grafana`](observability/grafana);
+правки в интерфейсе не сохраняются. Алерты: Platform API не отдаёт телеметрию, 5xx фасада выше
+5%, ошибки моделей выше 20%, platform-worker не выполняет проходы, мало места на диске.
+Получатель: `observability.alert_email` манифеста; SMTP:
+
+```bash
+deploy/compose/scripts/set-smtp.sh
+```
+
+Спрашивает host:port, пользователя, адрес отправителя и пароль (без эха), сохраняет в OpenBao
+(`antec/smtp`) и перезапускает Grafana; только STARTTLS. Без SMTP алерты видны в Grafana.
+`set-smtp.sh --remove` удаляет настройки.
 
 Трейсы ищутся через Jaeger API VictoriaTraces изнутри сети `observability`, например
 `http://victoria-traces:10428/select/jaeger/api/traces?service=<сервис>&lookback=1h`.

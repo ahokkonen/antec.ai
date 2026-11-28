@@ -20,6 +20,8 @@ from sqlalchemy import func, insert, null, select, true, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from antec_platform import telemetry
+from antec_platform.adapters.otel import setup as setup_telemetry
 from antec_platform.db import agent_runs, audit_events, create_engine, model_calls
 from antec_platform.retention import purge
 from antec_platform.settings import WorkerSettings
@@ -249,11 +251,21 @@ async def run(
             result = await sweep(engine, abandon, lookback)
             full = full and result.tool_calls == _BATCH
             settings.worker_heartbeat_file.touch()
+            telemetry.worker_sweeps.add(1, {"antec.status": "ok"})
+            for kind, count in (
+                ("approval", result.expired),
+                ("model_call", result.model_calls),
+                ("agent_run", result.agent_runs),
+                ("tool_call", result.tool_calls),
+            ):
+                if count:
+                    telemetry.worker_closed.add(count, {"antec.kind": kind})
             if any((result.expired, result.model_calls, result.agent_runs, result.tool_calls)):
                 log.warning("закрыто незавершённое: %s", result)
         except Exception:
             # Отметка не обновляется: healthcheck покажет, что проходы не выполняются.
             log.exception("проход platform-worker не выполнен")
+            telemetry.worker_sweeps.add(1, {"antec.status": "error"})
             # За время сбоя незакрытое могло уйти глубже обычного поиска.
             full = True
         with contextlib.suppress(TimeoutError):
@@ -274,10 +286,17 @@ async def serve(settings: WorkerSettings) -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
+    otel = (
+        setup_telemetry(settings.otel_endpoint, "antec-platform-worker")
+        if settings.otel_endpoint
+        else None
+    )
     try:
         log.info("platform-worker запущен, интервал %s с", settings.worker_interval_seconds)
         await run(settings, engine, stop, open_webui_engine)
     finally:
+        if otel is not None:
+            await asyncio.to_thread(otel.shutdown)
         if open_webui_engine is not None:
             await open_webui_engine.dispose()
         await engine.dispose()

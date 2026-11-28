@@ -1,0 +1,36 @@
+# Источники данных Grafana (ADR-0013): только чтение, без правки из интерфейса.
+apiVersion: 1
+prune: true
+datasources:
+  - name: VictoriaMetrics
+    uid: vm
+    type: prometheus
+    access: proxy
+    url: http://victoria-metrics:8428
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 30s
+  - name: VictoriaTraces
+    uid: vt
+    type: jaeger
+    access: proxy
+    url: http://victoria-traces:10428/select/jaeger
+    editable: false
+  # Агрегаты вызовов моделей без текстов и идентификаторов: роль platform_metrics видит только
+  # представления схемы metrics (deploy/compose/postgres/metrics.sql); сеть metrics-db.
+  - name: Platform metrics
+    uid: pg
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: platform_metrics
+    editable: false
+    jsonData:
+      database: platform
+      sslmode: disable
+      maxOpenConns: 2
+      postgresVersion: 1800
+    secureJsonData:
+      password: $__file{/run/antec-secrets/db_password}

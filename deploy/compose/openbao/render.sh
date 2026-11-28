@@ -8,6 +8,7 @@
 #   render.sh platform-migrate  пароль владельца схемы platform в /out/platform-migrate (uid 65534)
 #   render.sh platform-worker   пароль роли platform_worker в /out/platform-worker (uid 65534)
 #   render.sh platform-subject  пароль роли platform_subject в /out/platform-subject (uid 65534)
+#   render.sh grafana   секреты и SMTP Grafana в /out/grafana (uid 472, ADR-0013)
 # Токен приходит через stdin (`compose run -T`), живёт 5 минут и умеет читать только
 # пути своей цели. Значения не печатаются и не попадают в argv и окружение контейнера.
 set -eu
@@ -46,7 +47,7 @@ remove() { # итоговый
 case "$target" in
   postgres)
     out=/out/postgres
-    keys="superuser keycloak litellm openwebui platform dbos platform_app platform_worker platform_subject"
+    keys="superuser keycloak litellm openwebui platform dbos platform_app platform_worker platform_subject platform_metrics"
     trap 'rm -f "$out"/.*.new' EXIT
     for key in $keys; do
       fetch postgres "$key" "$out/.$key.new"
@@ -170,8 +171,44 @@ case "$target" in
     replace "$out/.platform_database_password.new" "$out/platform_database_password"
     owner=65534:65534
     ;;
+  grafana)
+    # Файлы для GF_*__FILE (ADR-0013): секрет клиента grafana, пароль администратора (вход
+    # формой выключен), пароль роли platform_metrics для источника данных PostgreSQL, SMTP.
+    out=/out/grafana
+    trap 'rm -f "$out"/.*.new "$out"/.smtp.err' EXIT
+    fetch grafana oauth_client_secret "$out/.oauth_client_secret.new"
+    fetch grafana admin_password "$out/.admin_password.new"
+    fetch grafana db_password "$out/.db_password.new"
+    # SMTP необязателен (scripts/set-smtp.sh): без записи алерты видны только в Grafana.
+    # Отсутствие записи и ошибка чтения различаются.
+    if bao kv get -mount=antec -field=host smtp > "$out/.smtp_host.new" 2> "$out/.smtp.err" \
+        && [ -s "$out/.smtp_host.new" ]; then
+      fetch smtp user "$out/.smtp_user.new"
+      fetch smtp password "$out/.smtp_password.new"
+      fetch smtp from_address "$out/.smtp_from_address.new"
+      printf 'true' > "$out/.smtp_enabled.new"
+    elif grep -q "^No value found at " "$out/.smtp.err"; then
+      printf 'false' > "$out/.smtp_enabled.new"
+      # Grafana читает все GF_SMTP_*__FILE: при выключенном SMTP файлы есть, но пусты по смыслу.
+      # Grafana проверяет адрес отправителя и при выключенном SMTP: заглушка в .invalid.
+      printf 'localhost:25' > "$out/.smtp_host.new"
+      printf 'unset' > "$out/.smtp_user.new"
+      printf 'unset' > "$out/.smtp_password.new"
+      printf 'alerts@antec.invalid' > "$out/.smtp_from_address.new"
+    else
+      cat "$out/.smtp.err" >&2
+      echo "render: не удалось прочитать antec/smtp; прежние секреты Grafana сохранены" >&2
+      exit 1
+    fi
+    for f in oauth_client_secret admin_password db_password smtp_enabled smtp_host smtp_user \
+        smtp_password smtp_from_address; do
+      replace "$out/.$f.new" "$out/$f"
+    done
+    # Пользователь образа grafana: uid 472, группа root (gid 0).
+    owner=472:0
+    ;;
   *)
-    echo "render: использование: render.sh postgres|keycloak|litellm|open-webui|platform-api|platform-migrate|platform-worker|platform-subject" >&2
+    echo "render: использование: render.sh postgres|keycloak|litellm|open-webui|platform-api|platform-migrate|platform-worker|platform-subject|grafana" >&2
     exit 2
     ;;
 esac

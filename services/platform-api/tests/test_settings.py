@@ -78,3 +78,16 @@ def test_policy_scope(
     monkeypatch.setenv("PLATFORM_OIDC_JWKS_URL", "http://x/certs")
     monkeypatch.setenv("PLATFORM_POLICY_SCOPE", value)
     assert _settings(secrets).policy_scope == expected
+
+
+def test_default_secrets_dir_kept_by_all_settings() -> None:
+    """Регрессия: свой model_config в базовом классе перекрывал secrets_dir (ADR-0013)."""
+    from antec_platform.settings import (
+        DEFAULT_SECRETS_DIR,
+        DatabaseSettings,
+        SubjectSettings,
+        WorkerSettings,
+    )
+
+    for cls in (DatabaseSettings, Settings, WorkerSettings, SubjectSettings):
+        assert cls.model_config.get("secrets_dir") == DEFAULT_SECRETS_DIR, cls.__name__

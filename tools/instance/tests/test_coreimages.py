@@ -33,7 +33,7 @@ def _release(version: str, **extra: object) -> dict[str, object]:
             }
             for name, ch in zip(coreimages.IMAGE_SERVICES, "abc", strict=True)
         },
-        "manifest_schema_versions": {"supported": [1, 2, 3, 4, 5], "deprecated": [1, 2, 3, 4]},
+        "manifest_schema_versions": {"supported": [1, 2, 3, 4, 5, 6], "deprecated": [1, 2, 3, 4]},
         "mcp_protocol_versions": ["2026-07-28"],
         "migration_head": "0006",
         "future_field": True,
@@ -151,7 +151,7 @@ def test_bad_signature_writes_nothing(
     [
         ({"core_version": "9.9.9"}, "release.json для ядра 9.9.9"),
         ({"repository": "https://github.com/evil/antec.ai"}, "ожидается"),
-        ({"manifest_schema_versions": {"supported": [6]}}, "schema_version 5"),
+        ({"manifest_schema_versions": {"supported": [7]}}, "schema_version 6"),
         ({"mcp_protocol_versions": ["2027-01-01"]}, "ревизия 2026-07-28"),
         ({"images": {}}, "образы release.json"),
     ],
