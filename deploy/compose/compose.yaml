@@ -278,6 +278,9 @@ services:
       PLATFORM_OIDC_AUDIENCE: platform-api
       PLATFORM_GATEWAY_URL: http://litellm:4000/v1
       PLATFORM_POLICY_URL: http://cerbos:3592
+      # OTLP/HTTP в otel-collector (ADR-0013); пусто = телеметрия выключена. Задаёт up.sh по
+      # манифесту инсталляции (observability.enabled).
+      PLATFORM_OTEL_ENDPOINT: ${ANTEC_OTEL_ENDPOINT:-}
       PLATFORM_AGENTS_FILE: /antec/instance/agents.json
       # Инструменты агентов (ADR-0010): MCP-серверы манифеста и обмен токена в Keycloak.
       PLATFORM_MCP_SERVERS_FILE: /antec/instance/mcp_servers.json
@@ -294,7 +297,7 @@ services:
       - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered/platform-api:/antec/instance:ro
     # data: PostgreSQL и JWKS Keycloak; llm: LiteLLM; platform: клиенты фасада; policy: Cerbos;
     # mcp: MCP-серверы инсталляции (ADR-0010).
-    networks: [data, llm, platform, policy, mcp]
+    networks: [data, llm, platform, policy, mcp, telemetry]
     mem_limit: 512m
     depends_on:
       postgres:

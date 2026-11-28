@@ -124,6 +124,9 @@ class Settings(DatabaseSettings):
         default_factory=lambda: ["chat-default", "chat-fast"]
     )
 
+    # Телеметрия OTLP/HTTP (ADR-0013): адрес otel-collector без пути; пусто = выключена.
+    otel_endpoint: str | None = None
+
     # PDP по AuthZEN (ADR-0009).
     policy_url: str = "http://cerbos:3592"
     policy_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 3.0
@@ -146,6 +149,15 @@ class Settings(DatabaseSettings):
 
     max_request_bytes: Annotated[int, Field(ge=1024, le=64 * 1024 * 1024)] = 8 * 1024 * 1024
     log_level: str = "INFO"
+
+    @field_validator("otel_endpoint", mode="before")
+    @classmethod
+    def _otel_endpoint(cls, value: object) -> object:
+        if value in ("", None):
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:\d+)?", value):
+            raise ValueError("ожидается http(s)://хост[:порт] без пути и параметров")
+        return value
 
     @field_validator("allowed_clients", "models", mode="before")
     @classmethod

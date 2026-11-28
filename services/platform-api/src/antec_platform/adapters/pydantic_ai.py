@@ -49,6 +49,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
+from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -464,3 +465,18 @@ def _text_delta(event: object) -> str | None:
     if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
         return event.delta.content_delta or None
     return None
+
+
+def instrument_agents() -> None:
+    """OTel-телеметрия всех агентов без содержимого (ADR-0013, п. 2; ADR-0012, п. 6).
+
+    Без промптов, ответов, аргументов и результатов инструментов, двоичных данных и параметров
+    запроса модели (описания инструментов). Провайдеры берутся глобальные (adapters/otel.py).
+    """
+    Agent.instrument_all(
+        InstrumentationSettings(
+            include_content=False,
+            include_binary_content=False,
+            include_model_request_parameters=False,
+        )
+    )

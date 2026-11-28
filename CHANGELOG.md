@@ -13,6 +13,8 @@
 - Наблюдаемость (ADR-0013): профиль compose `observability` с OTel Collector, VictoriaMetrics,
   VictoriaLogs и VictoriaTraces; фильтр приватности в Collector удаляет тексты GenAI,
   пользователя и HTTP-заголовки.
+- Platform API: трейсы и метрики OTel без содержимого и id пользователя (`PLATFORM_OTEL_ENDPOINT`,
+  ADR-0013); встроенная телеметрия FastAPI выключена.
 - pincheck PIN034: пре-релизы Python-пакетов в `uv.lock` запрещены, исключения в
   `python_prerelease_allowed` реестра.
 

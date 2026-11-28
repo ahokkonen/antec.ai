@@ -14,7 +14,9 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+from opentelemetry.trace import SpanKind
 
+from antec_platform import telemetry
 from antec_platform.policy import PolicyUnavailable, Resource, Subject
 
 # Лимит Cerbos по умолчанию (server.requestLimits.maxResourcesPerRequest).
@@ -64,9 +66,18 @@ class AuthZenPolicyClient:
         # Без ролей принципал недопустим для Cerbos; без ролей прав нет по определению.
         if not subject.roles:
             return [False] * len(resources)
-        out: list[bool] = []
-        for start in range(0, len(resources), _MAX_BATCH):
-            out += await self._batch(subject, action, resources[start : start + _MAX_BATCH])
+        attrs: dict[str, str | int | bool] = {"antec.policy.action": action}
+        with telemetry.span(f"authz {action}", SpanKind.CLIENT, attrs) as span:
+            out: list[bool] = []
+            for start in range(0, len(resources), _MAX_BATCH):
+                out += await self._batch(subject, action, resources[start : start + _MAX_BATCH])
+            allowed = sum(out)
+            span.set_attribute("antec.policy.allowed", allowed)
+            span.set_attribute("antec.policy.denied", len(out) - allowed)
+        if allowed:
+            telemetry.policy_decisions.add(allowed, {**attrs, "antec.decision": "allow"})
+        if len(out) - allowed:
+            telemetry.policy_decisions.add(len(out) - allowed, {**attrs, "antec.decision": "deny"})
         return out
 
     async def _batch(self, subject: Subject, action: str, resources: list[Resource]) -> list[bool]:
