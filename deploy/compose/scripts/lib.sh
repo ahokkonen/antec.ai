@@ -40,6 +40,17 @@ remember_active_instance() {
   printf '%s\n' "$ANTEC_INSTANCE_DIR" > "$ACTIVE_INSTANCE_FILE"
 }
 
+# Поле instance.json по пути через точку: true/false для bool, строка, пусто если нет поля.
+instance_field() { # путь
+  python3 -c '
+import json, sys
+value = json.load(open(sys.argv[1]))
+for part in sys.argv[2].split("."):
+    value = value.get(part) if isinstance(value, dict) else None
+print("" if value is None else (str(value).lower() if isinstance(value, bool) else value))' \
+    "$ANTEC_INSTANCE_RENDERED/instance.json" "$1"
+}
+
 # Логические модели инсталляции из instance.json (JSON-массив).
 instance_models_json() {
   python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["models"]))' \
@@ -63,7 +74,8 @@ tree_sha() { # каталоги...
     find "$d" -type f | LC_ALL=C sort | while read -r f; do printf '%s\n' "$f"; cat "$f"; done
   done | shasum -a 256 | cut -c1-16
 }
-export ANTEC_WORKER_CONFIG_SHA ANTEC_LITELLM_CONFIG_SHA ANTEC_OPEN_WEBUI_CONFIG_SHA ANTEC_CERBOS_CONFIG_SHA ANTEC_PLATFORM_CONFIG_SHA
+export ANTEC_WORKER_CONFIG_SHA ANTEC_LITELLM_CONFIG_SHA ANTEC_OPEN_WEBUI_CONFIG_SHA ANTEC_CERBOS_CONFIG_SHA ANTEC_PLATFORM_CONFIG_SHA \
+  ANTEC_OTEL_CONFIG_SHA ANTEC_GRAFANA_CONFIG_SHA
 compute_config_shas() {
   ANTEC_LITELLM_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/litellm/config.yaml" \
     "$COMPOSE_DIR/common/env-from-files.sh" "$ANTEC_INSTANCE_RENDERED/litellm/models.yaml" \
@@ -80,6 +92,10 @@ compute_config_shas() {
     "$ANTEC_INSTANCE_RENDERED/platform-api/agents.json" \
     "$ANTEC_INSTANCE_RENDERED/platform-api/mcp_servers.json" \
     "$ANTEC_INSTANCE_RENDERED/platform-api/models.json")"
+  # Наблюдаемость (ADR-0013): конфигурация Collector; provisioning Grafana ядра и алерты рендера.
+  ANTEC_OTEL_CONFIG_SHA="$(config_sha "$COMPOSE_DIR/observability/otel-collector.yaml")"
+  ANTEC_GRAFANA_CONFIG_SHA="$(tree_sha "$COMPOSE_DIR/observability/grafana" \
+    "$ANTEC_INSTANCE_RENDERED/grafana")"
 }
 compute_config_shas
 

@@ -22,6 +22,11 @@ done
 log "проверка и рендер манифеста инсталляции $ANTEC_INSTANCE_DIR (ADR-0008)"
 render_instance
 remember_active_instance
+# Наблюдаемость и срок хранения телеметрии из манифеста (instance.json рендера, ADR-0013).
+observability="$(instance_field observability.enabled)"
+ANTEC_TELEMETRY_RETENTION="$(instance_field observability.telemetry_retention)"
+export ANTEC_TELEMETRY_RETENTION
+compute_config_shas
 
 log "запуск OpenBao"
 compose up -d openbao
@@ -73,7 +78,8 @@ fi
 bao_exec write -f "transit/keys/$AUDIT_KEY" type=ed25519 >/dev/null
 
 for policy in audit-checkpoint render-postgres render-keycloak render-litellm render-open-webui \
-    render-platform-api render-platform-migrate render-platform-worker render-platform-subject; do
+    render-platform-api render-platform-migrate render-platform-worker render-platform-subject \
+    render-grafana; do
   compose exec -T -e BAO_TOKEN openbao bao policy write "$policy" - \
     < "$COMPOSE_DIR/openbao/policies/$policy.hcl" >/dev/null
 done
@@ -82,19 +88,22 @@ if ! bao_exec kv get -mount=antec postgres >/dev/null 2>&1; then
   log "генерация паролей PostgreSQL в OpenBao (antec/postgres)"
   python3 - <<'PY' | compose exec -T -e BAO_TOKEN openbao bao kv put -mount=antec postgres - >/dev/null
 import json, secrets
-keys = ["superuser", "keycloak", "litellm", "openwebui", "platform", "dbos", "platform_app", "platform_worker", "platform_subject"]
+keys = ["superuser", "keycloak", "litellm", "openwebui", "platform", "dbos", "platform_app", "platform_worker", "platform_subject", "platform_metrics"]
 print(json.dumps({k: secrets.token_urlsafe(32) for k in keys}))
 PY
 fi
 
 # Роли Platform API (ADR-0006, п. 9; ADR-0012, п. 2) появились позже первых установок.
 ensure_generated_secrets postgres platform_app platform_worker platform_subject
+# Роль platform_metrics: агрегаты для Grafana (ADR-0013, postgres/metrics.sql).
+ensure_generated_secrets postgres platform_metrics
 
 # Секреты сервисов в OpenBao. Недостающие ключи дополняются, существующие не меняются;
 # ошибка чтения прерывает запуск (bao_kv_json). Пароль роли БД копируется из antec/postgres,
 # чтобы токен выгрузки сервиса не имел доступа к паролям других ролей.
 ensure_generated_secrets keycloak bootstrap_client_secret automation_client_secret \
-  admin_password breakglass_password platform_api_client_secret open_webui_client_secret
+  admin_password breakglass_password platform_api_client_secret open_webui_client_secret \
+  grafana_client_secret
 copy_db_password keycloak keycloak
 # LiteLLM (ADR-0018): мастер-ключ с префиксом sk- (формат ключей LiteLLM); salt key шифрует
 # учётные данные в БД LiteLLM и не должен меняться после первого запуска.
@@ -114,6 +123,11 @@ copy_secret_field keycloak platform_api_client_secret platform-api oidc_client_s
 copy_db_password platform platform-migrate
 copy_db_password platform_worker platform-worker
 copy_db_password platform_subject platform-subject
+# Grafana (ADR-0013): секрет клиента grafana из realm как кода, пароль администратора (вход
+# формой выключен), пароль роли platform_metrics для источника данных PostgreSQL.
+ensure_generated_secrets grafana admin_password
+copy_secret_field keycloak grafana_client_secret grafana oauth_client_secret
+copy_db_password platform_metrics grafana
 
 # Сервисы, работавшие до этого запуска: их нужно перезапустить, если изменились их секреты
 # (обёртки и Keycloak читают файлы секретов только при старте процесса).
@@ -148,6 +162,7 @@ render platform-api
 render platform-migrate
 render platform-worker
 render platform-subject
+if [[ "$observability" == true ]]; then render grafana; fi
 
 log "сборка и запуск PostgreSQL"
 postgres_before="$(compose ps -q postgres 2>/dev/null || true)"
@@ -200,6 +215,22 @@ litellm_provision_inputs \
 log "запуск Cerbos (политики ядра и инсталляции)"
 compose up -d --wait cerbos
 
+# Наблюдаемость по манифесту (ADR-0013): хранилища и Collector до Platform API и worker, чтобы
+# экспорт OTLP сразу находил адресата. Выключена: сервисы профиля останавливаются, тома остаются.
+if [[ "$observability" == true ]]; then
+  log "запуск наблюдаемости: VictoriaMetrics, VictoriaLogs, VictoriaTraces, OTel Collector (срок $ANTEC_TELEMETRY_RETENTION)"
+  compose up -d --wait victoria-metrics
+  compose up -d victoria-logs victoria-traces otel-collector
+else
+  obs_running="$(compose --profile observability ps --status running --services 2>/dev/null \
+    | grep -Ex 'otel-collector|victoria-(metrics|logs|traces)|grafana' || true)"
+  if [[ -n "$obs_running" ]]; then
+    log "наблюдаемость выключена в манифесте: остановка $(tr '\n' ' ' <<<"$obs_running")"
+    # shellcheck disable=SC2086 # список сервисов
+    compose --profile observability stop $obs_running >/dev/null
+  fi
+fi
+
 log "сборка Platform API и миграции БД platform"
 compose build platform-api
 # План до миграций (ADR-0014, п. 7): понижение версии ядра останавливает запуск, ожидающие
@@ -240,6 +271,12 @@ if [[ "$(pg_exec psql -X -At -d platform -c "select to_regclass('audit.audit_eve
   compose stop -t 60 platform-api platform-worker >/dev/null
 fi
 pg_exec psql -X -q -v ON_ERROR_STOP=1 -d platform < "$COMPOSE_DIR/postgres/audit.sql" >/dev/null
+if [[ "$observability" == true ]]; then
+  # Пароль читает psql из файла секретов внутри контейнера postgres: не argv и не журнал.
+  { printf '\\set pw `cat /run/antec-secrets/platform_metrics`\n'
+    cat "$COMPOSE_DIR/postgres/metrics.sql"; } \
+    | pg_exec psql -X -q -v ON_ERROR_STOP=1 -d platform >/dev/null
+fi
 log "запуск Platform API"
 start_service platform-api
 
@@ -252,8 +289,15 @@ start_service platform-worker
 log "сверка аккаунтов Open WebUI с Keycloak"
 sync_open_webui_identities
 audit_checkpoint
+if [[ "$observability" == true ]]; then
+  log "запуск Grafana (вход через Keycloak: роли viewer и admin клиента grafana)"
+  start_service grafana
+fi
 unset BAO_TOKEN
 save_deploy_state "$deploy_state"
 log "стенд запущен: $(compose ps --format '{{.Service}}={{.State}}' | tr '\n' ' ')"
 log "Keycloak: http://localhost:8080/realms/antec/account (администрирование: http://localhost:8080/admin)"
 log "Open WebUI: http://localhost:3000 (вход через Keycloak)"
+if [[ "$observability" == true ]]; then
+  log "Grafana: http://localhost:3001 (вход через Keycloak, роль клиента grafana)"
+fi

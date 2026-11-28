@@ -64,6 +64,7 @@ services:
       - platform-migrate-secrets:/out/platform-migrate
       - platform-worker-secrets:/out/platform-worker
       - platform-subject-secrets:/out/platform-subject
+      - grafana-secrets:/out/grafana
     networks: [secrets]
     depends_on:
       openbao:
@@ -278,9 +279,6 @@ services:
       PLATFORM_OIDC_AUDIENCE: platform-api
       PLATFORM_GATEWAY_URL: http://litellm:4000/v1
       PLATFORM_POLICY_URL: http://cerbos:3592
-      # OTLP/HTTP в otel-collector (ADR-0013); пусто = телеметрия выключена. Задаёт up.sh по
-      # манифесту инсталляции (observability.enabled).
-      PLATFORM_OTEL_ENDPOINT: ${ANTEC_OTEL_ENDPOINT:-}
       PLATFORM_AGENTS_FILE: /antec/instance/agents.json
       # Инструменты агентов (ADR-0010): MCP-серверы манифеста и обмен токена в Keycloak.
       PLATFORM_MCP_SERVERS_FILE: /antec/instance/mcp_servers.json
@@ -332,7 +330,8 @@ services:
       - /tmp:size=16m,uid=65534,gid=65534
     volumes:
       - platform-worker-secrets:/run/antec-secrets:ro
-    networks: [data]
+    # telemetry: OTLP в otel-collector, если манифест включает наблюдаемость (ADR-0013).
+    networks: [data, telemetry]
     mem_limit: 256m
     healthcheck:
       # Отметка обновляется только успешным проходом (раз в минуту).
@@ -519,6 +518,9 @@ services:
     profiles: [observability]
     image: docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
     command: ["--config=/antec/otel-collector.yaml"]
+    environment:
+      # Хэш конфигурации (scripts/lib.sh): изменение пересоздаёт контейнер.
+      ANTEC_CONFIG_SHA: ${ANTEC_OTEL_CONFIG_SHA:-}
     read_only: true
     volumes:
       - ./observability:/antec:ro
@@ -541,6 +543,8 @@ services:
       - -storageDataPath=/storage
       - -retentionPeriod=${ANTEC_TELEMETRY_RETENTION:-30d}
       - -opentelemetry.usePrometheusNaming=true
+      # Свои метрики (свободное место тома) для алерта о диске (ADR-0013, п. 6).
+      - -selfScrapeInterval=30s
     read_only: true
     volumes:
       - victoria-metrics-data:/storage
@@ -580,6 +584,78 @@ services:
       - victoria-traces-data:/storage
     networks: [observability]
     mem_limit: 384m
+
+  # Grafana (ADR-0013, п. 5): отдельный немодифицированный сервис (AGPL-3.0), вход только через
+  # Keycloak (клиент grafana, роли viewer и admin), без анонимов, формы входа и basic auth.
+  # Источники данных, дашборды и правила алертов как код; состояние Grafana в своём томе.
+  # Выход в интернет только потому, что порт публикуется из не-internal сети ui; проверки
+  # обновлений, новости и предустановка плагинов выключены.
+  grafana:
+    <<: *hardening
+    profiles: [observability]
+    image: docker.io/grafana/grafana:13.3.2@sha256:81556409ba48b2b922e0adb69a2511337d8ba7578f11962eefa6149a2d815101
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,uid=472,gid=472
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      ANTEC_CONFIG_SHA: ${ANTEC_GRAFANA_CONFIG_SHA:-}
+      GF_SERVER_ROOT_URL: http://localhost:3001
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SECURITY_CONTENT_SECURITY_POLICY: "true"
+      GF_SECURITY_X_XSS_PROTECTION: "false"
+      GF_SECURITY_COOKIE_SAMESITE: lax
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/antec-secrets/admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
+      GF_AUTH_GENERIC_OAUTH_NAME: Keycloak
+      GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN: "true"
+      GF_AUTH_GENERIC_OAUTH_CLIENT_ID: grafana
+      GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET__FILE: /run/antec-secrets/oauth_client_secret
+      GF_AUTH_GENERIC_OAUTH_SCOPES: openid profile email
+      GF_AUTH_GENERIC_OAUTH_USE_PKCE: "true"
+      # Браузер ходит на публичный адрес Keycloak, сервер Grafana на внутренний.
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: http://localhost:8080/realms/antec/protocol/openid-connect/auth
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: http://keycloak:8080/realms/antec/protocol/openid-connect/token
+      GF_AUTH_GENERIC_OAUTH_API_URL: http://keycloak:8080/realms/antec/protocol/openid-connect/userinfo
+      GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH: antec_uid
+      # Роль только из Keycloak (роли клиента grafana); без роли вход запрещён.
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(roles[*], 'admin') && 'Admin' || contains(roles[*], 'viewer') && 'Viewer' || ''"
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT: "true"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN: "false"
+      GF_AUTH_SIGNOUT_REDIRECT_URL: http://localhost:8080/realms/antec/protocol/openid-connect/logout?client_id=grafana&post_logout_redirect_uri=http%3A%2F%2Flocalhost%3A3001%2Flogin
+      GF_AUTH_LOGIN_MAXIMUM_LIFETIME_DURATION: 10h
+      # SMTP для алертов (scripts/set-smtp.sh); без него алерты видны только в Grafana.
+      GF_SMTP_ENABLED__FILE: /run/antec-secrets/smtp_enabled
+      GF_SMTP_HOST__FILE: /run/antec-secrets/smtp_host
+      GF_SMTP_USER__FILE: /run/antec-secrets/smtp_user
+      GF_SMTP_PASSWORD__FILE: /run/antec-secrets/smtp_password
+      GF_SMTP_FROM_ADDRESS__FILE: /run/antec-secrets/smtp_from_address
+      GF_SMTP_STARTTLS_POLICY: MandatoryStartTLS
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - grafana-secrets:/run/antec-secrets:ro
+      - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # Правила алертов ядра и получатель из манифеста: рендер инсталляции (tools/instance).
+      - ${ANTEC_INSTANCE_DIR:-../../instances/dev}/.rendered/grafana/alerting:/etc/grafana/provisioning/alerting:ro
+    networks: [ui, observability, data]
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
 
 networks:
   # Без выхода наружу и без публикации портов на хост.
@@ -629,3 +705,5 @@ volumes:
   victoria-metrics-data:
   victoria-logs-data:
   victoria-traces-data:
+  grafana-data:
+  grafana-secrets:

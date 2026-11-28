@@ -260,6 +260,11 @@ def test_render_observability(core_dir: Path, dev_instance: Path, tmp_path: Path
     summary = json.loads((out / "instance.json").read_text())
     assert summary["observability"] == {"enabled": True, "telemetry_retention": "30d"}
     assert not (out / "grafana/alerting/contact-points.yaml").exists()
+    rules = yaml.safe_load((out / "grafana/alerting/rules.yaml").read_text())
+    assert {r["uid"] for r in rules["groups"][0]["rules"]} >= {
+        "antec-api-down",
+        "antec-worker-stalled",
+    }
     # Адрес алертов: контакт и политика уведомлений Grafana.
     manifest.write_text(
         text.replace(
@@ -277,3 +282,4 @@ def test_render_observability(core_dir: Path, dev_instance: Path, tmp_path: Path
     assert main(["--core", str(core_dir), "render", str(dev_instance), "--out", str(out)]) == 0
     assert "PLATFORM_OTEL_ENDPOINT" not in (out / "platform-api.env").read_text()
     assert not (out / "grafana/alerting/contact-points.yaml").exists()
+    assert not (out / "grafana/alerting/rules.yaml").exists()

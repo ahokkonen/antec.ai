@@ -15,8 +15,18 @@
   пользователя и HTTP-заголовки.
 - Platform API: трейсы и метрики OTel без содержимого и id пользователя (`PLATFORM_OTEL_ENDPOINT`,
   ADR-0013); встроенная телеметрия FastAPI выключена.
+- Grafana 13.3 (профиль `observability`): вход через Keycloak (клиент `grafana`, роли `viewer` и
+  `admin`), дашборд LLM и Platform API, алерты на email (`scripts/set-smtp.sh`), роль PostgreSQL
+  `platform_metrics` только с агрегатами (ADR-0013).
+- Манифест `schema_version: 6`: `observability.enabled`, `observability.alert_email`,
+  `retention.telemetry_days`; метрики platform-worker.
 - pincheck PIN034: пре-релизы Python-пакетов в `uv.lock` запрещены, исключения в
   `python_prerelease_allowed` реестра.
+### Обновление
+
+- Манифест можно перевести на `schema_version: 6` и включить `observability.enabled`; v5
+  остаётся валидным. `up.sh` сам создаст роль `platform_metrics`, клиента Keycloak `grafana` и
+  секреты в OpenBao.
 
 ## [0.1.0] - 2026-11-26
 

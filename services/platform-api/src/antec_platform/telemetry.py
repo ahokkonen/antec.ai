@@ -67,10 +67,9 @@ def _up(_: CallbackOptions) -> list[Observation]:
     return [Observation(1)]
 
 
-# 1 при каждом экспорте: отсутствие ряда = сервис не работает или не отдаёт телеметрию.
-_meter.create_observable_gauge(
-    "antec.service.up", callbacks=[_up], unit="1", description="Сервис жив"
-)
+# 1 при каждом экспорте: отсутствие ряда = сервис не работает или не отдаёт телеметрию. Без
+# единицы: с unit="1" VictoriaMetrics (usePrometheusNaming) добавляет к имени суффикс _ratio.
+_meter.create_observable_gauge("antec.service.up", callbacks=[_up], description="Сервис жив")
 mcp_requests = _meter.create_counter(
     "antec.mcp.requests",
     unit="{request}",

@@ -55,12 +55,24 @@ class DatabaseSettings(BaseSettings):
     subject_role: str = "platform_subject"
     # БД Open WebUI на том же сервере (чаты по сроку и по запросу субъекта); пусто = её нет.
     open_webui_database: str | None = None
+    # Телеметрия OTLP/HTTP (ADR-0013): адрес otel-collector без пути; пусто = выключена. Здесь,
+    # а не в отдельном классе: свой model_config перекрыл бы secrets_dir.
+    otel_endpoint: str | None = None
 
     @field_validator("app_role", "worker_role", "subject_role", "database_user", "database_name")
     @classmethod
     def _identifier(cls, value: str) -> str:
         if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", value):
             raise ValueError("ожидается идентификатор PostgreSQL в нижнем регистре")
+        return value
+
+    @field_validator("otel_endpoint", mode="before")
+    @classmethod
+    def _otel_endpoint(cls, value: object) -> object:
+        if value in ("", None):
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:\d+)?", value):
+            raise ValueError("ожидается http(s)://хост[:порт] без пути и параметров")
         return value
 
     @field_validator("open_webui_database", mode="before")
@@ -80,24 +92,7 @@ class DatabaseSettings(BaseSettings):
         )
 
 
-class TelemetrySettings(BaseSettings):
-    """Телеметрия OTLP/HTTP (ADR-0013): адрес otel-collector без пути; пусто = выключена."""
-
-    model_config = SettingsConfigDict(env_prefix="PLATFORM_", extra="ignore", frozen=True)
-
-    otel_endpoint: str | None = None
-
-    @field_validator("otel_endpoint", mode="before")
-    @classmethod
-    def _otel_endpoint(cls, value: object) -> object:
-        if value in ("", None):
-            return None
-        if not isinstance(value, str) or not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:\d+)?", value):
-            raise ValueError("ожидается http(s)://хост[:порт] без пути и параметров")
-        return value
-
-
-class WorkerSettings(DatabaseSettings, TelemetrySettings):
+class WorkerSettings(DatabaseSettings):
     """Фоновый сервис platform-worker (ADR-0012, п. 2)."""
 
     database_user: str = "platform_worker"
@@ -120,7 +115,7 @@ class SubjectSettings(DatabaseSettings):
     database_pool_size: Annotated[int, Field(ge=1, le=50)] = 2
 
 
-class Settings(DatabaseSettings, TelemetrySettings):
+class Settings(DatabaseSettings):
     """Настройки сервиса. Ключ шлюза: файл `gateway_api_key` в каталоге секретов."""
 
     # Issuer токенов (значение claim iss) и адрес JWKS. На стенде JWKS берётся по внутреннему

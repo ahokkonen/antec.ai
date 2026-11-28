@@ -196,6 +196,38 @@
       "optionalClientScopes": []
     },
     {
+      "clientId": "grafana",
+      "name": "Grafana",
+      "description": "Дашборды и алерты (ADR-0013); роли клиента viewer и admin, без роли входа нет",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [
+        "http://localhost:3001/login/generic_oauth"
+      ],
+      "webOrigins": [
+        "http://localhost:3001"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3001/*",
+        "access.token.lifespan": "900"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "email",
+        "antec-identity"
+      ],
+      "optionalClientScopes": []
+    },
+    {
       "clientId": "mcp-m365",
       "name": "MCP M365",
       "description": "Аудитория MCP-сервера M365; сам клиент токены не получает",

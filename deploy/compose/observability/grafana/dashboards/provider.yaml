@@ -1,0 +1,11 @@
+# Дашборды как код (ADR-0013): изменения в интерфейсе не сохраняются.
+apiVersion: 1
+providers:
+  - name: antec
+    folder: antec.ai
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

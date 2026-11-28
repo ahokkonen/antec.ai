@@ -33,6 +33,8 @@ DPIA_FACTS = "compliance/dpia-facts.md"
 SUMMARY = "instance.json"
 # Алерты Grafana инсталляции: получатель из манифеста (ADR-0013, п. 6).
 GRAFANA_CONTACT = "grafana/alerting/contact-points.yaml"
+GRAFANA_RULES = "grafana/alerting/rules.yaml"
+CORE_GRAFANA_RULES = Path("deploy/compose/observability/grafana/alerting/rules.yaml")
 # Прежняя раскладка (до подкаталогов): удаляется, чтобы не осталось устаревших копий.
 _LEGACY = ("litellm-models.yaml", "agents.json")
 _HEADER = "# Сгенерировано tools/instance render из instance.yaml (ADR-0008). Не редактировать.\n"
@@ -255,6 +257,7 @@ def render(
     out_dir: Path,
     providers: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
+    core_dir: Path | None = None,
 ) -> list[Path]:
     agents = resolve_agents(manifest, instance_dir)
     pinned = coreimages.load(instance_dir)
@@ -275,6 +278,11 @@ def render(
         MCP_SERVERS: json.dumps(mcp_servers(manifest), ensure_ascii=False, indent=2) + "\n",
         MODELS: json.dumps(model_clearances(manifest), ensure_ascii=False, indent=2) + "\n",
     }
+    # Grafana монтирует один каталог алертов: правила ядра и получатель инсталляции.
+    if manifest.observability.enabled and core_dir is not None:
+        files[GRAFANA_RULES] = (core_dir / CORE_GRAFANA_RULES).read_text(encoding="utf-8")
+    else:
+        (out_dir / GRAFANA_RULES).unlink(missing_ok=True)
     if manifest.observability.enabled and manifest.observability.alert_email:
         files[GRAFANA_CONTACT] = grafana_contact(manifest.observability.alert_email)
     else:

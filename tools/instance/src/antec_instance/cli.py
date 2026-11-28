@@ -143,7 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for warning in [*_deprecation(manifest), *manifest.class_warnings(), *notes]:
             print(f"предупреждение: {warning}", file=sys.stderr)
         if args.command == "render":
-            for path in render(manifest, args.instance, args.out, providers, notes):
+            for path in render(manifest, args.instance, args.out, providers, notes, core_dir):
                 print(path)
         else:
             print(f"{args.instance}: инсталляция {manifest.instance.id} в порядке")
